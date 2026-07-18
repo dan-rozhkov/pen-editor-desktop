@@ -89,4 +89,18 @@ describe("attachOfflineFallback", () => {
     contents.emit("did-fail-load", {}, -3, "ERR_ABORTED", `${ORIGIN}/`, true);
     expect(contents.loadFile).not.toHaveBeenCalled();
   });
+
+  it("ignores failures whose validatedURL is a file: URL, to avoid re-triggering itself", () => {
+    const contents = fakeContents();
+    attachOfflineFallback(contents as never, "/app/dist/assets/offline.html");
+    contents.emit(
+      "did-fail-load",
+      {},
+      -6,
+      "ERR_FILE_NOT_FOUND",
+      "file:///app/dist/assets/offline.html",
+      true,
+    );
+    expect(contents.loadFile).not.toHaveBeenCalled();
+  });
 });

@@ -25,7 +25,15 @@
     <script>
       document.getElementById("retry").addEventListener("click", () => {
         const target = new URLSearchParams(location.search).get("target");
-        if (target) location.href = target;
+        if (!target) return;
+        try {
+          const url = new URL(target);
+          if (url.protocol === "http:" || url.protocol === "https:") {
+            location.href = target;
+          }
+        } catch {
+          // ignore invalid target
+        }
       });
     </script>
   </body>

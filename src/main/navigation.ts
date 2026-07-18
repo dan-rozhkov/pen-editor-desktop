@@ -41,6 +41,9 @@ export function attachOfflineFallback(contents: WebContents, offlineFile: string
     "did-fail-load",
     (_event, errorCode, _errorDescription, validatedURL, isMainFrame) => {
       if (!isMainFrame || errorCode === -3 /* ERR_ABORTED */) return;
+      // If the offline page itself fails to load (e.g. bad packaged path),
+      // validatedURL is a file: URL — don't re-trigger the fallback or we loop forever.
+      if (validatedURL.startsWith("file:")) return;
       void contents.loadFile(offlineFile, { query: { target: validatedURL } });
     },
   );
