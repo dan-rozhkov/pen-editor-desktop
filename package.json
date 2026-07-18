@@ -12,7 +12,8 @@
     "dev": "PEN_DESKTOP_URL=http://localhost:5173 npm run start",
     "lint": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "npm run build && playwright test"
+    "test:e2e": "npm run build && playwright test",
+    "dist": "npm run build && electron-builder --mac"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
@@ -21,5 +22,12 @@
     "electron-builder": "^26.15.3",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
+  },
+  "build": {
+    "appId": "com.peneditor.desktop",
+    "productName": "Pen Editor",
+    "directories": { "output": "release" },
+    "files": ["dist/**"],
+    "mac": { "target": ["dmg", "zip"], "category": "public.app-category.graphics-design" }
   }
 }
