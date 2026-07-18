@@ -62,17 +62,19 @@ export class TabManager {
     const idx = this.tabs.findIndex((t) => t.id === id);
     if (idx === -1) return;
     const [closed] = this.tabs.splice(idx, 1);
-    closed.view.destroy();
     if (this.tabs.length === 0) {
       this.activeId = null;
       this.newTab(); // newTab emits
-      return;
-    }
-    if (this.activeId === id) {
+    } else if (this.activeId === id) {
       const neighbor = this.tabs[Math.max(0, idx - 1)];
-      this.setActive(neighbor.id);
+      this.setActive(neighbor.id); // setActive emits
     } else {
       this.emit();
+    }
+    try {
+      closed.view.destroy();
+    } catch (err) {
+      console.error("TabManager: closed tab view failed to destroy", err);
     }
   }
 

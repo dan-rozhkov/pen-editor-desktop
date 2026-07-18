@@ -76,6 +76,23 @@ describe("TabManager", () => {
     expect(tm.getSnapshot().activeId).not.toBe(a);
   });
 
+  it("closeTab does not corrupt state when destroy() throws", () => {
+    const a = tm.newTab();
+    const b = tm.newTab();
+    views[1].destroy.mockImplementation(() => {
+      throw new Error("boom");
+    });
+    expect(() => tm.closeTab(b)).not.toThrow();
+    expect(views[1].destroy).toHaveBeenCalled();
+    const snapshot = tm.getSnapshot();
+    expect(snapshot.activeId).toBe(a);
+    expect(snapshot.activeId).not.toBe(b);
+    expect(tm.activeHandle()).toBe(views[0]);
+    expect(tm.count()).toBe(1);
+    const last = states[states.length - 1];
+    expect(last.activeId).toBe(a);
+  });
+
   it("next/prev cycle through tabs", () => {
     const a = tm.newTab();
     const b = tm.newTab();
