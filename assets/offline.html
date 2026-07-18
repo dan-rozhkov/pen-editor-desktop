@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Pen — offline</title>
+    <style>
+      html { color-scheme: dark; }
+      body {
+        margin: 0; height: 100vh; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 16px;
+        background: #111; color: #ddd;
+        font: 14px -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+      button {
+        padding: 8px 20px; border-radius: 8px; border: 1px solid #444;
+        background: #222; color: #eee; font: inherit; cursor: pointer;
+      }
+      button:hover { background: #2c2c2c; }
+    </style>
+  </head>
+  <body>
+    <h1 style="font-size: 18px; margin: 0">Can’t reach Pen Editor</h1>
+    <p style="margin: 0; color: #888">Check your connection, then retry.</p>
+    <button id="retry">Retry</button>
+    <script>
+      document.getElementById("retry").addEventListener("click", () => {
+        const target = new URLSearchParams(location.search).get("target");
+        if (target) location.href = target;
+      });
+    </script>
+  </body>
+</html>
