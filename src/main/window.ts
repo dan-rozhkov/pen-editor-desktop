@@ -2,7 +2,7 @@ import path from "node:path";
 import { BaseWindow, WebContentsView, Menu, ipcMain, shell } from "electron";
 import { TabManager, type TabViewHandle, type TabsSnapshot } from "./tabManager";
 import { buildMenuTemplate } from "./menu";
-import { attachNavigationPolicy, attachOfflineFallback } from "./navigation";
+import { attachNavigationPolicy, attachOfflineFallback, attachLocalOnlyPolicy } from "./navigation";
 
 export const TABBAR_HEIGHT = 38;
 
@@ -27,6 +27,7 @@ export function createMainWindow(editorUrl: string): BaseWindow {
     },
   });
   win.contentView.addChildView(tabbarView);
+  attachLocalOnlyPolicy(tabbarView.webContents);
   void tabbarView.webContents.loadFile(path.join(__dirname, "../tabbar/tabbar.html"));
 
   const pushState = (s: TabsSnapshot) => tabbarView.webContents.send("tabbar:state", s);

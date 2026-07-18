@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
-import { decideNavigation, attachNavigationPolicy, attachOfflineFallback } from "../src/main/navigation";
+import {
+  decideNavigation,
+  attachNavigationPolicy,
+  attachOfflineFallback,
+  attachLocalOnlyPolicy,
+} from "../src/main/navigation";
 
 const ORIGIN = "https://pen-editor.onrender.com";
 
@@ -69,6 +74,26 @@ describe("attachNavigationPolicy", () => {
     openExternal.mockClear();
     expect(contents.open("javascript:alert(1)")).toEqual({ action: "deny" });
     expect(openExternal).not.toHaveBeenCalled();
+  });
+});
+
+describe("attachLocalOnlyPolicy", () => {
+  it("prevents will-navigate to any URL, local or remote", () => {
+    const contents = fakeContents();
+    attachLocalOnlyPolicy(contents as never);
+    const ev = { preventDefault: vi.fn() };
+    contents.emit("will-navigate", ev, "https://example.com/x");
+    expect(ev.preventDefault).toHaveBeenCalled();
+    ev.preventDefault.mockClear();
+    contents.emit("will-navigate", ev, "file:///app/dist/tabbar/tabbar.html");
+    expect(ev.preventDefault).toHaveBeenCalled();
+  });
+
+  it("always denies window.open", () => {
+    const contents = fakeContents();
+    attachLocalOnlyPolicy(contents as never);
+    expect(contents.open("https://example.com/x")).toEqual({ action: "deny" });
+    expect(contents.open("javascript:alert(1)")).toEqual({ action: "deny" });
   });
 });
 

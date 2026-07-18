@@ -35,6 +35,19 @@ export function attachNavigationPolicy(
   });
 }
 
+/**
+ * Locks a WebContents down to whatever it was constructed with — used for the
+ * tabbar view, which only ever loads local tabbar.html but has the penTabbar
+ * IPC API attached. Any navigation attempt (e.g. a URL dragged onto the tab
+ * strip) is blocked outright, and popups are always denied.
+ */
+export function attachLocalOnlyPolicy(contents: WebContents): void {
+  contents.on("will-navigate", (event) => {
+    event.preventDefault();
+  });
+  contents.setWindowOpenHandler(() => ({ action: "deny" }));
+}
+
 /** did-fail-load hook: main-frame load failures (except ERR_ABORTED -3) load the offline page. */
 export function attachOfflineFallback(contents: WebContents, offlineFile: string): void {
   contents.on(
