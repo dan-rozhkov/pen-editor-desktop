@@ -110,6 +110,24 @@ export class TabManager {
     return this.tabs.length;
   }
 
+  /**
+   * Destroys every tab view without respawning a replacement — unlike
+   * closeTab(), which always keeps at least one tab open. Intended for
+   * window teardown (win.on("closed", ...)).
+   */
+  destroyAll(): void {
+    const closing = this.tabs;
+    this.tabs = [];
+    this.activeId = null;
+    for (const tab of closing) {
+      try {
+        tab.view.destroy();
+      } catch (err) {
+        console.error("TabManager: tab view failed to destroy", err);
+      }
+    }
+  }
+
   private applyLayout(tab: TabEntry): void {
     if (!this.lastLayout) return;
     const { content, tabbarHeight } = this.lastLayout;

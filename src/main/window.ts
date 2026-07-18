@@ -75,12 +75,31 @@ export function createMainWindow(editorUrl: string): BaseWindow {
   // --- tab bar IPC (scoped to this window's tabbar webContents) ---
   const tabbarId = tabbarView.webContents.id;
   const fromOurTabbar = (event: Electron.IpcMainEvent) => event.sender.id === tabbarId;
-  ipcMain.on("tabbar:new", (e) => fromOurTabbar(e) && tabs.newTab());
-  ipcMain.on("tabbar:activate", (e, id: number) => fromOurTabbar(e) && tabs.activate(id));
-  ipcMain.on("tabbar:close", (e, id: number) => fromOurTabbar(e) && tabs.closeTab(id));
+  const onTabbarNew = (e: Electron.IpcMainEvent) => fromOurTabbar(e) && tabs.newTab();
+  const onTabbarActivate = (e: Electron.IpcMainEvent, id: number) =>
+    fromOurTabbar(e) && tabs.activate(id);
+  const onTabbarClose = (e: Electron.IpcMainEvent, id: number) =>
+    fromOurTabbar(e) && tabs.closeTab(id);
+  ipcMain.on("tabbar:new", onTabbarNew);
+  ipcMain.on("tabbar:activate", onTabbarActivate);
+  ipcMain.on("tabbar:close", onTabbarClose);
   // Re-send current state when the tab bar (re)loads — it may have missed
   // snapshots emitted before its DOM was ready.
   tabbarView.webContents.on("did-finish-load", () => pushState(tabs.getSnapshot()));
+
+  // --- teardown ---
+  // BaseWindow instances (and everything they capture — TabManager, the tab
+  // views, the tabbar view) outlive a window close on macOS, since index.ts
+  // recreates a window on dock "activate" without quitting the app. Without
+  // this, every close/reopen cycle leaks the ipcMain listeners above plus
+  // every tab's WebContentsView (renderer process stays alive).
+  win.on("closed", () => {
+    ipcMain.removeListener("tabbar:new", onTabbarNew);
+    ipcMain.removeListener("tabbar:activate", onTabbarActivate);
+    ipcMain.removeListener("tabbar:close", onTabbarClose);
+    tabs.destroyAll();
+    tabbarView.webContents.close();
+  });
 
   // --- menu ---
   const menu = Menu.buildFromTemplate(
@@ -98,6 +117,9 @@ export function createMainWindow(editorUrl: string): BaseWindow {
       { isMac: process.platform === "darwin" },
     ),
   );
+  // The application menu is process-global (Menu.setApplicationMenu), but
+  // its handlers close over this window's TabManager. Fine for the current
+  // single-window app; revisit if multi-window support is ever added.
   Menu.setApplicationMenu(menu);
 
   tabs.newTab();

@@ -129,4 +129,26 @@ describe("TabManager", () => {
     tm.nextTab();
     expect(states.length).toBeGreaterThan(before + 1);
   });
+
+  it("destroyAll destroys every tab view and does not respawn a fresh tab", () => {
+    tm.newTab();
+    tm.newTab();
+    tm.newTab();
+    tm.destroyAll();
+    for (const v of views) {
+      expect(v.destroy).toHaveBeenCalled();
+    }
+    expect(tm.count()).toBe(0);
+  });
+
+  it("destroyAll tolerates a view whose destroy() throws", () => {
+    tm.newTab();
+    tm.newTab();
+    views[0].destroy.mockImplementation(() => {
+      throw new Error("boom");
+    });
+    expect(() => tm.destroyAll()).not.toThrow();
+    expect(views[1].destroy).toHaveBeenCalled();
+    expect(tm.count()).toBe(0);
+  });
 });
