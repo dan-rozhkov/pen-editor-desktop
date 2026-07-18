@@ -1,9 +1,15 @@
-import { app, BrowserWindow } from "electron";
+import { app, BaseWindow } from "electron";
 import { resolveEditorUrl } from "./config";
+import { createMainWindow } from "./window";
+
+const editorUrl = resolveEditorUrl(process.env);
 
 app.whenReady().then(() => {
-  const win = new BrowserWindow({ width: 1440, height: 900 });
-  void win.loadURL(resolveEditorUrl(process.env));
+  createMainWindow(editorUrl);
+
+  app.on("activate", () => {
+    if (BaseWindow.getAllWindows().length === 0) createMainWindow(editorUrl);
+  });
 });
 
 app.on("window-all-closed", () => {
