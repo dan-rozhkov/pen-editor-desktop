@@ -47,5 +47,8 @@ files list this id set — keep them in sync.
 ## IPC channels
 
 - `menu:command` main→tab (commandId string)
+- `editor:document-title` tab→main (document display name, normalized to `Untitled`)
+- `editor:theme` tab→main (`light` | `dark`, observed from the editor's root class)
 - `tabbar:state` main→tabbar (`TabsSnapshot`), re-sent on tabbar `did-finish-load`
+- `tabbar:theme` main→tabbar (`light` | `dark`, active editor theme or system fallback)
 - `tabbar:new` / `tabbar:activate` / `tabbar:close` tabbar→main (sender-checked)

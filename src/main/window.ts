@@ -1,6 +1,11 @@
 import path from "node:path";
-import { BaseWindow, WebContentsView, Menu, ipcMain, shell } from "electron";
-import { TabManager, type TabViewHandle, type TabsSnapshot } from "./tabManager";
+import { BaseWindow, WebContentsView, Menu, ipcMain, nativeTheme, shell } from "electron";
+import {
+  TabManager,
+  type TabViewHandle,
+  type TabsSnapshot,
+  type UITheme,
+} from "./tabManager";
 import { buildMenuTemplate } from "./menu";
 import { attachNavigationPolicy, attachOfflineFallback, attachLocalOnlyPolicy } from "./navigation";
 
@@ -15,7 +20,7 @@ export function createMainWindow(editorUrl: string): BaseWindow {
   const editorOrigin = new URL(editorUrl).origin;
   const offlineFile = path.join(__dirname, "../assets/offline.html");
 
-  const win = new BaseWindow({ width: 1440, height: 900, title: "Pen Editor" });
+  const win = new BaseWindow({ width: 1440, height: 900, title: "Pineapple Editor" });
 
   // --- tab bar view ---
   const tabbarView = new WebContentsView({
@@ -30,7 +35,25 @@ export function createMainWindow(editorUrl: string): BaseWindow {
   attachLocalOnlyPolicy(tabbarView.webContents);
   void tabbarView.webContents.loadFile(path.join(__dirname, "../tabbar/tabbar.html"));
 
-  const pushState = (s: TabsSnapshot) => tabbarView.webContents.send("tabbar:state", s);
+  const systemTheme = (): UITheme => (nativeTheme.shouldUseDarkColors ? "dark" : "light");
+  const pushState = (s: TabsSnapshot) => {
+    tabbarView.webContents.send("tabbar:state", s);
+    tabbarView.webContents.send("tabbar:theme", s.activeTheme ?? systemTheme());
+  };
+
+  const themeCallbacks = new Map<number, (theme: UITheme) => void>();
+  const titleCallbacks = new Map<number, (title: string) => void>();
+  const onEditorTheme = (event: Electron.IpcMainEvent, theme: unknown) => {
+    if (theme !== "light" && theme !== "dark") return;
+    themeCallbacks.get(event.sender.id)?.(theme);
+  };
+  ipcMain.on("editor:theme", onEditorTheme);
+  const onEditorDocumentTitle = (event: Electron.IpcMainEvent, title: unknown) => {
+    if (typeof title !== "string") return;
+    const normalized = title.trim().slice(0, 200) || "Untitled";
+    titleCallbacks.get(event.sender.id)?.(normalized);
+  };
+  ipcMain.on("editor:document-title", onEditorDocumentTitle);
 
   // --- tabs ---
   const tabs = new TabManager({
@@ -48,18 +71,21 @@ export function createMainWindow(editorUrl: string): BaseWindow {
       attachNavigationPolicy(view.webContents, editorOrigin, (url) => void shell.openExternal(url));
       attachOfflineFallback(view.webContents, offlineFile);
       win.contentView.addChildView(view);
+      const viewId = view.webContents.id;
       return {
         loadURL: (url) => void view.webContents.loadURL(url),
         setBounds: (b) => view.setBounds(b),
         setVisible: (v) => view.setVisible(v),
         destroy: () => {
+          themeCallbacks.delete(viewId);
+          titleCallbacks.delete(viewId);
           win.contentView.removeChildView(view);
           view.webContents.close();
         },
         sendMenuCommand: (id) => view.webContents.send("menu:command", id),
         focus: () => view.webContents.focus(),
-        onTitleChanged: (cb) =>
-          view.webContents.on("page-title-updated", (_e, title) => cb(title)),
+        onDocumentTitleChanged: (cb) => titleCallbacks.set(viewId, cb),
+        onThemeChanged: (cb) => themeCallbacks.set(viewId, cb),
       };
     },
   });
@@ -87,6 +113,10 @@ export function createMainWindow(editorUrl: string): BaseWindow {
   // Re-send current state when the tab bar (re)loads — it may have missed
   // snapshots emitted before its DOM was ready.
   tabbarView.webContents.on("did-finish-load", () => pushState(tabs.getSnapshot()));
+  const onSystemThemeChanged = () => {
+    if (tabs.getSnapshot().activeTheme === null) pushState(tabs.getSnapshot());
+  };
+  nativeTheme.on("updated", onSystemThemeChanged);
 
   // --- teardown ---
   // BaseWindow instances (and everything they capture — TabManager, the tab
@@ -98,6 +128,9 @@ export function createMainWindow(editorUrl: string): BaseWindow {
     ipcMain.removeListener("tabbar:new", onTabbarNew);
     ipcMain.removeListener("tabbar:activate", onTabbarActivate);
     ipcMain.removeListener("tabbar:close", onTabbarClose);
+    ipcMain.removeListener("editor:theme", onEditorTheme);
+    ipcMain.removeListener("editor:document-title", onEditorDocumentTitle);
+    nativeTheme.removeListener("updated", onSystemThemeChanged);
     tabs.destroyAll();
     tabbarView.webContents.close();
   });

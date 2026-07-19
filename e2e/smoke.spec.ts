@@ -14,6 +14,7 @@ test.beforeAll(async () => {
         window.__commands = [];
         if (window.penDesktop) {
           window.penDesktop.onMenuCommand((id) => window.__commands.push(id));
+          window.penDesktop.setDocumentTitle('Launch Deck');
         }
       </script>`);
   });
@@ -28,17 +29,26 @@ test("launches, opens a tab with the editor, exposes the menu bridge", async () 
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
   });
+  expect(await app.evaluate(({ app: electronApp }) => electronApp.getName())).toBe("Pineapple Editor");
 
   // Windows: the tab bar view and the first tab view each surface as a page.
   const editorPage = await app.waitForEvent("window", {
     predicate: (p) => p.url().startsWith(baseUrl),
   });
+  const tabbarPage =
+    app.windows().find((page) => page.url().endsWith("/tabbar/tabbar.html")) ??
+    (await app.waitForEvent("window", {
+      predicate: (page) => page.url().endsWith("/tabbar/tabbar.html"),
+    }));
   await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
   // The preload bridge is present in the editor page.
   expect(await editorPage.evaluate(() => typeof (window as never as { penDesktop?: unknown }).penDesktop)).toBe(
     "object",
   );
+  await expect
+    .poll(() => tabbarPage.locator(".tab.active .title").textContent())
+    .toBe("Launch Deck");
 
   // Forward a menu command from the main process to the active tab and see it arrive.
   await app.evaluate(({ webContents }, url) => {
@@ -48,6 +58,12 @@ test("launches, opens a tab with the editor, exposes the menu bridge", async () 
   await expect
     .poll(() => editorPage.evaluate(() => (window as never as { __commands: string[] }).__commands))
     .toContain("file-open");
+
+  // Desktop chrome follows the active editor's UI theme.
+  await editorPage.evaluate(() => document.documentElement.classList.add("dark"));
+  await expect
+    .poll(() => tabbarPage.evaluate(() => document.documentElement.dataset.theme))
+    .toBe("dark");
 
   await app.close();
 });

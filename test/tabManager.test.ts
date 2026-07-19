@@ -3,6 +3,7 @@ import { TabManager, type TabViewHandle, type TabsSnapshot } from "../src/main/t
 
 function makeFakeView() {
   let titleCb: ((t: string) => void) | undefined;
+  let themeCb: ((theme: "light" | "dark") => void) | undefined;
   const view = {
     loadURL: vi.fn(),
     setBounds: vi.fn(),
@@ -10,12 +11,16 @@ function makeFakeView() {
     destroy: vi.fn(),
     sendMenuCommand: vi.fn(),
     focus: vi.fn(),
-    onTitleChanged: vi.fn((cb: (t: string) => void) => {
+    onDocumentTitleChanged: vi.fn((cb: (t: string) => void) => {
       titleCb = cb;
     }),
+    onThemeChanged: vi.fn((cb: (theme: "light" | "dark") => void) => {
+      themeCb = cb;
+    }),
     emitTitle: (t: string) => titleCb?.(t),
+    emitTheme: (theme: "light" | "dark") => themeCb?.(theme),
   };
-  return view as TabViewHandle & { emitTitle: (t: string) => void; loadURL: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn>; setVisible: ReturnType<typeof vi.fn>; setBounds: ReturnType<typeof vi.fn> };
+  return view as TabViewHandle & { emitTitle: (t: string) => void; emitTheme: (theme: "light" | "dark") => void; loadURL: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn>; setVisible: ReturnType<typeof vi.fn>; setBounds: ReturnType<typeof vi.fn> };
 }
 
 describe("TabManager", () => {
@@ -42,6 +47,7 @@ describe("TabManager", () => {
     expect(views[0].loadURL).toHaveBeenCalledWith("https://pen-editor.onrender.com");
     expect(tm.getSnapshot().activeId).toBe(id);
     expect(tm.count()).toBe(1);
+    expect(tm.getSnapshot().tabs[0].title).toBe("Untitled");
   });
 
   it("second tab hides the first and shows itself", () => {
@@ -106,11 +112,21 @@ describe("TabManager", () => {
     expect(tm.getSnapshot().activeId).toBe(b);
   });
 
-  it("title changes flow into the snapshot and notify", () => {
+  it("document title changes flow into the snapshot and notify", () => {
     tm.newTab();
     views[0].emitTitle("My Design — Pen");
     const last = states[states.length - 1];
     expect(last.tabs[0].title).toBe("My Design — Pen");
+  });
+
+  it("reports the active editor theme and follows it when tabs switch", () => {
+    const lightTab = tm.newTab();
+    views[0].emitTheme("light");
+    tm.newTab();
+    views[1].emitTheme("dark");
+    expect(tm.getSnapshot().activeTheme).toBe("dark");
+    tm.activate(lightTab);
+    expect(tm.getSnapshot().activeTheme).toBe("light");
   });
 
   it("layout positions all tab views below the tab bar", () => {

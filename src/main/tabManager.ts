@@ -1,3 +1,5 @@
+export type UITheme = "light" | "dark";
+
 export interface TabViewHandle {
   loadURL(url: string): void;
   setBounds(bounds: { x: number; y: number; width: number; height: number }): void;
@@ -5,7 +7,8 @@ export interface TabViewHandle {
   destroy(): void;
   sendMenuCommand(commandId: string): void;
   focus(): void;
-  onTitleChanged(cb: (title: string) => void): void;
+  onDocumentTitleChanged(cb: (title: string) => void): void;
+  onThemeChanged(cb: (theme: UITheme) => void): void;
 }
 
 export interface TabState {
@@ -16,12 +19,14 @@ export interface TabState {
 export interface TabsSnapshot {
   tabs: TabState[];
   activeId: number | null;
+  activeTheme: UITheme | null;
 }
 
 interface TabEntry {
   id: number;
   title: string;
   view: TabViewHandle;
+  theme: UITheme | null;
 }
 
 /**
@@ -46,9 +51,14 @@ export class TabManager {
   newTab(): number {
     const id = this.nextId++;
     const view = this.opts.createView();
-    const entry: TabEntry = { id, title: "New Tab", view };
-    view.onTitleChanged((title) => {
+    const entry: TabEntry = { id, title: "Untitled", view, theme: null };
+    view.onDocumentTitleChanged((title) => {
       entry.title = title;
+      this.emit();
+    });
+    view.onThemeChanged((theme) => {
+      if (entry.theme === theme) return;
+      entry.theme = theme;
       this.emit();
     });
     this.tabs.push(entry);
@@ -98,6 +108,7 @@ export class TabManager {
     return {
       tabs: this.tabs.map(({ id, title }) => ({ id, title })),
       activeId: this.activeId,
+      activeTheme: this.tabs.find((tab) => tab.id === this.activeId)?.theme ?? null,
     };
   }
 

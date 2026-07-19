@@ -1,6 +1,6 @@
-# pen-editor-desktop
+# Pineapple Editor
 
-Electron shell for [pen-editor]: native window, native menus/hotkeys, and
+Pineapple Editor is an Electron shell for [pen-editor]: native window, native menus/hotkeys, and
 multiple files open as tabs. Each tab loads the deployed editor
 (https://pen-editor.onrender.com) — the app is always as fresh as the last
 web deploy; offline works via the editor's own service worker after the

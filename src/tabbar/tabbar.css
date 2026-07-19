@@ -1,11 +1,54 @@
-html { color-scheme: dark; }
+:root {
+  color-scheme: light;
+  --bar-bg: #f5f5f5;
+  --tab-active-bg: #ffffff;
+  --control-hover-bg: #e5e5e5;
+  --border: #e0e0e0;
+  --text: #666666;
+  --text-active: rgba(0, 0, 0, 0.87);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bar-bg: #1a1a1a;
+    --tab-active-bg: #2a2a2a;
+    --control-hover-bg: #383838;
+    --border: #404040;
+    --text: #888888;
+    --text-active: rgba(255, 255, 255, 0.87);
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bar-bg: #f5f5f5;
+  --tab-active-bg: #ffffff;
+  --control-hover-bg: #e5e5e5;
+  --border: #e0e0e0;
+  --text: #666666;
+  --text-active: rgba(0, 0, 0, 0.87);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bar-bg: #1a1a1a;
+  --tab-active-bg: #2a2a2a;
+  --control-hover-bg: #383838;
+  --border: #404040;
+  --text: #888888;
+  --text-active: rgba(255, 255, 255, 0.87);
+}
+
 body {
   margin: 0;
   height: 38px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border);
   display: flex;
   align-items: stretch;
-  background: #111;
-  color: #bbb;
+  background: var(--bar-bg);
+  color: var(--text);
   font: 12px -apple-system, BlinkMacSystemFont, sans-serif;
   user-select: none;
   overflow: hidden;
@@ -14,18 +57,34 @@ body {
 .tab {
   display: flex; align-items: center; gap: 6px;
   padding: 0 10px 0 14px; max-width: 200px; min-width: 60px;
-  border-right: 1px solid #1e1e1e; cursor: default; white-space: nowrap;
+  border-right: 1px solid var(--border); cursor: default; white-space: nowrap;
 }
 .tab .title { overflow: hidden; text-overflow: ellipsis; flex: 1; }
-.tab.active { background: #1d1d1d; color: #eee; }
+.tab.active { background: var(--tab-active-bg); color: var(--text-active); }
 .tab .close {
-  border: 0; background: none; color: inherit; font: inherit;
-  cursor: pointer; padding: 2px 5px; border-radius: 4px; visibility: hidden;
+  position: relative; flex: 0 0 20px; width: 20px; height: 20px;
+  border: 0; background: none; color: inherit;
+  cursor: pointer; padding: 0; border-radius: 4px; visibility: hidden;
 }
 .tab:hover .close, .tab.active .close { visibility: visible; }
-.tab .close:hover { background: #333; }
-#new-tab {
-  border: 0; background: none; color: #bbb; font: 16px -apple-system, sans-serif;
-  width: 38px; cursor: pointer;
+.tab .close:hover { background: var(--control-hover-bg); }
+.tab .close::before, .tab .close::after {
+  content: ""; position: absolute; left: 5px; top: 9.5px;
+  width: 10px; height: 1px; border-radius: 1px; background: currentColor;
 }
-#new-tab:hover { color: #eee; background: #1d1d1d; }
+.tab .close::before { transform: rotate(45deg); }
+.tab .close::after { transform: rotate(-45deg); }
+#new-tab {
+  position: relative; flex: 0 0 38px; width: 38px;
+  border: 0; background: none; color: var(--text); cursor: pointer;
+}
+#new-tab:hover { color: var(--text-active); background: var(--control-hover-bg); }
+#new-tab::before, #new-tab::after {
+  content: ""; position: absolute; left: 13px; top: 18.5px;
+  width: 12px; height: 1px; border-radius: 1px; background: currentColor;
+}
+#new-tab::after { transform: rotate(90deg); }
+.tab .close:focus-visible, #new-tab:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: -2px;
+}
