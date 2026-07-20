@@ -2,6 +2,7 @@ type TabsSnapshot = { tabs: { id: number; title: string }[]; activeId: number | 
 type UITheme = "light" | "dark";
 
 interface PenTabbarApi {
+  isMac: boolean;
   newTab(): void;
   activateTab(id: number): void;
   closeTab(id: number): void;
@@ -14,6 +15,7 @@ interface Window {
 }
 
 const tabsEl = document.getElementById("tabs")!;
+document.documentElement.toggleAttribute("data-macos", window.penTabbar.isMac);
 document.getElementById("new-tab")!.addEventListener("click", () => window.penTabbar.newTab());
 
 window.penTabbar.onTheme((theme) => {

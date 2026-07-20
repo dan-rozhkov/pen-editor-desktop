@@ -20,7 +20,15 @@ export function createMainWindow(editorUrl: string): BaseWindow {
   const editorOrigin = new URL(editorUrl).origin;
   const offlineFile = path.join(__dirname, "../assets/offline.html");
 
-  const win = new BaseWindow({ width: 1440, height: 900, title: "Pineapple Editor" });
+  const win = new BaseWindow({
+    width: 1440,
+    height: 900,
+    title: "Pineapple Editor",
+    // Put the tab strip in the native title-bar row on macOS while keeping
+    // the standard traffic-light controls. Other platforms retain their
+    // normal system frame.
+    ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" as const } : {}),
+  });
 
   // --- tab bar view ---
   const tabbarView = new WebContentsView({

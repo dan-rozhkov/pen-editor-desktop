@@ -3,6 +3,7 @@ import type { TabsSnapshot } from "../main/tabManager";
 import type { UITheme } from "../main/tabManager";
 
 const api = {
+  isMac: process.platform === "darwin",
   newTab: () => ipcRenderer.send("tabbar:new"),
   activateTab: (id: number) => ipcRenderer.send("tabbar:activate", id),
   closeTab: (id: number) => ipcRenderer.send("tabbar:close", id),

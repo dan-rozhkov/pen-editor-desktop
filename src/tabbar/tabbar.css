@@ -52,12 +52,17 @@ body {
   font: 12px -apple-system, BlinkMacSystemFont, sans-serif;
   user-select: none;
   overflow: hidden;
+  app-region: drag;
+  -webkit-app-region: drag;
 }
+:root[data-macos] body { padding-left: 78px; }
 #tabs { display: flex; align-items: stretch; overflow: hidden; flex: 1; }
 .tab {
   display: flex; align-items: center; gap: 6px;
   padding: 0 10px 0 14px; max-width: 200px; min-width: 60px;
   border-right: 1px solid var(--border); cursor: default; white-space: nowrap;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
 }
 .tab .title { overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .tab.active { background: var(--tab-active-bg); color: var(--text-active); }
@@ -77,6 +82,8 @@ body {
 #new-tab {
   position: relative; flex: 0 0 38px; width: 38px;
   border: 0; background: none; color: var(--text); cursor: pointer;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
 }
 #new-tab:hover { color: var(--text-active); background: var(--control-hover-bg); }
 #new-tab::before, #new-tab::after {
