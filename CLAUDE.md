@@ -2,9 +2,11 @@
 
 Thin Electron shell for pen-editor. The editor itself is NOT here — each tab
 is a `WebContentsView` loading the deployed frontend
-(`https://pen-editor.onrender.com`, override with `PEN_DESKTOP_URL`; `npm
-run dev` points it at a local Vite dev server on :5173). The AI backend
-stays remote. Design spec: `docs/superpowers/specs/2026-07-18-electron-shell-design.md`.
+(`https://pen-editor.onrender.com/app`, override with `PEN_DESKTOP_URL`;
+`npm run dev` points it at a local Vite dev server on :5173). The frontend
+serves its showcase gallery at `/` and the editor at `/app`, so both the
+default URL and any override must include the `/app` path — an override is
+used verbatim. The AI backend stays remote. Design spec: `docs/superpowers/specs/2026-07-18-electron-shell-design.md`.
 
 ## Commands
 

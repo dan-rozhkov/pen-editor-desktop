@@ -4,13 +4,14 @@ import { resolveEditorUrl, DEFAULT_EDITOR_URL } from "../src/main/config";
 describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
     expect(resolveEditorUrl({})).toBe(DEFAULT_EDITOR_URL);
-    expect(DEFAULT_EDITOR_URL).toBe("https://pen-editor.onrender.com");
+    // "/app" — "/" is the showcase gallery, not the editor.
+    expect(DEFAULT_EDITOR_URL).toBe("https://pen-editor.onrender.com/app");
   });
 
   it("honors PEN_DESKTOP_URL", () => {
-    expect(resolveEditorUrl({ PEN_DESKTOP_URL: "http://localhost:5173" })).toBe(
-      "http://localhost:5173",
-    );
+    expect(
+      resolveEditorUrl({ PEN_DESKTOP_URL: "http://localhost:5173/app" }),
+    ).toBe("http://localhost:5173/app");
   });
 
   it("ignores a non-http(s) or unparseable override", () => {
