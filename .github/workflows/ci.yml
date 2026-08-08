@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      # Catches the compile-only failure modes the unit tests can't: the
+      # renderer script must stay a plain script and preloads must stay CJS.
+      - run: npm run build
+
+  # The Playwright _electron smoke launches a real Electron binary, which needs
+  # a display on Linux — hence xvfb-run. Kept a separate job so a flaky launch
+  # can't mask a genuine unit/build failure.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # ELECTRON_DISABLE_SANDBOX: node_modules' chrome-sandbox is not SUID-root
+      # on a runner, so a sandboxed launch aborts. This relaxes the OS sandbox
+      # for the test process only — the shipped app's per-view
+      # `sandbox: true` is unaffected.
+      - run: xvfb-run --auto-servernum npm run test:e2e
+        env:
+          ELECTRON_DISABLE_SANDBOX: "1"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: test-results/
+          retention-days: 7

@@ -64,3 +64,13 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `tabbar:state` main→tabbar (`TabsSnapshot`), re-sent on tabbar `did-finish-load`
 - `tabbar:theme` main→tabbar (`light` | `dark`, active editor theme or system fallback)
 - `tabbar:new` / `tabbar:activate` / `tabbar:close` tabbar→main (sender-checked)
+
+Both ends of every channel live in this repo — the editor only ever touches
+the preload API, never a channel name. `test/ipcContract.test.ts` scans `src/`
+for the literals and pins this table: each channel must be sent and received in
+its declared direction and nowhere else, the set must match exactly (a new
+channel fails until it is listed here too), and every `ipcMain.on` must have a
+matching `removeListener` — that last one is the window close/reopen listener
+leak `window.ts` guards against. Renaming a channel on one side only is
+otherwise silent: Electron matches these strings at runtime and just stops
+delivering.
