@@ -46,6 +46,16 @@ menu item = pick an existing `PaletteCommand.id` in
 `pen-editor/src/lib/commands/` (or add one there first). Both CLAUDE.md
 files list this id set — keep them in sync.
 
+The contract is enforced from the **pen-editor** side:
+`pen-editor/src/lib/__tests__/desktopMenuContract.test.ts` imports this repo's
+`src/main/menu.ts` (loadable without `npm ci` — the electron import is
+type-only), clicks every item with recording actions, and asserts the
+forwarded ids both match its pinned list and resolve through `getCommands()`.
+pen-editor's `contract` CI job checks out this repo's `main` at run time, so a
+menu id typed only here is caught there, not in this repo — this repo has no
+CI of its own. Adding or renaming a forwarded id means touching four places:
+`menu.ts`, that test's pinned list, and both CLAUDE.md files.
+
 ## IPC channels
 
 - `menu:command` main→tab (commandId string)
