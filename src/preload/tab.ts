@@ -11,6 +11,97 @@ function publishTheme(): void {
   ipcRenderer.send("editor:theme", theme);
 }
 
+// Desktop MCP bridge (see ../main/mcp/) — the page side already shipped and
+// is live in production as ../../../pen-editor/src/lib/desktopMcpBridge.ts,
+// which calls window.penDesktop.registerMcpBridge({protocol, tools, onCall})
+// and expects the return value to be a callable teardown function. `onCall`
+// there never rejects (a handler failure resolves to a JSON `{"error"}`
+// string), but this bridge tolerates a throwing/rejecting `onCall` anyway
+// and reports it as a tool_error reply rather than dropping the call.
+interface McpRegisterPayload {
+  protocol: number;
+  tools: string[];
+}
+
+interface McpCallPayload {
+  callId: string;
+  tool: string;
+  args: Record<string, unknown>;
+}
+
+interface McpResultPayload {
+  callId: string;
+  type: "tool_result" | "tool_error";
+  result?: string;
+  error?: string;
+}
+
+interface McpBridgeHandler {
+  protocol: number;
+  tools: string[];
+  onCall(name: string, args: Record<string, unknown>): Promise<string>;
+}
+
+// Tracks the teardown of whatever registerMcpBridge() call is currently
+// live, at module scope (not per-call) — the API boundary's own guard
+// against a double registration (finding 6), so it holds no matter what the
+// caller does. The page's own module-scoped `teardown` guard in
+// desktopMcpBridge.ts already prevents a *well-behaved* caller from calling
+// this twice, but the preload is the API boundary and must not depend on
+// its caller: React StrictMode double-invoking an effect in dev, or HMR,
+// can still land two calls here. Without this, both listeners would fire
+// per `mcp:call` (a `batch_design` mutating the document twice) and two
+// `mcp:result`s would go out for one `callId` (main resolves the first,
+// silently drops the second) — and tearing down only one of them would drop
+// main's registration for the whole tab (a bare `mcp:register` null) while
+// the other listener is still live, breaking every later call with the
+// "older build" upgrade error.
+let activeTeardown: (() => void) | null = null;
+
+function registerMcpBridge(handler: McpBridgeHandler): () => void {
+  // Auto-teardown any still-live prior registration before installing the
+  // new one, so at most one "mcp:call" listener and one active
+  // "mcp:register" are ever in effect regardless of how many times this is
+  // called.
+  activeTeardown?.();
+
+  const registerPayload: McpRegisterPayload = { protocol: handler.protocol, tools: handler.tools };
+  ipcRenderer.send("mcp:register", registerPayload);
+
+  const listener = (_e: IpcRendererEvent, msg: McpCallPayload) => {
+    void handler
+      .onCall(msg.tool, msg.args)
+      .then((result) => {
+        const reply: McpResultPayload = { callId: msg.callId, type: "tool_result", result };
+        ipcRenderer.send("mcp:result", reply);
+      })
+      .catch((err: unknown) => {
+        const reply: McpResultPayload = {
+          callId: msg.callId,
+          type: "tool_error",
+          error: err instanceof Error ? err.message : String(err),
+        };
+        ipcRenderer.send("mcp:result", reply);
+      });
+  };
+  ipcRenderer.on("mcp:call", listener);
+
+  let torndown = false;
+  const teardown = () => {
+    if (torndown) return;
+    torndown = true;
+    ipcRenderer.removeListener("mcp:call", listener);
+    // A `null` register payload tells main this tab is no longer bridging —
+    // main's registry is keyed by webContents.id and drops/rejects any
+    // in-flight calls for it (see mcp/service.ts). Reuses mcp:register
+    // rather than adding a fourth channel.
+    ipcRenderer.send("mcp:register", null);
+    if (activeTeardown === teardown) activeTeardown = null;
+  };
+  activeTeardown = teardown;
+  return teardown;
+}
+
 const api = {
   setDocumentTitle(title: string | null): void {
     ipcRenderer.send("editor:document-title", title);
@@ -20,6 +111,7 @@ const api = {
     ipcRenderer.on("menu:command", listener);
     return () => ipcRenderer.removeListener("menu:command", listener);
   },
+  registerMcpBridge,
 };
 
 contextBridge.exposeInMainWorld("penDesktop", api);

@@ -16,11 +16,15 @@ describe("buildMenuTemplate", () => {
       nextTab: vi.fn(),
       prevTab: vi.fn(),
       forwardToActiveTab: vi.fn(),
+      useThisAppForMcp: vi.fn(),
     };
   });
 
-  function item(label: string): MenuItemConstructorOptions {
-    const found = flatten(buildMenuTemplate(actions, { isMac: true })).find((i) => i.label === label);
+  function item(
+    label: string,
+    mcpStatus: "listening" | "not-published" | "off" | "error" = "off",
+  ): MenuItemConstructorOptions {
+    const found = flatten(buildMenuTemplate(actions, { isMac: true }, mcpStatus)).find((i) => i.label === label);
     if (!found) throw new Error(`menu item not found: ${label}`);
     return found;
   }
@@ -75,4 +79,70 @@ describe("buildMenuTemplate", () => {
       expect(roles).toContain(role);
     }
   });
+
+  it.each([
+    ["listening" as const, "MCP: Listening"],
+    ["not-published" as const, "MCP: Not published (another server is running)"],
+    ["off" as const, "MCP: Off"],
+    ["error" as const, "MCP: Failed to start (see \"Use this app for MCP\")"],
+  ])("MCP status item reflects status %s and is disabled/informational", (status, label) => {
+    const i = item(label, status);
+    expect(i.enabled).toBe(false);
+    expect(i.click).toBeUndefined();
+  });
+
+  it("MCP status label never includes a port number", () => {
+    for (const status of ["listening", "not-published", "off", "error"] as const) {
+      const i = item(mcpStatusLabelFor(status), status);
+      expect(String(i.label)).not.toMatch(/\d/);
+    }
+  });
+
+  it("Use this app for MCP triggers useThisAppForMcp", () => {
+    const i = item("Use this app for MCP");
+    (i.click as () => void)();
+    expect(actions.useThisAppForMcp).toHaveBeenCalled();
+  });
+
+  it("error status renders a visible, non-empty label distinct from off/not-published/listening", () => {
+    const i = item(mcpStatusLabelFor("error"), "error");
+    expect(i.enabled).toBe(false);
+    expect(String(i.label).length).toBeGreaterThan(0);
+    expect(i.label).not.toBe(mcpStatusLabelFor("off"));
+  });
+
+  // Finding 7: the tooltip (tabbar/renderer.ts) and README both point users
+  // at "the app menu" for the MCP status line and "Use this app for MCP" —
+  // but buildMenuTemplate appends both to the **File** submenu, not to the
+  // real macOS app menu (the `{ role: "appMenu" }` this file unshifts
+  // separately, above). This test pins the *actual* location so the two can
+  // never silently drift apart again: if a future change moves these items
+  // out of File (e.g. into the real app menu), this test fails and forces
+  // the tooltip/README wording to be revisited in the same change.
+  it("the MCP status line and 'Use this app for MCP' live in the File submenu, not the app menu", () => {
+    const template = buildMenuTemplate(actions, { isMac: true }, "listening");
+    const appMenu = template.find((i) => i.role === "appMenu");
+    const fileMenu = template.find((i) => i.label === "File");
+    expect(fileMenu).toBeTruthy();
+    const fileSubmenu = fileMenu!.submenu as MenuItemConstructorOptions[];
+    expect(fileSubmenu.some((i) => i.label === "MCP: Listening")).toBe(true);
+    expect(fileSubmenu.some((i) => i.label === "Use this app for MCP")).toBe(true);
+    // The real app menu's submenu is left as Electron's own default (no
+    // `submenu` provided here at all) — confirms these items were never
+    // routed there.
+    expect(appMenu?.submenu).toBeUndefined();
+  });
 });
+
+function mcpStatusLabelFor(status: "listening" | "not-published" | "off" | "error"): string {
+  switch (status) {
+    case "listening":
+      return "MCP: Listening";
+    case "not-published":
+      return "MCP: Not published (another server is running)";
+    case "off":
+      return "MCP: Off";
+    case "error":
+      return "MCP: Failed to start (see \"Use this app for MCP\")";
+  }
+}

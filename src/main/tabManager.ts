@@ -1,5 +1,18 @@
 export type UITheme = "light" | "dark";
 
+// Mirrors src/main/mcp/service.ts's McpStatus — defined here (rather than
+// imported from mcp/service.ts) so this module stays free of any dependency
+// on the MCP bridge; service.ts is the one that imports this type. "off"
+// means no local MCP server is running at all (should not normally happen
+// once the app has started); "not-published" means our server is up but a
+// different local process already owns the handshake file; "listening"
+// means our server is the one a plugin/agent will discover; "error" means
+// something that should have worked (binding the loopback server, writing
+// the handshake file) failed outright — this must render as visibly as
+// "not-published" (never as hidden "off"), since the status surface is the
+// only diagnostic a packaged user has (finding 1/3).
+export type McpStatus = "listening" | "not-published" | "off" | "error";
+
 export interface TabViewHandle {
   loadURL(url: string): void;
   setBounds(bounds: { x: number; y: number; width: number; height: number }): void;
@@ -9,6 +22,14 @@ export interface TabViewHandle {
   focus(): void;
   onDocumentTitleChanged(cb: (title: string) => void): void;
   onThemeChanged(cb: (theme: UITheme) => void): void;
+  /**
+   * The webContents id backing this tab — a different id space from
+   * TabManager's own sequential `id` (TabsSnapshot.activeId etc). Needed by
+   * window.ts to translate "the currently active tab" into the id
+   * mcp/service.ts's tab registry is actually keyed by (see
+   * McpService.registerTab/setActiveTab, both keyed by webContents.id).
+   */
+  getWebContentsId(): number;
 }
 
 export interface TabState {
@@ -20,6 +41,7 @@ export interface TabsSnapshot {
   tabs: TabState[];
   activeId: number | null;
   activeTheme: UITheme | null;
+  mcpStatus: McpStatus;
 }
 
 interface TabEntry {
@@ -37,6 +59,7 @@ export class TabManager {
   private tabs: TabEntry[] = [];
   private activeId: number | null = null;
   private nextId = 1;
+  private mcpStatus: McpStatus = "off";
   private lastLayout: { content: { width: number; height: number }; tabbarHeight: number } | null =
     null;
 
@@ -109,7 +132,21 @@ export class TabManager {
       tabs: this.tabs.map(({ id, title }) => ({ id, title })),
       activeId: this.activeId,
       activeTheme: this.tabs.find((tab) => tab.id === this.activeId)?.theme ?? null,
+      mcpStatus: this.mcpStatus,
     };
+  }
+
+  /**
+   * Reports the desktop MCP bridge's publish status (see mcp/service.ts)
+   * into the snapshot the tab bar renders — the tab strip's only diagnostic,
+   * since a packaged app has no terminal. TabManager does not know anything
+   * about MCP itself; window.ts is the one wiring service status changes
+   * here, the same way it wires editor theme/title callbacks above.
+   */
+  setMcpStatus(status: McpStatus): void {
+    if (status === this.mcpStatus) return;
+    this.mcpStatus = status;
+    this.emit();
   }
 
   layout(content: { width: number; height: number }, tabbarHeight: number): void {

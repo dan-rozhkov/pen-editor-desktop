@@ -11,6 +11,7 @@ function makeFakeView() {
     destroy: vi.fn(),
     sendMenuCommand: vi.fn(),
     focus: vi.fn(),
+    getWebContentsId: vi.fn(() => 0),
     onDocumentTitleChanged: vi.fn((cb: (t: string) => void) => {
       titleCb = cb;
     }),
@@ -127,6 +128,28 @@ describe("TabManager", () => {
     expect(tm.getSnapshot().activeTheme).toBe("dark");
     tm.activate(lightTab);
     expect(tm.getSnapshot().activeTheme).toBe("light");
+  });
+
+  it("defaults mcpStatus to off and reports it in the snapshot", () => {
+    tm.newTab();
+    expect(tm.getSnapshot().mcpStatus).toBe("off");
+  });
+
+  it("setMcpStatus updates the snapshot and emits a fresh state", () => {
+    tm.newTab();
+    const before = states.length;
+    tm.setMcpStatus("listening");
+    expect(tm.getSnapshot().mcpStatus).toBe("listening");
+    expect(states.length).toBe(before + 1);
+    expect(states[states.length - 1].mcpStatus).toBe("listening");
+  });
+
+  it("setMcpStatus is a no-op (no extra emit) when the status is unchanged", () => {
+    tm.newTab();
+    tm.setMcpStatus("not-published");
+    const before = states.length;
+    tm.setMcpStatus("not-published");
+    expect(states.length).toBe(before);
   });
 
   it("layout positions all tab views below the tab bar", () => {

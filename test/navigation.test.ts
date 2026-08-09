@@ -4,6 +4,7 @@ import {
   attachNavigationPolicy,
   attachOfflineFallback,
   attachLocalOnlyPolicy,
+  shouldDropMcpRegistration,
 } from "../src/main/navigation";
 
 const ORIGIN = "https://pen-editor.onrender.com";
@@ -94,6 +95,21 @@ describe("attachLocalOnlyPolicy", () => {
     attachLocalOnlyPolicy(contents as never);
     expect(contents.open("https://example.com/x")).toEqual({ action: "deny" });
     expect(contents.open("javascript:alert(1)")).toEqual({ action: "deny" });
+  });
+});
+
+describe("shouldDropMcpRegistration", () => {
+  it("drops registration on a real cross-document main-frame navigation (page reload)", () => {
+    expect(shouldDropMcpRegistration({ isMainFrame: true, isSameDocument: false })).toBe(true);
+  });
+
+  it("does NOT drop registration on a same-document main-frame navigation (SPA pushState/replaceState/hash)", () => {
+    expect(shouldDropMcpRegistration({ isMainFrame: true, isSameDocument: true })).toBe(false);
+  });
+
+  it("ignores subframe navigations regardless of same-document-ness", () => {
+    expect(shouldDropMcpRegistration({ isMainFrame: false, isSameDocument: false })).toBe(false);
+    expect(shouldDropMcpRegistration({ isMainFrame: false, isSameDocument: true })).toBe(false);
   });
 });
 

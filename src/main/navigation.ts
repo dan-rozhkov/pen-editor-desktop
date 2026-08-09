@@ -48,6 +48,20 @@ export function attachLocalOnlyPolicy(contents: WebContents): void {
   contents.setWindowOpenHandler(() => ({ action: "deny" }));
 }
 
+/**
+ * Whether a `did-start-navigation` event is a real cross-document
+ * navigation of the tab's main frame — the only case where the MCP bridge
+ * registration should be dropped (see window.ts / mcp/service.ts's
+ * handleTabNavigated). Electron fires `did-start-navigation` for
+ * same-document navigations too (`pushState`/`replaceState`/hash changes),
+ * which `pen-editor` uses as a react-router SPA; those never reload the
+ * page's JS, so the existing `registerMcpBridge()` registration is still
+ * live and must not be treated as gone.
+ */
+export function shouldDropMcpRegistration(details: { isMainFrame: boolean; isSameDocument: boolean }): boolean {
+  return details.isMainFrame && !details.isSameDocument;
+}
+
 /** did-fail-load hook: main-frame load failures (except ERR_ABORTED -3) load the offline page. */
 export function attachOfflineFallback(contents: WebContents, offlineFile: string): void {
   contents.on(

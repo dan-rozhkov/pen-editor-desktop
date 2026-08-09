@@ -79,6 +79,14 @@ body {
 }
 .tab .close::before { transform: rotate(45deg); }
 .tab .close::after { transform: rotate(-45deg); }
+.mcp-status {
+  flex: 0 0 8px; width: 8px; height: 8px; margin: auto 6px;
+  border-radius: 50%; app-region: no-drag; -webkit-app-region: no-drag;
+}
+.mcp-status--off { display: none; }
+.mcp-status--listening { background: #34c759; }
+.mcp-status--not-published { background: #ff9f0a; }
+.mcp-status--error { background: #ff3b30; }
 #new-tab {
   position: relative; flex: 0 0 38px; width: 38px;
   border: 0; background: none; color: var(--text); cursor: pointer;

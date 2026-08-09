@@ -6,7 +6,7 @@
   "private": true,
   "scripts": {
     "build:ts": "tsc",
-    "copy-static": "mkdir -p dist/tabbar dist/assets && cp src/tabbar/tabbar.html src/tabbar/tabbar.css dist/tabbar/ && cp assets/offline.html dist/assets/",
+    "copy-static": "mkdir -p dist/tabbar dist/assets dist/main/mcp && cp src/tabbar/tabbar.html src/tabbar/tabbar.css dist/tabbar/ && cp assets/offline.html dist/assets/ && cp src/main/mcp/toolManifest.json dist/main/mcp/",
     "build": "npm run build:ts && npm run copy-static",
     "start": "npm run build && electron .",
     "dev": "PEN_DESKTOP_URL=http://localhost:5173/app npm run start",
