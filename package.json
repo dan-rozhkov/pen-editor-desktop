@@ -1,6 +1,6 @@
 {
   "name": "pen-editor-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pineapple Editor desktop app",
   "main": "dist/main/index.js",
   "private": true,
@@ -26,8 +26,18 @@
   "build": {
     "appId": "com.peneditor.desktop",
     "productName": "Pineapple Editor",
-    "directories": { "output": "release" },
-    "files": ["dist/**"],
-    "mac": { "target": ["dmg", "zip"], "category": "public.app-category.graphics-design" }
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.graphics-design"
+    }
   }
 }
