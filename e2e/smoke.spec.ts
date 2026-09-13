@@ -6,7 +6,7 @@ let server: http.Server;
 let baseUrl: string;
 
 test.beforeAll(async () => {
-  server = http.createServer((req, res) => {
+  server = http.createServer((_req, res) => {
     res.setHeader("content-type", "text/html");
     res.end(`<!doctype html><title>Stub Editor</title>
       <h1 id="ready">stub-editor</h1>

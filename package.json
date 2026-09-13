@@ -10,9 +10,10 @@
     "build": "npm run build:ts && npm run copy-static",
     "start": "npm run build && electron .",
     "dev": "PEN_DESKTOP_URL=http://localhost:5173/app npm run start",
-    "lint": "tsc --noEmit",
+    "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.e2e.json",
     "test": "vitest run",
     "test:e2e": "npm run build && playwright test",
+    "test:e2e:live": "npm run build && playwright test --config playwright.live.config.ts",
     "dist": "npm run build && electron-builder --mac"
   },
   "devDependencies": {

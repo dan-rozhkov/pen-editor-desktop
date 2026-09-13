@@ -16,7 +16,8 @@ npm start         # build + launch Electron
 npm run dev       # same, against http://localhost:5173
 npm test          # Vitest unit tests (test/)
 npm run test:e2e  # build + Playwright _electron smoke (stub HTTP server, no network)
-npm run lint      # tsc --noEmit
+npm run test:e2e:live  # opt-in: same shell against the DEPLOYED frontend/backend (network)
+npm run lint      # tsc --noEmit (src) + tsc -p tsconfig.e2e.json (e2e/ + configs)
 npm run dist      # electron-builder → release/ (mac dmg+zip, unsigned)
 ```
 
@@ -35,6 +36,39 @@ false`; the only bridge is `src/preload/tab.ts`. The whole package compiles
 as CommonJS (sandboxed preloads can't be ESM) — no `.js` import-extension
 rule here. `src/tabbar/renderer.ts` must compile to a plain script (no
 `exports`/`require` in the output — it runs in a CSP'd `<script src>`).
+
+## The live gate (what the stub suites cannot see)
+
+Every other suite here runs against a local stub page, which is what makes
+them hermetic — and also what makes them blind to the one failure that
+actually breaks users: the shell staying correct while the **deployed** bundle
+stops holding up its end. A bundle that no longer calls `registerMcpBridge`,
+a renamed command-palette id, a chat endpoint that 4xxs from the app's
+origin — none of that is visible to `npm test`, `npm run test:e2e`, or even
+pen-editor's cross-repo contract tests, which check that repo's *working
+tree*, never what is serving at `pen-editor.onrender.com`.
+
+`e2e/live-prod.spec.ts` closes that gap: it launches the real shell against
+the production editor URL and asserts the deployed bundle answers all three
+contracts — MCP (`initialize` → `tools/list` → a real `batch_design` mutation
+read back out of the live scene graph, plus two-tab `tabId` routing), the
+forwarded menu ids (each export command must produce its download), and the
+backend (`/api/models` plus a real streaming `/api/chat` turn from the app's
+origin). It is excluded from the default run by `playwright.config.ts`'s
+`testIgnore` and gets its own `playwright.live.config.ts`; run it with
+`npm run test:e2e:live` after a frontend/backend deploy and before cutting a
+release. It needs network and spends real tokens on one short chat turn.
+`PEN_LIVE_URL` points it at a staging deploy; `PEN_LIVE_BACKEND`, when set,
+additionally asserts which backend the bundle is built against.
+
+`tsconfig.json` compiles only `src/` into `dist/`, so `e2e/` and the config
+files are type-checked by `tsconfig.e2e.json` — Playwright transpiles without
+checking types, and without that second pass nothing checks them at all.
+
+Only the export half of the menu contract is exercised: `file-open` and
+`file-import-tokens` open a native file dialog, which would block the run
+forever. Downloads are cancelled in a `will-download` handler for the same
+reason.
 
 ## Cross-repo contract (menu command ids)
 

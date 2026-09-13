@@ -1,0 +1,12 @@
+{
+  // Type-checks the test/tooling files the build config deliberately excludes
+  // (it compiles only src/ into dist/). Without this they are checked nowhere:
+  // Playwright transpiles without type-checking.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": ["e2e", "playwright.config.ts", "playwright.live.config.ts", "vitest.config.ts"]
+}
