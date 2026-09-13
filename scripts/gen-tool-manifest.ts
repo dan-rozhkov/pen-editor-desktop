@@ -201,6 +201,193 @@ export const TOOLS: ToolDef[] = [
     }),
   },
   {
+    name: "read_comments",
+    description:
+      "Read canvas comment threads (feedback pins). Each thread carries an order number, resolved state, and — when anchored to a node — that node's id and name. Pass threadId for a single thread, or omit it to list all threads.",
+    inputSchema: bridged({
+      properties: {
+        includeResolved: {
+          type: "boolean",
+          description: "Whether to include resolved threads. Default false (only unresolved threads are returned).",
+        },
+        threadId: { type: "string", description: "If given, return only this thread instead of the full list." },
+      },
+    }),
+  },
+  {
+    name: "reply_comment",
+    description: "Append a reply to an existing comment thread, authored by you (the agent).",
+    inputSchema: bridged({
+      properties: {
+        threadId: { type: "string", description: "The id of the thread to reply to." },
+        text: { type: "string", description: "The reply message body (non-empty)." },
+      },
+      required: ["threadId", "text"],
+    }),
+  },
+  {
+    name: "resolve_comment",
+    description: "Mark a comment thread as resolved, after you've addressed what it asked for.",
+    inputSchema: bridged({
+      properties: { threadId: { type: "string", description: "The id of the thread to resolve." } },
+      required: ["threadId"],
+    }),
+  },
+  {
+    name: "leave_comment",
+    description:
+      "Drop one or more comment pins authored by you (the agent), each starting a new thread. Pass a batch of 1-50 comments in one call. Each item needs nodeId (anchors to that node's center) or both x and y (a world-space canvas point). Returns the created thread numbers.",
+    inputSchema: bridged({
+      properties: {
+        comments: {
+          type: "array",
+          description: "Batch of comments to leave in this single call (1-50). Each item needs nodeId, or both x and y.",
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: "object",
+            properties: {
+              nodeId: {
+                type: "string",
+                description:
+                  "Id of the node to anchor this comment to (pin defaults to the node's center). Omit if using x/y instead.",
+              },
+              x: {
+                type: "number",
+                description: "World-space canvas x coordinate for the pin. Required together with y when nodeId is omitted.",
+              },
+              y: {
+                type: "number",
+                description: "World-space canvas y coordinate for the pin. Required together with x when nodeId is omitted.",
+              },
+              text: { type: "string", description: "The comment body (non-empty). Be specific and actionable." },
+            },
+            required: ["text"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["comments"],
+    }),
+  },
+  {
+    name: "read_embed_html",
+    description:
+      "Read part of an existing embed node's HTML without pulling the whole document into context. `outline` (default) returns the tag structure with attributes intact and text/deep subtrees elided; `grep` returns lines matching a literal substring with surrounding context, for byte-exact anchors to feed edit_embed_html; `full` returns the entire HTML. Always read before editing.",
+    inputSchema: bridged({
+      properties: {
+        nodeId: { type: "string", description: "Id of the embed node to read." },
+        mode: {
+          type: "string",
+          description: "outline = elided structure, grep = matches for `pattern`, full = entire HTML.",
+          enum: ["outline", "grep", "full"],
+          default: "outline",
+        },
+        pattern: {
+          type: "string",
+          description: "Literal substring to search for (not a regex). Required when mode is 'grep'.",
+        },
+        contextLines: {
+          type: "number",
+          description: "Lines of context around each grep match.",
+          minimum: 0,
+          maximum: 20,
+          default: 2,
+        },
+        maxDepth: {
+          type: "number",
+          description: "Nesting depth kept in outline mode; deeper subtrees are summarized.",
+          minimum: 1,
+          maximum: 12,
+          default: 4,
+        },
+      },
+      required: ["nodeId"],
+    }),
+  },
+  {
+    name: "edit_embed_html",
+    description:
+      "Apply targeted text edits to an existing embed node's HTML instead of rewriting the whole screen. Each edit replaces an exact substring (oldString) with newString; an empty newString deletes the match. ALWAYS use this — never rewrite the whole htmlContent — when changing part of a screen that already exists: rewriting a whole screen costs thousands of tokens and silently drifts parts you weren't asked to touch. Read the fragment with read_embed_html first.",
+    inputSchema: bridged({
+      properties: {
+        nodeId: { type: "string", description: "Id of the embed node to edit." },
+        edits: {
+          type: "array",
+          description: "Edits applied in order, each against the result of the previous one.",
+          minItems: 1,
+          maxItems: 20,
+          items: {
+            type: "object",
+            properties: {
+              oldString: {
+                type: "string",
+                description: "Exact substring to find. Must occur exactly once unless replaceAll is true.",
+              },
+              newString: {
+                type: "string",
+                description: "Replacement text. An empty string deletes the matched fragment.",
+              },
+              replaceAll: {
+                type: "boolean",
+                description: "Replace every occurrence instead of requiring a unique match.",
+              },
+            },
+            required: ["oldString", "newString"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["nodeId", "edits"],
+    }),
+  },
+  {
+    name: "rename_layers",
+    description:
+      "Rename one or more layers (nodes) to logical, human-readable names in a single undoable step. Read each layer's type, text content, and hierarchy first (via get_editor_state / batch_get) so the names reflect each layer's role.",
+    inputSchema: bridged({
+      properties: {
+        renames: {
+          type: "array",
+          description: "One {id, name} entry per layer to rename.",
+          minItems: 1,
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "The node id to rename." },
+              name: { type: "string", description: "The new layer name (non-empty)." },
+            },
+            required: ["id", "name"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["renames"],
+    }),
+  },
+  {
+    name: "find_empty_space_on_canvas",
+    description:
+      "Find available empty space on the canvas in a given direction with the specified dimensions. Use before inserting new top-level frames to avoid overlapping.",
+    inputSchema: bridged({
+      properties: {
+        direction: {
+          type: "string",
+          description: "Direction to search for empty space.",
+          enum: ["top", "right", "bottom", "left"],
+        },
+        width: { type: "number", description: "Required width of empty space." },
+        height: { type: "number", description: "Required height of empty space." },
+        padding: { type: "number", description: "Minimum distance from other elements." },
+        nodeId: {
+          type: "string",
+          description: "Reference node to search around. Omit to search around entire canvas content.",
+        },
+      },
+      required: ["direction", "width", "height", "padding"],
+    }),
+  },
+  {
     name: "get_guidelines",
     description: "Get design guidelines and rules for a topic (design-system, code, table, tailwind, landing-page).",
     inputSchema: bridged({
@@ -253,20 +440,27 @@ function writeManifest(): void {
 function verifyAgainstBackend(): string[] {
   const backendRoot = resolve(__dirname, "..", "..", "pen-editor-backend");
   const serverPath = join(backendRoot, "src", "mcp", "server.ts");
+  const toolNamesPath = join(backendRoot, "src", "mcp", "toolNames.ts");
   const toolsPath = join(backendRoot, "src", "ai", "tools.ts");
-  if (!existsSync(serverPath) || !existsSync(toolsPath)) {
+  if (!existsSync(serverPath) || !existsSync(toolNamesPath) || !existsSync(toolsPath)) {
     console.log("No sibling ../pen-editor-backend checkout found — skipping drift verification.");
     return [];
   }
 
   const serverSrc = readFileSync(serverPath, "utf8");
+  const toolNamesSrc = readFileSync(toolNamesPath, "utf8");
   const toolsSrc = readFileSync(toolsPath, "utf8");
   const problems: string[] = [];
 
   for (const t of TOOLS) {
     if (t.name === "list_editor_tabs") continue; // deliberate divergence, never in the backend
-    if (!serverSrc.includes(`"${t.name}"`)) {
-      problems.push(`Tool "${t.name}" no longer appears (by name) in pen-editor-backend/src/mcp/server.ts.`);
+    // Tool names/descriptions are registered in server.ts (registerTool calls);
+    // the BRIDGED_TOOL_NAMES/STATIC_TOOL_NAMES lists themselves live in
+    // toolNames.ts (server.ts just re-exports them) — check both.
+    if (!serverSrc.includes(`"${t.name}"`) && !toolNamesSrc.includes(`"${t.name}"`)) {
+      problems.push(
+        `Tool "${t.name}" no longer appears (by name) in pen-editor-backend/src/mcp/server.ts or toolNames.ts.`,
+      );
     }
   }
 
