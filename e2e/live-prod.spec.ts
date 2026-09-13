@@ -54,19 +54,22 @@ test("live: the deployed bundle answers the shell's menu, MCP and backend contra
   // it is what tells us which backend the bundle is really built against.
   const pageErrors: string[] = [];
   const requestedUrls: string[] = [];
-  const editorPages: Page[] = [];
+  const allPages: Page[] = [];
   const attach = (page: Page) => {
     page.on("pageerror", (e) => pageErrors.push(String(e)));
     page.on("request", (r) => requestedUrls.push(r.url()));
-    if (page.url().startsWith(editorOrigin)) editorPages.push(page);
+    allPages.push(page);
   };
   app.windows().forEach(attach);
   app.on("window", attach);
-  // `app.windows()` can only be read after the first await, so a window
-  // created in between is picked up by the listener above, never missed.
+  // A window can surface before its URL is set (about:blank), so classify by
+  // the URL each page reports *now*, never by the one it had at creation.
+  // `app.windows()` can only be read after the first await; a window created
+  // in between is picked up by the listener above, never missed.
+  const editorPages = () => allPages.filter((p) => p.url().startsWith(editorOrigin));
   const nextEditorPage = async (seen: number) => {
-    await expect.poll(() => editorPages.length, { timeout: 60_000 }).toBeGreaterThan(seen);
-    return editorPages[seen];
+    await expect.poll(() => editorPages().length, { timeout: 60_000 }).toBeGreaterThan(seen);
+    return editorPages()[seen];
   };
 
   try {
@@ -174,44 +177,59 @@ test("live: the deployed bundle answers the shell's menu, MCP and backend contra
     expect(rootNames).toContain("LiveCheck");
 
     // ---- tabs: a second tab registers too, and tabId routing separates them ----
+    type TabEntry = { tabId: number; mcpReady: boolean };
+    const readyTabIds = async () => {
+      const res = await callTool("list_editor_tabs", {});
+      if (!res.ok) return null;
+      return ((JSON.parse(res.text).tabs ?? []) as TabEntry[]).filter((t) => t.mcpReady).map((t) => t.tabId);
+    };
+    // Pin the tab that owns the mutation *before* opening another one, so the
+    // two are told apart by identity rather than by position in a list whose
+    // order and length are not guaranteed. `tabId` is the webContents id.
+    const mutatedTabIds = await readyTabIds();
+    expect(mutatedTabIds, "the first tab never registered its MCP bridge").toHaveLength(1);
+    const mutatedTabId = (mutatedTabIds as number[])[0];
+
     await tabbarPage.click("#new-tab");
     const secondPage = await nextEditorPage(1);
     await secondPage.waitForSelector("canvas", { timeout: 60_000 });
 
-    let tabsText = "";
+    // `callTool`, not `expectTool`: a callback that throws is NOT retried by
+    // expect.poll (the call sits outside its try/catch), so a transient
+    // failure while the tab comes up would abort instead of polling.
+    let ready: number[] = [];
     await expect
       .poll(
         async () => {
-          tabsText = await expectTool("list_editor_tabs", {});
-          return (JSON.parse(tabsText).tabs ?? []).filter((t: { mcpReady: boolean }) => t.mcpReady).length;
+          ready = (await readyTabIds()) ?? [];
+          return ready.length;
         },
         { timeout: 30_000 },
       )
       .toBe(2);
-    const [firstTab, secondTab] = (JSON.parse(tabsText).tabs as { tabId: number }[]).map((t) => t.tabId);
+    const otherTabId = ready.find((id) => id !== mutatedTabId);
+    expect(otherTabId, `the new tab never registered (ready: ${JSON.stringify(ready)})`).toBeDefined();
+
     const rootsOf = async (tabId: number) => {
       const state = await expectTool("get_editor_state", { include_schema: false, tabId });
       return ((JSON.parse(state).roots ?? []) as { name: string }[]).map((n) => n.name);
     };
-    // The frame was created in the first tab only: explicit routing must not
+    // The frame was created in the pinned tab only: explicit routing must not
     // silently answer from whichever tab happens to be focused. Asserted per
     // tab so an unrelated extra root cannot masquerade as a routing failure.
-    expect(await rootsOf(firstTab)).toContain("LiveCheck");
-    expect(await rootsOf(secondTab)).not.toContain("LiveCheck");
+    expect(await rootsOf(mutatedTabId)).toContain("LiveCheck");
+    expect(await rootsOf(otherTabId as number)).not.toContain("LiveCheck");
 
     // ---- menu ids the shell forwards still resolve in the deployed bundle ----
-    // menu.ts sends to whichever tab is active; addressing the first tab's own
-    // webContents keeps this an assertion about the bundle's handler rather
-    // than about which tab happens to be focused after the step above.
-    const firstTabWcId = await app.evaluate(
-      ({ webContents }, origin) => webContents.getAllWebContents().find((wc) => wc.getURL().startsWith(origin))?.id,
-      editorOrigin,
-    );
-    expect(firstTabWcId).toBeDefined();
+    // menu.ts sends to whichever tab is active; addressing the pinned tab by
+    // its own webContents id (what `list_editor_tabs` reports) keeps this an
+    // assertion about the bundle's handler rather than about focus — and
+    // unlike `getAllWebContents().find(...)`, it cannot quietly resolve to the
+    // other tab, whose order Electron does not guarantee.
     for (const { id } of EXPORT_COMMANDS) {
       await app.evaluate(({ webContents }, { wcId, commandId }) => {
         webContents.fromId(wcId)?.send("menu:command", commandId);
-      }, { wcId: firstTabWcId as number, commandId: id });
+      }, { wcId: mutatedTabId, commandId: id });
     }
     let downloads: string[] = [];
     await expect
@@ -235,11 +253,19 @@ test("live: the deployed bundle answers the shell's menu, MCP and backend contra
     // on startup), not from a constant here — a deploy pointed at the wrong
     // backend is one of the breakages this gate exists to catch, and a
     // hardcoded URL would happily probe a backend the app never uses.
+    // Match the bundle's OWN endpoints by pathname: posthog-js also issues
+    // cross-origin `/api/...` calls (surveys, early access features), and
+    // whichever landed first would otherwise be mistaken for the backend.
+    const BACKEND_PATHS = ["/api/models", "/api/skills", "/api/user-skills", "/api/chat"];
     let backendOrigin = "";
     await expect
       .poll(
         () => {
-          const apiCall = requestedUrls.find((u) => u.includes("/api/") && !u.startsWith(editorOrigin));
+          const apiCall = requestedUrls.find((u) => {
+            if (u.startsWith(editorOrigin)) return false;
+            const { pathname } = new URL(u);
+            return BACKEND_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+          });
           backendOrigin = apiCall ? new URL(apiCall).origin : "";
           return backendOrigin;
         },

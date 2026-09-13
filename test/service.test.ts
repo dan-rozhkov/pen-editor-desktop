@@ -79,7 +79,7 @@ describe("McpService", () => {
 
   it("publishes when the existing handshake owner is stale", async () => {
     const existing: HandshakeFileEntry = { url: "http://127.0.0.1:9999/api/mcp", token: "b".repeat(64), port: 9999 };
-    deps = makeDeps({ readHandshakeEntry: vi.fn(async () => existing), probeOwner: vi.fn(async () => "stale") });
+    deps = makeDeps({ readHandshakeEntry: vi.fn(async () => existing), probeOwner: vi.fn(async (): Promise<"live" | "stale"> => "stale") });
     const service = new McpService(deps);
     await service.start();
 
@@ -90,7 +90,7 @@ describe("McpService", () => {
 
   it("does not publish when a live owner is found", async () => {
     const existing: HandshakeFileEntry = { url: "http://127.0.0.1:9999/api/mcp", token: "b".repeat(64), port: 9999 };
-    deps = makeDeps({ readHandshakeEntry: vi.fn(async () => existing), probeOwner: vi.fn(async () => "live") });
+    deps = makeDeps({ readHandshakeEntry: vi.fn(async () => existing), probeOwner: vi.fn(async (): Promise<"live" | "stale"> => "live") });
     const service = new McpService(deps);
     await service.start();
 
@@ -105,7 +105,7 @@ describe("McpService", () => {
 
   it("force-publish overrides a live owner", async () => {
     const existing: HandshakeFileEntry = { url: "http://127.0.0.1:9999/api/mcp", token: "b".repeat(64), port: 9999 };
-    deps = makeDeps({ readHandshakeEntry: vi.fn(async () => existing), probeOwner: vi.fn(async () => "live") });
+    deps = makeDeps({ readHandshakeEntry: vi.fn(async () => existing), probeOwner: vi.fn(async (): Promise<"live" | "stale"> => "live") });
     const service = new McpService(deps);
     await service.start();
     expect(service.getStatus()).toBe("not-published");
@@ -212,7 +212,7 @@ describe("McpService", () => {
 
   it("stop() does not remove the handshake file when we never published (not-published)", async () => {
     const existing: HandshakeFileEntry = { url: "http://127.0.0.1:9999/api/mcp", token: "b".repeat(64), port: 9999 };
-    deps = makeDeps({ readHandshakeEntry: vi.fn(async () => existing), probeOwner: vi.fn(async () => "live") });
+    deps = makeDeps({ readHandshakeEntry: vi.fn(async () => existing), probeOwner: vi.fn(async (): Promise<"live" | "stale"> => "live") });
     const service = new McpService(deps);
     await service.start();
 
@@ -340,7 +340,7 @@ describe("McpService", () => {
     let watcherCount = 0;
     deps = makeDeps({
       readHandshakeEntry: vi.fn(async () => existing),
-      probeOwner: vi.fn(async () => "live"),
+      probeOwner: vi.fn(async (): Promise<"live" | "stale"> => "live"),
       watchHandshakeFile: vi.fn(() => {
         const id = ++watcherCount;
         return { close: () => closes.push(id) };
@@ -508,7 +508,7 @@ describe("McpService", () => {
         readCount++;
         return readCount === 1 ? existing : null; // start() sees the owner; the later watcher check sees it gone
       }),
-      probeOwner: vi.fn(async () => "live"),
+      probeOwner: vi.fn(async (): Promise<"live" | "stale"> => "live"),
       watchHandshakeFile: vi.fn((cb: () => void) => {
         watcherCb = cb;
         return { close: vi.fn() };

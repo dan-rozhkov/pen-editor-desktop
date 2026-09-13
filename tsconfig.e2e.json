@@ -8,5 +8,5 @@
     "rootDir": ".",
     "types": ["node"]
   },
-  "include": ["e2e", "playwright.config.ts", "playwright.live.config.ts", "vitest.config.ts"]
+  "include": ["e2e", "test", "playwright.config.ts", "playwright.live.config.ts", "vitest.config.ts"]
 }
