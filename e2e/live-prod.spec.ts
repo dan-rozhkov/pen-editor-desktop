@@ -84,9 +84,12 @@ test("live: the deployed bundle answers the shell's menu, MCP and backend contra
     });
 
     const editorPage = await nextEditorPage(0);
-    const tabbarPage =
-      app.windows().find((p) => p.url().endsWith("/tabbar/tabbar.html")) ??
-      (await app.waitForEvent("window", { predicate: (p) => p.url().endsWith("/tabbar/tabbar.html") }));
+    // Same about:blank race as the editor pages: a window that already exists
+    // but has not settled on its URL is missed by `find`, and `waitForEvent`
+    // only ever fires for *new* windows — so poll what each page reports now.
+    const tabbarPages = () => allPages.filter((p) => p.url().endsWith("/tabbar/tabbar.html"));
+    await expect.poll(() => tabbarPages().length, { timeout: 60_000 }).toBeGreaterThan(0);
+    const tabbarPage = tabbarPages()[0];
 
     // The real editor is up — not the showcase gallery, not an error page.
     await editorPage.waitForSelector("canvas", { timeout: 60_000 });
@@ -128,6 +131,17 @@ test("live: the deployed bundle answers the shell's menu, MCP and backend contra
       if (res.result.isError) return { ok: false as const, detail: `tool error: ${text.slice(0, 300)}` };
       return { ok: true as const, text };
     };
+    // `post` throws on a non-2xx, a network error or a malformed body, and a
+    // callback that throws is NOT retried by expect.poll — so every polled
+    // call goes through this, which turns any failure into an outcome while
+    // keeping its reason for the eventual message.
+    const tryTool = async (name: string, args: Record<string, unknown>) => {
+      try {
+        return await callTool(name, args);
+      } catch (e) {
+        return { ok: false as const, detail: String(e) };
+      }
+    };
     const expectTool = async (name: string, args: Record<string, unknown>) => {
       const res = await callTool(name, args);
       expect(res.ok, `${name} failed — ${res.ok ? "" : res.detail}`).toBe(true);
@@ -157,7 +171,7 @@ test("live: the deployed bundle answers the shell's menu, MCP and backend contra
     let lastDetail = "never attempted";
     let registered = false;
     for (const deadline = Date.now() + 30_000; Date.now() < deadline; ) {
-      const res = await callTool("get_editor_state", { include_schema: false });
+      const res = await tryTool("get_editor_state", { include_schema: false });
       if (res.ok) {
         registered = true;
         break;
@@ -178,16 +192,31 @@ test("live: the deployed bundle answers the shell's menu, MCP and backend contra
 
     // ---- tabs: a second tab registers too, and tabId routing separates them ----
     type TabEntry = { tabId: number; mcpReady: boolean };
+    let tabsDetail = "never attempted";
     const readyTabIds = async () => {
-      const res = await callTool("list_editor_tabs", {});
-      if (!res.ok) return null;
+      const res = await tryTool("list_editor_tabs", {});
+      if (!res.ok) {
+        tabsDetail = res.detail;
+        return null;
+      }
       return ((JSON.parse(res.text).tabs ?? []) as TabEntry[]).filter((t) => t.mcpReady).map((t) => t.tabId);
+    };
+    // Retried: a single transient list_editor_tabs failure here must not be
+    // reported as "the tab never registered" — the call above just proved it did.
+    const readyTabIdsRetrying = async (timeoutMs: number) => {
+      let ids: number[] | null = null;
+      for (const deadline = Date.now() + timeoutMs; Date.now() < deadline; ) {
+        ids = await readyTabIds();
+        if (ids) return ids;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      return ids;
     };
     // Pin the tab that owns the mutation *before* opening another one, so the
     // two are told apart by identity rather than by position in a list whose
     // order and length are not guaranteed. `tabId` is the webContents id.
-    const mutatedTabIds = await readyTabIds();
-    expect(mutatedTabIds, "the first tab never registered its MCP bridge").toHaveLength(1);
+    const mutatedTabIds = await readyTabIdsRetrying(10_000);
+    expect(mutatedTabIds, `list_editor_tabs did not report the open tab — ${tabsDetail}`).toHaveLength(1);
     const mutatedTabId = (mutatedTabIds as number[])[0];
 
     await tabbarPage.click("#new-tab");
@@ -226,6 +255,12 @@ test("live: the deployed bundle answers the shell's menu, MCP and backend contra
     // assertion about the bundle's handler rather than about focus — and
     // unlike `getAllWebContents().find(...)`, it cannot quietly resolve to the
     // other tab, whose order Electron does not guarantee.
+    // Without this, a stale id makes all three sends no-op and the run dies
+    // 20s later blaming the deployed bundle for a command it never received.
+    expect(
+      await app.evaluate(({ webContents }, wcId) => !!webContents.fromId(wcId), mutatedTabId),
+      `tab ${mutatedTabId} is no longer a live webContents`,
+    ).toBe(true);
     for (const { id } of EXPORT_COMMANDS) {
       await app.evaluate(({ webContents }, { wcId, commandId }) => {
         webContents.fromId(wcId)?.send("menu:command", commandId);
@@ -264,7 +299,9 @@ test("live: the deployed bundle answers the shell's menu, MCP and backend contra
           const apiCall = requestedUrls.find((u) => {
             if (u.startsWith(editorOrigin)) return false;
             const { pathname } = new URL(u);
-            return BACKEND_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+            // endsWith, not ===: the backend base URL is free-form, so a
+            // deploy pointed at https://host/v1 emits /v1/api/models.
+            return BACKEND_PATHS.some((p) => pathname.endsWith(p) || pathname.includes(`${p}/`));
           });
           backendOrigin = apiCall ? new URL(apiCall).origin : "";
           return backendOrigin;
