@@ -33,8 +33,6 @@ const CANNED_EDITOR_STATE = {
   roots: [],
   selectedIds: [],
   selectedNodes: [],
-  reusableComponents: [],
-  documentComponents: [],
   viewport: { x: 0, y: 0, zoom: 1 },
   fileName: "Launch Deck.pen",
   marker: CANNED_MARKER,
