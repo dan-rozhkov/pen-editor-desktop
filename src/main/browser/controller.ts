@@ -12,19 +12,44 @@
 // how pen-editor's own toolHandlers behave everywhere else in this project
 // (and how dispatcher.ts's ToolCallResult never rejects either).
 
+import { randomUUID } from "node:crypto";
 import { decideBrowserNavigation } from "../navigation";
-import { ARGS_MARKER, FIND_IMAGES_JS, CLICK_JS, TYPE_JS, SCROLL_JS } from "./pageScripts";
+import { ARGS_MARKER, FIND_IMAGES_JS, CLICK_JS, TYPE_JS, SCROLL_JS, SNAPSHOT_JS, PERFORM_JS } from "./pageScripts";
 
-const SCRIPT_TEMPLATES = { FIND_IMAGES_JS, CLICK_JS, TYPE_JS, SCROLL_JS } as const;
+const SCRIPT_TEMPLATES = { FIND_IMAGES_JS, CLICK_JS, TYPE_JS, SCROLL_JS, SNAPSHOT_JS, PERFORM_JS } as const;
+
+/** Spec `2026-09-18-browse-task-jev-loop-design.md` §1: the element table is
+ * the whole request payload for /api/browse/step, so an uncapped snapshot on
+ * a big page is both slow and expensive. */
+export const MAX_SNAPSHOT_ELEMENTS = 120;
 
 /** Below the frontend's own per-tool timeout, so the agent gets a real "the
  * browser command timed out" message rather than a generic tool-loop
  * timeout with no detail. */
 export const BROWSER_COMMAND_TIMEOUT_MS = 20_000;
 
-/** How long a click is given to actually start a navigation before its
- * pre-click url/title are trusted (see runClick's doc comment / finding 7). */
+/** How long a click is given to show *any* sign of having started a
+ * navigation — either `getURL()` moving away from its pre-click value, or
+ * `isLoading()` going true — before concluding it didn't navigate at all
+ * (see runClick's doc comment / finding 7 and settleAfterClick below).
+ * `isLoading()` is the signal that actually keeps this bound usable: real
+ * Electron navigations flip it true essentially as soon as the navigation is
+ * requested (`did-start-loading`), long before a slow commit would move
+ * `getURL()` — relying on the URL alone is what made addendum F's "commit
+ * takes longer than 300ms" case possible. */
 const CLICK_SETTLE_TIMEOUT_MS = 300;
+
+/** Addendum F ("Load, not commit"): once a click is seen to have started a
+ * navigation (settleAfterClick's first phase), how long to wait for the
+ * document to actually finish loading (`isLoading()` back to false) before
+ * trusting the result's url/title. Navigation *commit* — the point
+ * `getURL()` changes — is not the same as laid out: a following
+ * browse_find_images measures an unlaid-out document at commit, where every
+ * getBoundingClientRect() is 0x0, so the size filter drops every image and
+ * the tool reports count: 0. This is a separate, longer budget than
+ * CLICK_SETTLE_TIMEOUT_MS because a real page load is routinely slower than
+ * the time it takes just to observe that a navigation started at all. */
+const CLICK_LOAD_SETTLE_TIMEOUT_MS = 8_000;
 
 /** A browser tab's page, as the controller needs to drive it. Electron-free
  * — window.ts supplies the real implementation over a WebContentsView. */
@@ -38,6 +63,14 @@ export interface BrowserPageHandle {
   reload(): void;
   canGoBack(): boolean;
   canGoForward(): boolean;
+  /**
+   * True while the page is mid-navigation (Electron's
+   * `webContents.isLoading()`). Addendum F: the post-click settle wait uses
+   * this to wait for the document to actually finish loading rather than
+   * merely for `getURL()` to change at navigation commit — see
+   * CLICK_LOAD_SETTLE_TIMEOUT_MS's doc comment.
+   */
+  isLoading(): boolean;
 }
 
 export interface BrowserTarget {
@@ -94,8 +127,98 @@ function isActAction(value: unknown): value is ActAction {
   return value === "click" || value === "type" || value === "scroll" || value === "back" || value === "forward";
 }
 
+type PerformOperation = "CLICK" | "TYPE_TEXT" | "SELECT" | "SCROLL_UP" | "SCROLL_DOWN";
+
+const PERFORM_OPERATIONS: readonly PerformOperation[] = ["CLICK", "TYPE_TEXT", "SELECT", "SCROLL_UP", "SCROLL_DOWN"];
+
+// Addendum A: index is required only for these three — SCROLL_UP/SCROLL_DOWN
+// act on the page itself and must be accepted with no index at all (they
+// used to always fail at the bridge because index was unconditionally
+// required). WAIT is not a member of PerformOperation/PERFORM_OPERATIONS at
+// all — it is never sent to perform(); the frontend loop handles it locally
+// by sleeping and taking a fresh snapshot.
+const INDEXED_OPERATIONS: readonly PerformOperation[] = ["CLICK", "TYPE_TEXT", "SELECT"];
+
+function isPerformOperation(value: unknown): value is PerformOperation {
+  return typeof value === "string" && (PERFORM_OPERATIONS as readonly string[]).includes(value);
+}
+
+interface ValidatedPerformArgs {
+  /** Present only for CLICK/TYPE_TEXT/SELECT — see INDEXED_OPERATIONS. */
+  index?: number;
+  operation: PerformOperation;
+  text?: string;
+  snapshotId: string;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function validatePerformArgs(args: unknown): { ok: true; value: ValidatedPerformArgs } | { ok: false; error: string } {
+  if (!isRecord(args)) {
+    return { ok: false, error: "browse perform requires an object." };
+  }
+  if (typeof args.snapshotId !== "string" || args.snapshotId.trim() === "") {
+    return { ok: false, error: 'browse perform requires a non-empty string "snapshotId".' };
+  }
+  if (!isPerformOperation(args.operation)) {
+    return {
+      ok: false,
+      error: `browse perform requires an "operation" of ${PERFORM_OPERATIONS.join(", ")} (got ${JSON.stringify(args.operation)}).`,
+    };
+  }
+  const operation = args.operation;
+  const indexRequired = (INDEXED_OPERATIONS as readonly string[]).includes(operation);
+  let index: number | undefined;
+  if (indexRequired) {
+    if (!isNonNegativeInteger(args.index)) {
+      return { ok: false, error: `browse perform "${operation}" requires a non-negative integer "index".` };
+    }
+    index = args.index;
+  } else if (args.index !== undefined) {
+    // Not required for SCROLL_UP/SCROLL_DOWN, but if the caller passed one
+    // anyway, it must still be well-formed rather than silently ignored.
+    if (!isNonNegativeInteger(args.index)) {
+      return { ok: false, error: `browse perform "${operation}" requires "index" to be a non-negative integer when provided.` };
+    }
+    index = args.index;
+  }
+  if (args.text !== undefined && typeof args.text !== "string") {
+    return { ok: false, error: 'browse perform requires "text" to be a string when provided.' };
+  }
+  if ((operation === "TYPE_TEXT" || operation === "SELECT") && typeof args.text !== "string") {
+    return { ok: false, error: `browse perform "${operation}" requires a string "text".` };
+  }
+  return {
+    ok: true,
+    value: { index, operation, text: args.text, snapshotId: args.snapshotId },
+  };
+}
+
 export class BrowserController {
   private readonly timeoutMs: number;
+
+  // The most recent snapshot() call's id, together with the exact page it
+  // was taken against — perform() compares its caller-supplied snapshotId
+  // (and the *current* page) against this single slot and hard-errors on
+  // either mismatch — see "Credentials"/§1 of the jev-loop design doc: a
+  // page that re-rendered between snapshot and perform must never be
+  // silently acted on, so this is a rejection, not a best-effort lookup.
+  //
+  // Finding 5: this used to be a bare snapshotId string, justified by "there
+  // is only ever one browser tab" — but File ▸ New Browser Tab and popups
+  // both make more than one possible, and `browserHandle()` (window.ts)
+  // picks active-if-browser else last-created, so which tab a command hits
+  // depends on what the user clicked. Without the page identity check, a
+  // snapshot on tab A followed by a perform after the user switched to tab B
+  // would pass this staleness check (the id matches) and only then fail
+  // in-page against tab B's DOM with a misleading "no element at index N"
+  // error, instead of an accurate cross-tab message. Comparing the page
+  // reference itself needs no new "tab id" concept in the Electron-free
+  // BrowserPageHandle — window.ts hands back the same object for a given tab
+  // on every call, and a different object for a different tab.
+  private lastSnapshot: { id: string; page: BrowserPageHandle } | null = null;
 
   constructor(
     private readonly target: BrowserTarget,
@@ -186,7 +309,7 @@ export class BrowserController {
     const previousUrl = page.getURL();
     const result = await this.executeScript(page, "CLICK_JS", { target });
     if ("error" in result) return result;
-    await this.waitForUrlChange(page, previousUrl, CLICK_SETTLE_TIMEOUT_MS);
+    await this.settleAfterClick(page, previousUrl);
     return { ...result, url: page.getURL(), title: page.getTitle() };
   }
 
@@ -208,6 +331,63 @@ export class BrowserController {
     );
   }
 
+  /** Walks the current page and returns an indexed element table (jev-loop
+   * design doc §1). Generates a fresh snapshotId every call — the id is
+   * both embedded in the page (SNAPSHOT_JS stamps each surviving element
+   * with `data-pen-snap="<id>:<index>"`) and returned to the caller, and
+   * becomes the *only* snapshotId perform() will accept until the next
+   * snapshot() call. */
+  async snapshot(): Promise<BrowserCommandResult> {
+    return this.withCommandTimeout(async () => {
+      const page = this.target.currentPage();
+      if (!page) return errorResult("No browser tab is open — call browse_open first.");
+      const snapshotId = randomUUID();
+      const result = await this.executeScript(page, "SNAPSHOT_JS", {
+        snapshotId,
+        maxElements: MAX_SNAPSHOT_ELEMENTS,
+      });
+      if ("error" in result) return result;
+      this.lastSnapshot = { id: snapshotId, page };
+      return { ...result, snapshotId };
+    });
+  }
+
+  /** Acts by index against the elements table from the caller's most recent
+   * snapshot() — see validatePerformArgs and lastSnapshot's doc comment for
+   * the staleness/cross-tab guard. CLICK reuses the same post-click settle
+   * wait as browse_act's click (runClick above). */
+  async perform(args: unknown): Promise<BrowserCommandResult> {
+    const validated = validatePerformArgs(args);
+    if (!validated.ok) return errorResult(validated.error);
+    const { index, operation, text, snapshotId } = validated.value;
+
+    // Resolved before the staleness check (not inside withCommandTimeout)
+    // so the check can compare it against the page snapshot() actually ran
+    // against — see lastSnapshot's doc comment / finding 5.
+    const page = this.target.currentPage();
+    if (!page) return errorResult("No browser tab is open — call browse_open first.");
+
+    if (!this.lastSnapshot || snapshotId !== this.lastSnapshot.id || page !== this.lastSnapshot.page) {
+      return errorResult(
+        this.lastSnapshot && snapshotId === this.lastSnapshot.id
+          ? "Stale snapshotId — a different browser tab is now active. Call browser snapshot again on this tab before perform."
+          : "Stale or unknown snapshotId — the page may have changed since that snapshot. Call browser snapshot again before perform.",
+      );
+    }
+
+    return this.withCommandTimeout(async () => {
+      if (operation === "CLICK") {
+        const previousUrl = page.getURL();
+        const result = await this.executeScript(page, "PERFORM_JS", { snapshotId, index, operation, text });
+        if ("error" in result) return result;
+        await this.settleAfterClick(page, previousUrl);
+        return { ...result, url: page.getURL(), title: page.getTitle() };
+      }
+
+      return this.executeScript(page, "PERFORM_JS", { snapshotId, index, operation, text });
+    });
+  }
+
   private async runOnPage(
     script: "FIND_IMAGES_JS" | "CLICK_JS" | "TYPE_JS" | "SCROLL_JS",
     scriptArgs: Record<string, unknown>,
@@ -219,7 +399,7 @@ export class BrowserController {
 
   private async executeScript(
     page: BrowserPageHandle,
-    script: "FIND_IMAGES_JS" | "CLICK_JS" | "TYPE_JS" | "SCROLL_JS",
+    script: "FIND_IMAGES_JS" | "CLICK_JS" | "TYPE_JS" | "SCROLL_JS" | "SNAPSHOT_JS" | "PERFORM_JS",
     scriptArgs: Record<string, unknown>,
   ): Promise<BrowserCommandResult> {
     // A function replacer, not a plain string — String.prototype.replace's
@@ -243,12 +423,52 @@ export class BrowserController {
    * never actually changes (e.g. a fake in tests, or a click that doesn't
    * navigate) doesn't stall a command. `maxWaitMs` defaults to 2s (used by
    * back/forward, which always navigate); a smaller bound is passed for
-   * click, where most invocations don't navigate at all. */
-  private async waitForUrlChange(page: BrowserPageHandle, previousUrl: string, maxWaitMs = 2_000): Promise<void> {
+   * click, where most invocations don't navigate at all. Returns whether the
+   * URL actually changed, so callers can tell "navigated" from "timed out
+   * without navigating". */
+  private async waitForUrlChange(page: BrowserPageHandle, previousUrl: string, maxWaitMs = 2_000): Promise<boolean> {
     const deadline = Date.now() + Math.min(this.timeoutMs, maxWaitMs);
     while (page.getURL() === previousUrl && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
+    return page.getURL() !== previousUrl;
+  }
+
+  /** Polls until `page.isLoading()` goes false, bounded by `maxWaitMs` (and
+   * always by the overall command timeout). Used only once a navigation has
+   * actually been observed (see settleAfterClick) — a page that never
+   * navigated has no load to wait for. */
+  private async waitForLoadStop(page: BrowserPageHandle, maxWaitMs: number): Promise<void> {
+    const deadline = Date.now() + Math.min(this.timeoutMs, maxWaitMs);
+    while (page.isLoading() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  /** First phase of settleAfterClick: polls (bounded, short) for *any* sign
+   * that the click started a navigation — `getURL()` moving, or
+   * `isLoading()` going true, whichever comes first. Checking `isLoading()`
+   * too (not just the URL) is what makes CLICK_SETTLE_TIMEOUT_MS's short
+   * bound viable for a real, slow-to-commit navigation — see its doc
+   * comment. Returns whether a navigation was observed at all. */
+  private async waitForNavigationStart(page: BrowserPageHandle, previousUrl: string, maxWaitMs: number): Promise<boolean> {
+    const deadline = Date.now() + Math.min(this.timeoutMs, maxWaitMs);
+    const navigating = () => page.getURL() !== previousUrl || page.isLoading();
+    while (!navigating() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return navigating();
+  }
+
+  /** Addendum F ("Load, not commit"): waits for a click's navigation, if any,
+   * to actually finish loading — not merely for `getURL()` to change at
+   * commit. First waits (bounded, short) to see whether the click started a
+   * navigation at all; only if it did does it then wait (bounded, longer)
+   * for that navigation to finish loading. A click that never navigates
+   * settles after the short bound alone, same as before this fix. */
+  private async settleAfterClick(page: BrowserPageHandle, previousUrl: string): Promise<void> {
+    const navigated = await this.waitForNavigationStart(page, previousUrl, CLICK_SETTLE_TIMEOUT_MS);
+    if (navigated) await this.waitForLoadStop(page, CLICK_LOAD_SETTLE_TIMEOUT_MS);
   }
 
   private async withCommandTimeout(fn: () => Promise<BrowserCommandResult>): Promise<BrowserCommandResult> {

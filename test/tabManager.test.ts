@@ -38,6 +38,7 @@ function makeFakeView() {
     canGoBack: vi.fn(() => false),
     canGoForward: vi.fn(() => false),
     executeJavaScript: vi.fn(() => Promise.resolve(null)),
+    isLoading: vi.fn(() => false),
     emitTitle: (t: string) => titleCb?.(t),
     emitTheme: (theme: "light" | "dark") => themeCb?.(theme),
     emitNavState: (s: { url: string; title: string; canGoBack: boolean; canGoForward: boolean }) => navCb?.(s),
@@ -339,5 +340,61 @@ describe("resolveMcpActiveTab", () => {
 
   it("falls back to the last editor tab id when there is no active tab at all (activeKind null)", () => {
     expect(resolveMcpActiveTab(null, null, 3)).toBe(3);
+  });
+});
+
+// Finding 1 regression: closing the active *editor* tab whose neighbor is a
+// browser tab used to leave TabManager's internal "last editor tab" pointer
+// aimed at the now-destroyed webContents id — the exact regression
+// resolveMcpActiveTab was added to prevent, surfacing as "No editor tab is
+// open" MCP errors even while another editor tab is still open elsewhere in
+// the strip.
+describe("mcpActiveWebContentsId (finding 1)", () => {
+  let views: ReturnType<typeof makeFakeView>[];
+  let tm: TabManager;
+  let nextWebContentsId: number;
+
+  beforeEach(() => {
+    views = [];
+    nextWebContentsId = 1;
+    tm = new TabManager({
+      createView: (_kind: TabKind) => {
+        const v = makeFakeView();
+        v.getWebContentsId.mockReturnValue(nextWebContentsId++);
+        views.push(v);
+        return v;
+      },
+      editorUrl: "https://pen-editor.onrender.com",
+      onStateChanged: () => {},
+    });
+  });
+
+  it("repoints to a surviving editor tab when the active editor tab is closed next to a browser tab", () => {
+    tm.newTab("editor"); // views[0] — editorA, will survive
+    tm.newTab("browser"); // views[1]
+    const editorB = tm.newTab("editor"); // views[2] — active, will be closed
+    // Close the active editor tab — its neighbor (idx - 1) is the browser tab.
+    tm.closeTab(editorB);
+
+    const snapshot = tm.getSnapshot();
+    expect(snapshot.activeKind).toBe("browser");
+    // Must repoint to the surviving editor tab (editorA), never to editorB's
+    // now-destroyed webContents id, and never null while an editor tab is
+    // still open — the exact "No editor tab is open" regression.
+    expect(snapshot.mcpActiveWebContentsId).toBe(views[0].getWebContentsId());
+  });
+
+  it("nulls out mcpActiveWebContentsId when the last editor tab is closed and no other editor tab exists", () => {
+    tm.newTab("browser");
+    const onlyEditor = tm.newTab("editor");
+    tm.activate(onlyEditor);
+    tm.closeTab(onlyEditor);
+
+    // closeTab always respawns... no: respawning only happens when *all*
+    // tabs (including browser tabs) are gone. Here the browser tab survives,
+    // so no editor tab remains and mcpActiveWebContentsId must be null.
+    const snapshot = tm.getSnapshot();
+    expect(snapshot.tabs.some((t) => t.kind === "editor")).toBe(false);
+    expect(snapshot.mcpActiveWebContentsId).toBeNull();
   });
 });

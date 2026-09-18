@@ -2,7 +2,6 @@ import path from "node:path";
 import { BaseWindow, WebContentsView, Menu, ipcMain, nativeTheme, shell } from "electron";
 import {
   TabManager,
-  resolveMcpActiveTab,
   type TabKind,
   type TabViewHandle,
   type TabsSnapshot,
@@ -96,23 +95,13 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
   void tabbarView.webContents.loadFile(path.join(__dirname, "../tabbar/tabbar.html"));
 
   const systemTheme = (): UITheme => (nativeTheme.shouldUseDarkColors ? "dark" : "light");
-  // Tracks the webContents id of the last *editor* tab that was active —
-  // browser tabs are never registered with the MCP bridge (see
-  // resolveMcpActiveTab's doc comment / finding 1), so this is what
-  // mcpService keeps pointing at while a browser tab is focused instead of
-  // being nulled out.
-  let lastEditorTabId: number | null = null;
   const pushState = (s: TabsSnapshot) => {
-    // s.activeId is TabManager's own sequential tab id — a different id
-    // space from the webContents id mcp/service.ts's tab registry is keyed
-    // by (registerTab/handleRegister/handleResult all key off
-    // event.sender.id / webContents.id). Translate via the active view's
-    // handle rather than passing s.activeId straight through, or every real
-    // tools/call would 404 against a tab that was never registered under
-    // that id — see TabViewHandle.getWebContentsId's doc comment.
-    const activeWebContentsId = tabs.activeHandle()?.getWebContentsId() ?? null;
-    if (s.activeKind === "editor" && activeWebContentsId !== null) lastEditorTabId = activeWebContentsId;
-    mcpService.setActiveTab(resolveMcpActiveTab(s.activeKind, activeWebContentsId, lastEditorTabId));
+    // s.mcpActiveWebContentsId is computed by TabManager itself (see
+    // TabsSnapshot's doc comment / finding 1) — window.ts just forwards it,
+    // rather than tracking "last editor tab" locally, since only TabManager
+    // sees a tab's destruction in time to repoint away from a dying editor
+    // tab before this snapshot goes out.
+    mcpService.setActiveTab(s.mcpActiveWebContentsId);
     tabbarView.webContents.send("tabbar:state", s);
     tabbarView.webContents.send("tabbar:theme", s.activeTheme ?? systemTheme());
     // The active tab's kind can change (activating a browser tab, or an
@@ -258,6 +247,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         canGoBack: () => view.webContents.navigationHistory.canGoBack(),
         canGoForward: () => view.webContents.navigationHistory.canGoForward(),
         executeJavaScript: (code) => view.webContents.executeJavaScript(code),
+        isLoading: () => view.webContents.isLoading(),
       };
     },
   });
@@ -292,6 +282,10 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         return browserController.act(payload.args);
       case "findImages":
         return browserController.findImages(payload.args);
+      case "snapshot":
+        return browserController.snapshot();
+      case "perform":
+        return browserController.perform(payload.args);
       default:
         return { error: `Unknown browser command: ${payload.command}` };
     }

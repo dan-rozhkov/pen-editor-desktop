@@ -102,7 +102,7 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below
 - `mcp:call` main→tab only (`{callId, tool, args}`)
 - `mcp:result` tab→main (`{callId, type: "tool_result" | "tool_error", result?, error?}`)
-- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages", args}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; see "Built-in browser tab" below
+- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform", args}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; see "Built-in browser tab" below
 
 Both ends of every channel live in this repo — the editor only ever touches
 the preload API, never a channel name. `test/ipcContract.test.ts` scans `src/`
@@ -180,10 +180,25 @@ must not blindly forward the active tab's webContents id to
 the MCP dispatcher at an id it never registered, breaking every
 un-targeted `tools/call` ("No editor tab is open") even while an editor tab
 is still open elsewhere in the strip. `tabManager.ts`'s pure
-`resolveMcpActiveTab(activeKind, activeWebContentsId, lastEditorTabId)`
+`resolveMcpActiveTab(activeKind, activeWebContentsId, lastEditorWebContentsId)`
 reports the active id only while an editor tab is active, and otherwise
-keeps pointing at whichever editor tab was last active (never nulled out)
-— `window.ts` just tracks `lastEditorTabId` and calls it.
+keeps pointing at whichever editor tab was last active (never nulled out).
+`TabManager` owns `lastEditorWebContentsId` itself (updated in `setActive`
+whenever an editor tab becomes active) and folds `resolveMcpActiveTab`'s
+result into every `TabsSnapshot` as `mcpActiveWebContentsId` — `window.ts`
+just forwards that field to `mcpService.setActiveTab()`, keeping the
+decision itself out of `window.ts`. This used to be a `let` tracked
+directly in `window.ts`'s `pushState`, updated only when an editor tab
+became active — which meant closing the *active* editor tab while its
+neighbor was a browser tab left it pointing at that closed tab's
+webContents id (nothing had refreshed it, since the newly active tab was a
+browser tab), and the closed tab's own `view.destroy()` → `unregisterTab()`
+would then null out `McpService`'s active tab entirely, even with another
+editor tab still open elsewhere in the strip. `TabManager.closeTab()` now
+repoints `lastEditorWebContentsId` to another surviving editor tab (or
+`null`) the moment the tab it was pointing at closes, before that tab's
+view is ever destroyed and before the closing snapshot goes out — see the
+`mcpActiveWebContentsId (finding 1)` tests in `test/tabManager.test.ts`.
 
 The `browser:command` `ipcMain.handle` in `window.ts` checks the sender
 against `TabManager.isEditorTab()` — the single source of truth for "which
@@ -200,11 +215,13 @@ unlike editor tabs' `attachNavigationPolicy`.
 surface, in the same Electron-free, injected-handle style as
 `mcp/dispatcher.ts` — a `BrowserTarget`/`BrowserPageHandle` pair stands in
 for the real tab, so it is unit-tested under plain Node/vitest
-(`test/browserController.test.ts`). Its three commands (`open`, `act`,
-`findImages`) are exposed to an *editor* tab's preload as
-`window.penDesktop.browser.{open,act,findImages}`
+(`test/browserController.test.ts`). Its five commands (`open`, `act`,
+`findImages`, `snapshot`, `perform`) are exposed to an *editor* tab's
+preload as `window.penDesktop.browser.{open,act,findImages,snapshot,perform}`
 (`src/preload/tab.ts`), each forwarding to the single `browser:command`
-`ipcMain.handle` in `window.ts`. That handler is the trust boundary — every
+`ipcMain.handle` in `window.ts` — `snapshot`/`perform` are a second pair of
+commands on that *same* channel, not a new IPC channel, so
+`test/ipcContract.test.ts`'s table is unaffected by them. That handler is the trust boundary — every
 argument ultimately comes from an LLM tool call, so `BrowserController`
 validates shape and type itself rather than trusting the caller, and every
 command resolves (never rejects), coming back as `{ error: string }` on any
@@ -224,20 +241,97 @@ history is a silent no-op that used to report false success after burning
 the full settle wait. `click`'s page script reads
 `location.href`/`document.title` synchronously, so if the click itself
 starts a navigation it can report the page just left rather than the one
-landed on; `runClick` gives it a short (300ms) bounded window to actually
-navigate before trusting the result's url/title, the same
-`waitForUrlChange` poll `back`/`forward` use with their longer (2s) bound.
-`pageScripts.ts`'s `findByText` (used by `click`/`type` when `target` isn't
-a CSS selector) searches genuinely clickable elements
+landed on. `BrowserController.settleAfterClick` (used by both `act`'s click
+and `perform`'s `CLICK`) settles in two phases — a short (300ms,
+`CLICK_SETTLE_TIMEOUT_MS`) bounded wait for *any* sign a navigation started
+at all (`getURL()` moving, or `TabViewHandle.isLoading()` going true —
+checking `isLoading()` too is what keeps the short bound viable, since real
+Electron flips it true essentially as soon as a navigation is requested,
+well before a slow network response would actually move `getURL()`), then,
+only if a navigation was observed, a longer (8s, `CLICK_LOAD_SETTLE_TIMEOUT_MS`)
+bounded wait for `isLoading()` to go back to `false` before trusting the
+result's url/title. This two-phase shape (addendum F, "Load, not commit",
+in `docs/superpowers/specs/2026-09-18-browse-task-jev-loop-design.md`)
+replaced settling at navigation *commit* alone: a following
+`browse_find_images` would otherwise measure an unlaid-out document at
+commit, where every `getBoundingClientRect()` is 0×0, so the size filter
+dropped every image and the tool reported `count: 0` even on an image-rich
+page. `back`/`forward` still use the plain `waitForUrlChange` poll with
+their longer (2s) bound — addendum F's fix is scoped to the click path.
+`pageScripts.ts`'s `findByText` (used by `click`/`type`, tried *before* a
+CSS-selector lookup — see below) searches genuinely clickable elements
 (`a, button, [role="button"], input, select, textarea, [onclick]`) before
 falling back to any element, and within each candidate set prefers the
 innermost match over an enclosing wrapper — a plain document-order scan
 picks the outermost element whose trimmed `textContent` matches, typically
 a wrapper `<div>` around the real control, and `el.click()` on that wrapper
-never reaches a descendant's listener. `FIND_IMAGES_JS`'s `consider()` only
+never reaches a descendant's listener. `CLICK_JS`/`TYPE_JS` try `target` as
+visible text (`findByText`) *before* trying it as a CSS selector
+(`findBySelector`) — the reverse order used to be the default, and a bare
+word like "Search", "Map", "Details", "Select", "Menu", "Address" or
+"Video" is also a syntactically valid CSS *type* selector, matching the
+real `<search>`/`<map>`/`<details>`/`<select>`/`<menu>`/`<address>`/`<video>`
+element on the page (when present) instead of the button carrying that
+label — while still reporting `{ matched: target }` as if the click had
+landed correctly. A real CSS selector essentially never equals some
+element's trimmed `textContent`, so the fallback to `findBySelector` still
+fires for genuine selectors. `FIND_IMAGES_JS`'s `consider()` only
 accepts `http:`/`https:` resolved URLs — an inline `data:`/`blob:` image has
 no size cap and would otherwise flood chat history with base64 (this repo's
 been bitten by that twice before).
+
+`snapshot`/`perform` (design doc `2026-09-18-browse-task-jev-loop-design.md`
+§1, corrections in its "Addendum, 2026-09-18" section) exist to drive a
+cheap per-step decision model (Jev) instead of a full chat turn per click —
+see that doc's §2–§3 for the backend/frontend halves, which are a separate
+change in `pen-editor-backend`/`pen-editor`. `snapshot` runs `SNAPSHOT_JS`
+(a port of jev-ultrafast's `snapshot.js` concepts, credited in
+`pageScripts.ts`'s header) and returns an indexed table of visible,
+interactive elements (tag, role, label, ops, options, capped at
+`MAX_SNAPSHOT_ELEMENTS = 120`, nearest-to-viewport first) plus a freshly
+minted `snapshotId`. Addendum D governs what an element may report as
+`value`: only a non-password `input[type=text]`, `input[type=search]`, or
+`textarea` — truncated to 100 chars, and only when `autocomplete` isn't one
+of `cc-*`, `one-time-code`, `current-password`, `new-password` — reports its
+live `value` at all; every other element (a password input included)
+reports `hasValue: true|false` instead, never the content. The original
+rule guarded only `type=password`, so an autofilled card number in a
+`type=text` field, an email, or a phone number left the page in the element
+table under `value`. `options` on a `<select>` is capped at 100 entries,
+each truncated to 120 chars, in the page script itself — the payload must
+be valid by construction, not rely on the backend to reject an oversized
+country dropdown. `SNAPSHOT_JS` also stamps each surviving element with a
+`data-pen-snap="<snapshotId>:<index>"` attribute. **Invariant:** `perform`
+only ever acts against the *same* snapshot its index came from, taken
+against the *same* browser tab. `BrowserController` keeps `{ id, page }` for
+the most recent `snapshot()` call — both the id and the exact
+`BrowserPageHandle` object it ran against — and `perform` hard-errors
+(before running anything) unless the caller's `snapshotId` matches *and*
+`target.currentPage()` is reference-equal to that same page, rather than
+falling back to the page's `data-pen-snap` lookup (which would itself fail
+closed if the marked node were gone, but the controller-level check makes
+the failure an explicit, immediate error instead of a "no element"
+surprise). The page-identity half exists because File ▸ New Browser Tab and
+popups both mean more than one browser tab can exist, and
+`TabManager.browserHandle()` picks active-if-browser else last-created —
+without it, a snapshot taken on one tab followed by a `perform` after the
+user (or a popup) switched to a different tab would pass the id check
+(nothing else took a new snapshot) and only then fail in-page against the
+wrong tab's DOM with a misleading "no element at index N" message, instead
+of an accurate cross-tab error. This is deliberate either way: a page that
+re-rendered — or a browser tab that changed — between `snapshot` and
+`perform` must never be acted on silently — that would be the one way the
+indexed design goes quietly wrong. `perform`'s argument shape (addendum A):
+`index` is required only for `CLICK`/`TYPE_TEXT`/`SELECT` — `SCROLL_UP` and
+`SCROLL_DOWN` act on the page itself and are accepted with no `index` at
+all (an unconditional requirement used to make scrolling always fail at the
+bridge); `WAIT` is not a member of `PerformOperation` at all and is never
+sent to `perform` — the frontend loop handles it locally by sleeping and
+taking a fresh snapshot. `perform`'s `CLICK` operation reuses the same
+two-phase post-click settle wait as `act`'s click (`settleAfterClick`, see
+above); `SCROLL_UP`/`SCROLL_DOWN` need no element lookup. `snapshot`/`perform`
+are loop internals only — they are never exposed as their own `penTools`
+entries, reachable solely through this preload.
 
 The address row (a second, 32px-tall row inside the *existing* tab-bar
 `WebContentsView` — no new view, no new preload) is shown only while the

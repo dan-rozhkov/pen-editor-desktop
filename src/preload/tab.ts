@@ -114,6 +114,13 @@ const browser = {
     ipcRenderer.invoke("browser:command", { command: "act", args }),
   findImages: (args: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke("browser:command", { command: "findImages", args }),
+  // jev-loop design doc `2026-09-18-browse-task-jev-loop-design.md` §1 —
+  // same "no validation here, main is the trust boundary" shape as the
+  // three commands above; snapshot/perform stay loop internals reached only
+  // through this preload, never offered to the model as their own penTools.
+  snapshot: (): Promise<unknown> => ipcRenderer.invoke("browser:command", { command: "snapshot" }),
+  perform: (args: Record<string, unknown>): Promise<unknown> =>
+    ipcRenderer.invoke("browser:command", { command: "perform", args }),
 };
 
 const api = {

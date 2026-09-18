@@ -71,6 +71,14 @@ export interface TabViewHandle {
   canGoBack(): boolean;
   canGoForward(): boolean;
   executeJavaScript(code: string): Promise<unknown>;
+  /**
+   * True while the tab's webContents is mid-navigation
+   * (`webContents.isLoading()`). Feeds `BrowserController`'s post-click
+   * settle wait (addendum F, "Load, not commit" — see browser/controller.ts)
+   * so it waits for the document to actually finish loading rather than
+   * merely for `getURL()` to change at navigation commit.
+   */
+  isLoading(): boolean;
 }
 
 /** What TabManager.browserHandle() hands to the browser controller (see window.ts). */
@@ -116,6 +124,21 @@ export interface TabsSnapshot {
   activeKind: TabKind | null;
   activeTheme: UITheme | null;
   mcpStatus: McpStatus;
+  /**
+   * The webContents id `McpService.setActiveTab` should be told about —
+   * `resolveMcpActiveTab` applied to this manager's own up-to-date state
+   * (see that function's doc comment). Computed here, not in window.ts,
+   * because only TabManager sees a tab's destruction (closeTab calls
+   * `view.destroy()` itself) in time to repoint away from a dying editor
+   * tab before this snapshot goes out — window.ts just forwards the value
+   * (finding 1: `lastEditorWebContentsId` used to live in window.ts as a
+   * `let`, updated only from pushState, so closing the active editor tab
+   * next to a browser tab left it pointing at a webContents id that was
+   * about to be destroyed; `unregisterTab` would then null out
+   * `McpService`'s active tab even though another editor tab was still
+   * open elsewhere in the strip).
+   */
+  mcpActiveWebContentsId: number | null;
 }
 
 interface TabEntry {
@@ -140,6 +163,15 @@ export class TabManager {
   private activeId: number | null = null;
   private nextId = 1;
   private mcpStatus: McpStatus = "off";
+  /**
+   * The webContents id of the last *editor* tab that was active — feeds
+   * `mcpActiveWebContentsId` in the snapshot via `resolveMcpActiveTab`.
+   * Updated whenever an editor tab becomes active (`setActive`), and
+   * repointed at another surviving editor tab (or nulled) the moment the
+   * tab it points at is closed (`closeTab`), before that closed tab's view
+   * is ever destroyed — see the doc comment on `TabsSnapshot.mcpActiveWebContentsId`.
+   */
+  private lastEditorWebContentsId: number | null = null;
   private lastLayout: { content: { width: number; height: number }; tabbarHeight: number } | null =
     null;
 
@@ -200,6 +232,16 @@ export class TabManager {
     const idx = this.tabs.findIndex((t) => t.id === id);
     if (idx === -1) return;
     const [closed] = this.tabs.splice(idx, 1);
+    if (closed.kind === "editor" && this.lastEditorWebContentsId === closed.view.getWebContentsId()) {
+      // The tab lastEditorWebContentsId was pointing at is the one being
+      // destroyed — repoint to another surviving editor tab, or null if
+      // none remain. Must happen before setActive/emit below and before
+      // closed.view.destroy() at the bottom of this method, so the
+      // snapshot (and McpService, via window.ts's pushState) never see a
+      // dead webContents id (finding 1).
+      const other = this.tabs.find((t) => t.kind === "editor");
+      this.lastEditorWebContentsId = other ? other.view.getWebContentsId() : null;
+    }
     if (this.tabs.length === 0) {
       this.activeId = null;
       this.newTab("editor"); // newTab emits — closing the last tab always respawns an editor tab.
@@ -253,6 +295,7 @@ export class TabManager {
 
   getSnapshot(): TabsSnapshot {
     const active = this.tabs.find((t) => t.id === this.activeId);
+    const activeWebContentsId = active?.view.getWebContentsId() ?? null;
     return {
       tabs: this.tabs.map(({ id, title, kind, url, canGoBack, canGoForward }) => ({
         id,
@@ -266,6 +309,7 @@ export class TabManager {
       activeKind: active?.kind ?? null,
       activeTheme: active?.theme ?? null,
       mcpStatus: this.mcpStatus,
+      mcpActiveWebContentsId: resolveMcpActiveTab(active?.kind ?? null, activeWebContentsId, this.lastEditorWebContentsId),
     };
   }
 
@@ -330,7 +374,9 @@ export class TabManager {
   private setActive(id: number): void {
     this.activeId = id;
     for (const tab of this.tabs) tab.view.setVisible(tab.id === id);
-    this.tabs.find((t) => t.id === id)?.view.focus();
+    const active = this.tabs.find((t) => t.id === id);
+    active?.view.focus();
+    if (active?.kind === "editor") this.lastEditorWebContentsId = active.view.getWebContentsId();
     this.emit();
   }
 
