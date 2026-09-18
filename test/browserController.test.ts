@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   BrowserController,
+  BROWSER_COMMAND_TIMEOUT_MS,
+  BROWSER_OPEN_TIMEOUT_MS,
   type BrowserPageHandle,
   type BrowserTarget,
 } from "../src/main/browser/controller";
@@ -75,6 +77,12 @@ function makeFakePage(overrides: Partial<BrowserPageHandle> = {}): BrowserPageHa
     canGoBack: vi.fn(() => true),
     canGoForward: vi.fn(() => true),
     isLoading: vi.fn(() => false),
+    // DOM-readiness fix (`open`'s doc comment): resolves immediately by
+    // default, modeling the common case where the DOM becomes ready (and,
+    // for these instant fakes, the full load also settles) essentially
+    // synchronously. Tests exercising the "DOM ready, full load still
+    // pending/failing" split override this and/or `loadURL` explicitly.
+    onceDomReady: vi.fn(() => Promise.resolve()),
     ...overrides,
   };
   return page;
@@ -93,14 +101,135 @@ function makeFakeTarget(page: BrowserPageHandle | null): BrowserTarget & { ensur
 
 describe("BrowserController", () => {
   describe("open", () => {
-    it("navigates the ensured page and returns its final url/title", async () => {
+    it("navigates the ensured page and returns its final url/title, with loaded: true once the full load settles", async () => {
       const page = makeFakePage({ getURL: vi.fn(() => "https://example.com/final") });
       const target = makeFakeTarget(page);
       const controller = new BrowserController(target);
       const result = await controller.open({ url: "https://example.com" });
       expect(target.ensurePage).toHaveBeenCalled();
       expect(page.loadURL).toHaveBeenCalledWith("https://example.com");
-      expect(result).toEqual({ url: "https://example.com/final", title: "Example" });
+      // Old behavior asserted `{ url, title }` alone, encoding "open always
+      // means fully loaded" — no longer true (that's the defect this fix
+      // addresses), so the expectation now includes `loaded`.
+      expect(result).toEqual({ url: "https://example.com/final", title: "Example", loaded: true });
+    });
+
+    it("resolves promptly with loaded: false when the DOM becomes ready but the full load never settles", async () => {
+      vi.useFakeTimers();
+      try {
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://example.com/heavy"),
+          getTitle: vi.fn(() => "Heavy Page"),
+          // Models webContents.loadURL() resolving only at did-finish-load,
+          // which on a heavy page (ads/trackers/video) may never happen
+          // within any reasonable bound — the promise here just never
+          // settles.
+          loadURL: vi.fn(() => new Promise<void>(() => {})),
+          onceDomReady: vi.fn(() => Promise.resolve()),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const promise = controller.open({ url: "https://example.com" });
+        // Only the bounded grace period elapses — nowhere near
+        // BROWSER_COMMAND_TIMEOUT_MS — proving `open` doesn't wait for the
+        // full load at all.
+        await vi.advanceTimersByTimeAsync(1_600);
+        const result = await promise;
+        expect(result).toEqual({ url: "https://example.com/heavy", title: "Heavy Page", loaded: false });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("reports loaded: true when the full load settles within the grace period after DOM-ready", async () => {
+      vi.useFakeTimers();
+      try {
+        let resolveLoad!: () => void;
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://example.com/final"),
+          loadURL: vi.fn(
+            () =>
+              new Promise<void>((resolve) => {
+                resolveLoad = resolve;
+              }),
+          ),
+          onceDomReady: vi.fn(() => Promise.resolve()),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const promise = controller.open({ url: "https://example.com" });
+        // Let the dom-ready branch win the initial race, then let the full
+        // load settle well within OPEN_LOAD_GRACE_MS.
+        await vi.advanceTimersByTimeAsync(0);
+        resolveLoad();
+        await vi.advanceTimersByTimeAsync(100);
+        const result = await promise;
+        expect(result).toEqual({ url: "https://example.com/final", title: "Example", loaded: true });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("surfaces a genuine navigation error that happens before DOM-ready as {error}, not swallowed", async () => {
+      const page = makeFakePage({
+        loadURL: vi.fn(() => Promise.reject(new Error("net::ERR_NAME_NOT_RESOLVED"))),
+        // DOM-ready never fires for a navigation that fails outright.
+        onceDomReady: vi.fn(() => new Promise<void>(() => {})),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.open({ url: "https://example.com" });
+      expect(result).toHaveProperty("error");
+      expect(String((result as { error: string }).error)).toMatch(/ERR_NAME_NOT_RESOLVED/);
+    });
+
+    it("does not produce an unhandled rejection when DOM-ready wins and loadURL rejects afterwards — the successful result stands", async () => {
+      vi.useFakeTimers();
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        let rejectLoad!: (err: Error) => void;
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://example.com/heavy"),
+          loadURL: vi.fn(
+            () =>
+              new Promise<void>((_resolve, reject) => {
+                rejectLoad = reject;
+              }),
+          ),
+          onceDomReady: vi.fn(() => Promise.resolve()),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const promise = controller.open({ url: "https://example.com" });
+        // Nothing but the bounded grace period elapses before `open`
+        // returns — the load promise is still pending at that point.
+        await vi.advanceTimersByTimeAsync(1_600);
+        const result = await promise;
+        expect(result).toEqual({ url: "https://example.com/heavy", title: "Example", loaded: false });
+        // The load promise settles (rejects) only after `open` already
+        // returned — this must not surface as an unhandled rejection.
+        rejectLoad(new Error("net::ERR_CONNECTION_RESET"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.removeListener("unhandledRejection", onUnhandled);
+        vi.useRealTimers();
+      }
+    });
+
+    it("arms the DOM-ready listener before calling loadURL", async () => {
+      const callOrder: string[] = [];
+      const page = makeFakePage({
+        onceDomReady: vi.fn(() => {
+          callOrder.push("onceDomReady");
+          return Promise.resolve();
+        }),
+        loadURL: vi.fn(() => {
+          callOrder.push("loadURL");
+          return Promise.resolve();
+        }),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      await controller.open({ url: "https://example.com" });
+      expect(callOrder).toEqual(["onceDomReady", "loadURL"]);
     });
 
     it("rejects missing url", async () => {
@@ -1371,5 +1500,57 @@ describe("BrowserController", () => {
         vi.useRealTimers();
       }
     });
+  });
+});
+
+describe("open's own timeout budget", () => {
+  // Measured against the live site 2026-09-19: an amazon.com search stalled
+  // past the 20s command budget in roughly one run in four, while the rest
+  // finished in ~2s. The DOM-ready race cannot help there — when the server
+  // is slow the document itself hasn't arrived, so `dom-ready` hasn't fired
+  // and there is nothing to race. A navigation simply needs longer than a
+  // script evaluation against an existing page.
+  it("gives open a longer default budget than every other command", () => {
+    expect(BROWSER_OPEN_TIMEOUT_MS).toBeGreaterThan(BROWSER_COMMAND_TIMEOUT_MS);
+  });
+
+  it("uses that longer budget for open by default", async () => {
+    vi.useFakeTimers();
+    try {
+      const page = makeFakePage({
+        // Neither ever settles: the command can only end by timing out.
+        loadURL: vi.fn(() => new Promise<void>(() => {})),
+        onceDomReady: vi.fn(() => new Promise<void>(() => {})),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const pending = controller.open({ url: "https://example.com/" });
+      await vi.advanceTimersByTimeAsync(BROWSER_COMMAND_TIMEOUT_MS + 1_000);
+      // Still running well past the ordinary command budget.
+      let settled = false;
+      void pending.then(() => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(BROWSER_OPEN_TIMEOUT_MS);
+      const result = await pending;
+      expect(JSON.stringify(result)).toMatch(String(BROWSER_OPEN_TIMEOUT_MS));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an explicitly supplied timeoutMs still bounds open — a caller asking for a short budget means it", async () => {
+    vi.useFakeTimers();
+    try {
+      const page = makeFakePage({
+        loadURL: vi.fn(() => new Promise<void>(() => {})),
+        onceDomReady: vi.fn(() => new Promise<void>(() => {})),
+      });
+      const controller = new BrowserController(makeFakeTarget(page), { timeoutMs: 5_000 });
+      const pending = controller.open({ url: "https://example.com/" });
+      await vi.advanceTimersByTimeAsync(5_100);
+      expect(JSON.stringify(await pending)).toMatch("5000");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

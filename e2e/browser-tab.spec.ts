@@ -20,6 +20,23 @@ let clickTargetUrl: string;
 let evidenceUrl: string;
 let readUrl: string;
 let imagesMetaUrl: string;
+let slowLoadUrl: string;
+
+// How long the /slow-resource route below holds its response open before
+// finally answering — comfortably past OPEN_LOAD_GRACE_MS (1500ms, so
+// `open` is proven to return at DOM-ready rather than waiting for this
+// resource), but bounded, unlike a connection genuinely held open forever.
+// A *truly* never-finishing subresource is a real possibility on a live
+// page (see the "known limitation" note where this constant is used below),
+// but it isn't used here: Electron's own `executeJavaScript` defers running
+// until the page stops loading (a documented Electron behavior, not
+// something this fix controls — electron/electron#5183), so a genuinely
+// infinite subresource would also hang the follow-up snapshot/read calls
+// this test needs to prove `open`'s early return actually leaves the tab
+// usable. Resolving this resource after a bounded delay models the same
+// "heavy page" defect (did-finish-load waiting on a slow ad/tracker) while
+// keeping the follow-up commands honestly testable.
+const SLOW_RESOURCE_DELAY_MS = 3_000;
 
 // Real http(s) images, one per element — served by this suite's own stub
 // server at /pixel.svg?color=… rather than embedded as data: URIs (finding
@@ -53,6 +70,19 @@ const DATA_URI_IMAGE = `data:image/svg+xml,${encodeURIComponent(
 
 test.beforeAll(async () => {
   server = http.createServer((req, res) => {
+    if (req.url && req.url.startsWith("/slow-resource")) {
+      // The DOM-ready fixture's subresource: answers only after
+      // SLOW_RESOURCE_DELAY_MS — long enough that `webContents.loadURL()`'s
+      // promise (did-finish-load, which waits for every subresource) is
+      // still pending well past the point `open` must have already returned
+      // via DOM-ready. See SLOW_RESOURCE_DELAY_MS's doc comment for why this
+      // is bounded rather than a connection held open forever.
+      setTimeout(() => {
+        res.setHeader("content-type", "image/svg+xml");
+        res.end(`<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="gray"/></svg>`);
+      }, SLOW_RESOURCE_DELAY_MS);
+      return;
+    }
     if (req.url && req.url.startsWith("/pixel.svg")) {
       const color = new URL(req.url, "http://pixel.local").searchParams.get("color") || "black";
       res.setHeader("content-type", "image/svg+xml");
@@ -268,6 +298,16 @@ a plain search box (eligible, must still report its value). -->
 </script>`);
       return;
     }
+    if (req.url && req.url.startsWith("/slow-load")) {
+      // The DOM-ready fixture page itself: HTML is complete and the DOM is
+      // immediately ready, but it references /slow-resource, which stalls
+      // for SLOW_RESOURCE_DELAY_MS — did-finish-load (and therefore the old
+      // `await page.loadURL()`) wouldn't resolve until then either.
+      res.end(
+        `<!doctype html><title>Slow Load</title><h1 id="ready">slow-load-ready</h1><img src="${baseUrl}/slow-resource" alt="loads slowly" />`,
+      );
+      return;
+    }
     if (req.url && req.url.startsWith("/gallery")) {
       res.end(`<!doctype html>
 <title>Gallery</title>
@@ -317,6 +357,7 @@ a plain search box (eligible, must still report its value). -->
   evidenceUrl = `${baseUrl}/evidence`;
   readUrl = `${baseUrl}/read`;
   imagesMetaUrl = `${baseUrl}/images-meta`;
+  slowLoadUrl = `${baseUrl}/slow-load`;
 });
 
 test.afterAll(() => new Promise<void>((r) => server.close(() => r())));
@@ -427,7 +468,11 @@ test("built-in browser tab: open, findImages, act (click/type/scroll/back/forwar
       }),
       callBrowser(editorPage, "open", { url: galleryUrl }),
     ]);
-    expect(openResult).toEqual({ url: galleryUrl, title: "Gallery" });
+    // The gallery fixture's only images are small same-origin SVGs, so the
+    // full load settles comfortably inside the grace period — `loaded: true`
+    // is what distinguishes it from a page like /slow-load below (dedicated
+    // test) whose subresource never finishes.
+    expect(openResult).toEqual({ url: galleryUrl, title: "Gallery", loaded: true });
     await expect(galleryPage.locator("#ready")).toHaveText("gallery-ready");
 
     // The browser tab has no preload at all — the security boundary design
@@ -523,8 +568,12 @@ test("built-in browser tab: open, findImages, act (click/type/scroll/back/forwar
     await expect.poll(() => galleryPage.evaluate(() => window.scrollY)).toBeGreaterThan(beforeScroll);
 
     // --- open again (same tab) to build navigation history, then act back/forward ---
-    const secondOpen = (await callBrowser(editorPage, "open", { url: nextUrl })) as { url: string; title: string };
-    expect(secondOpen).toEqual({ url: nextUrl, title: "Gallery Next" });
+    const secondOpen = (await callBrowser(editorPage, "open", { url: nextUrl })) as {
+      url: string;
+      title: string;
+      loaded: boolean;
+    };
+    expect(secondOpen).toEqual({ url: nextUrl, title: "Gallery Next", loaded: true });
     await expect(galleryPage).toHaveURL(nextUrl);
 
     const backResult = (await callBrowser(editorPage, "act", { action: "back" })) as { url: string };
@@ -568,6 +617,67 @@ test("built-in browser tab: open, findImages, act (click/type/scroll/back/forwar
     // Blur: must resync to the tab's real (new) url, not stay stale.
     await urlInputLocator.blur();
     await expect(urlInputLocator).toHaveValue(galleryUrl);
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+// The new-tab focus fix: before this, File ▸ New Browser Tab produced a
+// tab titled "New Tab" with a visible, empty, *unfocused* address row and a
+// blank content area — no cue at all where to type. Drives the real
+// application menu (not a stand-in IPC call, like the fixture's own
+// #new-tab button would be) so this proves the actual user-facing path:
+// Menu.getApplicationMenu() from the main process, found by label, exactly
+// as a user's menu click would fire it.
+test("File ▸ New Browser Tab focuses the address bar, and typing+submitting navigates the tab", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+    const tabbarPage =
+      app.windows().find((page) => page.url().endsWith("/tabbar/tabbar.html")) ??
+      (await app.waitForEvent("window", { predicate: (page) => page.url().endsWith("/tabbar/tabbar.html") }));
+
+    await app.evaluate(({ Menu }) => {
+      const menu = Menu.getApplicationMenu();
+      const fileMenu = menu?.items.find((item) => item.label === "File");
+      const newBrowserTabItem = fileMenu?.submenu?.items.find((item) => item.label === "New Browser Tab");
+      if (!newBrowserTabItem) throw new Error("File ▸ New Browser Tab menu item not found");
+      newBrowserTabItem.click();
+    });
+
+    // The address row appears (design doc §2) and the caret lands in it —
+    // both the OS-level view focus (window.ts focusing the tab-bar
+    // WebContentsView) and the DOM-level focus (renderer.ts focusing
+    // #url-input) have to have happened for this to hold.
+    await expect(tabbarPage.locator("#chrome-row")).toBeVisible();
+    await expect.poll(() => tabbarPage.evaluate(() => document.activeElement?.id)).toBe("url-input");
+    // A fresh browser tab loads nothing on purpose — the input starts empty,
+    // not carrying over a stale value from any previous browser tab.
+    await expect(tabbarPage.locator("#url-input")).toHaveValue("");
+
+    // Prove the whole path end to end: typing a real URL and submitting it
+    // must actually navigate the new tab, not just move focus.
+    const urlInputLocator = tabbarPage.locator("#url-input");
+    const [galleryPage] = await Promise.all([
+      app.waitForEvent("window", {
+        predicate: (p) => p !== editorPage && p !== tabbarPage && !p.url().endsWith("/tabbar/tabbar.html"),
+      }),
+      (async () => {
+        await urlInputLocator.fill(galleryUrl);
+        await urlInputLocator.press("Enter");
+      })(),
+    ]);
+    await expect(galleryPage.locator("#ready")).toHaveText("gallery-ready");
+    await expect.poll(() => urlInputLocator.inputValue()).toBe(galleryUrl);
 
     await app.close();
   } finally {
@@ -1231,6 +1341,66 @@ test("BROWSE-02: labels resolve through a descendant's aria-label and through an
     const generatedIdEntry = snap.elements.find((e) => e.index === generatedIdIndex);
     expect(generatedIdEntry?.label).not.toBe("ember1234");
     expect(generatedIdEntry?.label).toMatch(/^button #\d+$/);
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browse_open: DOM-ready fix — returns well within the command timeout with loaded: false while a subresource is still stalled, and the page is usable once it catches up", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const start = Date.now();
+    const [slowPage, openResult] = (await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === slowLoadUrl }),
+      callBrowser(editorPage, "open", { url: slowLoadUrl }),
+    ])) as [Page, { url: string; title: string; loaded: boolean }];
+    const elapsedMs = Date.now() - start;
+
+    // The whole point of the fix: this HTML is complete (its DOM is ready
+    // almost immediately) even though its <img> is still stalled on
+    // /slow-resource — `webContents.loadURL()`'s own promise (did-finish-load)
+    // doesn't resolve until that resource finally answers, well past this
+    // point, so the old `await page.loadURL()` implementation would have sat
+    // here for the whole SLOW_RESOURCE_DELAY_MS (and, on a page that never
+    // answers at all, up to BROWSER_COMMAND_TIMEOUT_MS — see
+    // SLOW_RESOURCE_DELAY_MS's doc comment for why that harsher case isn't
+    // used directly in this test). This assertion proves `open` returned at
+    // DOM-ready plus its own short, bounded grace period instead.
+    expect(elapsedMs).toBeLessThan(SLOW_RESOURCE_DELAY_MS - 500);
+
+    expect(openResult.url).toBe(slowLoadUrl);
+    expect(openResult.title).toBe("Slow Load");
+    // Honest reporting: the full load hadn't settled yet when the command
+    // returned.
+    expect(openResult.loaded).toBe(false);
+    await expect(slowPage.locator("#ready")).toHaveText("slow-load-ready");
+
+    // A following snapshot/read must work against this page. Electron itself
+    // defers `executeJavaScript` until the page stops loading (documented
+    // behavior, not something this fix changes or could — see
+    // electron/electron#5183), so these calls block until /slow-resource
+    // finally answers at SLOW_RESOURCE_DELAY_MS — but they must then succeed
+    // cleanly, proving `open`'s early, honest `loaded: false` return didn't
+    // leave the tab or the controller in some broken state.
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(snap.url).toBe(slowLoadUrl);
+    expect(snap.title).toBe("Slow Load");
+
+    const read = (await callBrowser(editorPage, "read", {})) as ReadResult;
+    expect(read.error).toBeUndefined();
+    expect(read.url).toBe(slowLoadUrl);
+    expect(read.headings).toEqual(["slow-load-ready"]);
 
     await app.close();
   } finally {

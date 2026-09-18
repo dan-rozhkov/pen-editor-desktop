@@ -79,6 +79,18 @@ export interface TabViewHandle {
    * merely for `getURL()` to change at navigation commit.
    */
   isLoading(): boolean;
+  /**
+   * Resolves once this navigation's DOM is ready (`webContents`'s
+   * `dom-ready` event) — the new document exists and its script/DOM APIs
+   * are usable, well before every subresource (images, ads, trackers) has
+   * finished loading. `BrowserController.open` races this against the full
+   * `loadURL()` promise (which only resolves at `did-finish-load`) so a
+   * heavy commercial page doesn't have to fully settle before the command
+   * returns — see browser/controller.ts's doc comment on `open`. Each call
+   * arms a *fresh* one-shot listener for the *next* `dom-ready` event; it is
+   * not a cached "has this page's DOM ever been ready" flag.
+   */
+  onceDomReady(): Promise<void>;
 }
 
 /** What TabManager.browserHandle() hands to the browser controller (see window.ts). */
@@ -105,6 +117,38 @@ export function resolveMcpActiveTab(
 ): number | null {
   if (activeKind === "editor") return activeWebContentsId;
   return lastEditorTabId;
+}
+
+/**
+ * True exactly when `next` is the push that should move OS/DOM focus into
+ * the tab bar's address input — the moment a browser tab with no URL yet
+ * (a fresh File ▸ New Browser Tab, or switching to one that was already
+ * open and never navigated) becomes the active tab, mirroring what every
+ * real browser does with a blank new tab. The address input already carries
+ * the placeholder "Search or enter address", so focusing it is the entire
+ * cue a user gets that the blank tab wants input at all.
+ *
+ * Pure and only reads `activeId`/`activeKind`/the active tab's `url` off
+ * both snapshots, so window.ts can call it on every `pushState` without
+ * owning the decision itself (see window.ts's `pushState`) — and so it's
+ * unit-testable with plain object fixtures, no Electron involved.
+ *
+ * Deliberately keyed off "the active tab id changed since the previous
+ * push", not just "activeKind is browser and the active tab's url is
+ * empty" — `pushState` also fires on title changes, navigation-state
+ * changes, MCP status changes and window resizes, none of which may steal
+ * focus from whatever the user is doing (typing in the editor, mid-word in
+ * the address bar itself). A repeated push for the *same* active tab —
+ * whatever else about it changed — must never re-focus.
+ */
+export function shouldFocusAddressBar(
+  previous: TabsSnapshot | null,
+  next: TabsSnapshot,
+): boolean {
+  if (next.activeKind !== "browser") return false;
+  if (previous !== null && previous.activeId === next.activeId) return false;
+  const active = next.tabs.find((t) => t.id === next.activeId);
+  return (active?.url ?? "") === "";
 }
 
 export interface TabState {
@@ -139,6 +183,16 @@ export interface TabsSnapshot {
    * open elsewhere in the strip).
    */
   mcpActiveWebContentsId: number | null;
+  /**
+   * True exactly when this specific push should move OS/DOM focus into the
+   * tab bar's address input. Never set by TabManager itself — `getSnapshot()`
+   * leaves it `undefined` — because the decision (`shouldFocusAddressBar`
+   * below) needs the *previous* pushed snapshot, which only window.ts
+   * tracks (see its `pushState`). window.ts fills this field in right
+   * before sending `tabbar:state`, folding the decision into the existing
+   * channel instead of adding a new one.
+   */
+  focusAddressBar?: boolean;
 }
 
 interface TabEntry {

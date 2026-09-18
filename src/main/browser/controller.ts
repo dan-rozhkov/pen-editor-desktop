@@ -127,6 +127,22 @@ export const MAX_SNAPSHOT_ELEMENTS = 120;
  * timeout with no detail. */
 export const BROWSER_COMMAND_TIMEOUT_MS = 20_000;
 
+/** `open`'s own, longer budget.
+ *
+ * Every other command evaluates a script against a page that already
+ * exists, so 20s is generous. `open` is a NAVIGATION: it waits on a remote
+ * server, and measured against the live site (2026-09-19, 8 runs) an
+ * amazon.com search stalled past 20s in roughly one run in four while the
+ * rest finished in ~2s. The DOM-ready race below does not help those: when
+ * Amazon is slow it is slow at the document level, so `dom-ready` has not
+ * fired either and there is nothing to race against — the request simply
+ * needs longer than a script call ever should.
+ *
+ * Deliberately not unbounded: a command that never returns is worse than
+ * one that fails, and the frontend loop's own per-step budget still has to
+ * fit several of these. */
+export const BROWSER_OPEN_TIMEOUT_MS = 45_000;
+
 /** How long a click is given to show *any* sign of having started a
  * navigation — either `getURL()` moving away from its pre-click value, or
  * `isLoading()` going true — before concluding it didn't navigate at all
@@ -150,6 +166,17 @@ const CLICK_SETTLE_TIMEOUT_MS = 300;
  * the time it takes just to observe that a navigation started at all. */
 const CLICK_LOAD_SETTLE_TIMEOUT_MS = 8_000;
 
+/** `open`'s DOM-ready-not-full-load fix: `webContents.loadURL()` resolves
+ * only at `did-finish-load` — every subresource, including ads/trackers on a
+ * heavy commercial page, which routinely blows past
+ * BROWSER_COMMAND_TIMEOUT_MS. `open` instead resolves once the DOM is ready
+ * (see `BrowserPageHandle.onceDomReady`) and gives the page this short,
+ * bounded grace period to finish the *full* load too, so the common fast
+ * page still reports `loaded: true`. Well under BROWSER_COMMAND_TIMEOUT_MS —
+ * this is a courtesy wait, not a correctness requirement, so a slow page
+ * simply returns with `loaded: false` instead of blocking the command. */
+const OPEN_LOAD_GRACE_MS = 1_500;
+
 /** A browser tab's page, as the controller needs to drive it. Electron-free
  * — window.ts supplies the real implementation over a WebContentsView. */
 export interface BrowserPageHandle {
@@ -170,6 +197,13 @@ export interface BrowserPageHandle {
    * CLICK_LOAD_SETTLE_TIMEOUT_MS's doc comment.
    */
   isLoading(): boolean;
+  /**
+   * Resolves once the current navigation's DOM is ready — see
+   * `TabViewHandle.onceDomReady`'s doc comment (tabManager.ts) for the full
+   * rationale. `open` races this against `loadURL()` so a heavy page's
+   * subresources don't have to finish before the command returns.
+   */
+  onceDomReady(): Promise<void>;
 }
 
 export interface BrowserTarget {
@@ -329,6 +363,7 @@ function validatePerformArgs(args: unknown): { ok: true; value: ValidatedPerform
 
 export class BrowserController {
   private readonly timeoutMs: number;
+  private readonly openTimeoutMs: number;
 
   // The most recent snapshot() call's id, together with the exact page it
   // was taken against — perform() compares its caller-supplied snapshotId
@@ -353,19 +388,78 @@ export class BrowserController {
 
   constructor(
     private readonly target: BrowserTarget,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; openTimeoutMs?: number },
   ) {
     this.timeoutMs = opts?.timeoutMs ?? BROWSER_COMMAND_TIMEOUT_MS;
+    // An explicitly supplied timeoutMs bounds EVERY command including
+    // open — a caller (or a test) that asks for a short budget means it.
+    // open only gets its own longer default when nothing was specified.
+    this.openTimeoutMs =
+      opts?.openTimeoutMs ?? opts?.timeoutMs ?? BROWSER_OPEN_TIMEOUT_MS;
   }
 
+  /** Resolves once the DOM is ready, not once every subresource has
+   * finished — `webContents.loadURL()`'s own promise resolves at
+   * `did-finish-load`, which on a heavy commercial page (ads, trackers,
+   * video) routinely exceeds BROWSER_COMMAND_TIMEOUT_MS even though the page
+   * is perfectly usable well before that. The DOM-ready listener
+   * (`page.onceDomReady()`) is armed *before* `loadURL` is called — arming
+   * it after risks missing an event that fires while `loadURL` is still
+   * synchronously setting up the navigation.
+   *
+   * Both promises are raced. If the full load settles first (fast page, or a
+   * genuine navigation error before the DOM ever became ready), that result
+   * is trusted outright — a rejection here is surfaced as `{ error }`, same
+   * as before this fix. If DOM-ready wins, the page gets a short, bounded
+   * grace period (OPEN_LOAD_GRACE_MS) to finish the full load too, so the
+   * common fast page still comes back `loaded: true`; if the grace period
+   * expires first, the command returns with `loaded: false` and the load
+   * promise's eventual settlement (success or failure) is one that already
+   * has both a resolve and a reject handler attached below, so it can never
+   * become an unhandled rejection — a subresource failing after the page is
+   * usable is not treated as this command failing. */
   async open(args: unknown): Promise<BrowserCommandResult> {
     const validated = validateOpenArgs(args);
     if (!validated.ok) return errorResult(validated.error);
     return this.withCommandTimeout(async () => {
       const page = await this.target.ensurePage();
-      await page.loadURL(validated.url);
-      return { url: page.getURL(), title: page.getTitle() };
-    });
+
+      // Armed before loadURL() is called — see the doc comment above.
+      const domReadyPromise = page.onceDomReady();
+      const loadPromise = page.loadURL(validated.url);
+
+      type Outcome = { via: "dom-ready" } | { via: "load"; error: Error | null };
+      // .then's reject handler here consumes loadPromise's rejection into a
+      // resolved value — this is what keeps a late load failure from ever
+      // reaching Node as an unhandled rejection, regardless of which branch
+      // below is taken or how long after this function returns it settles.
+      const loadOutcome: Promise<Outcome> = loadPromise.then(
+        () => ({ via: "load", error: null }),
+        (err: unknown) => ({ via: "load", error: err instanceof Error ? err : new Error(toMessage(err)) }),
+      );
+      const domReadyOutcome: Promise<Outcome> = domReadyPromise.then(() => ({ via: "dom-ready", error: null }));
+
+      const first = await Promise.race([domReadyOutcome, loadOutcome]);
+
+      if (first.via === "load") {
+        // The full load settled before the DOM even became ready — either a
+        // fast page (nothing left to wait for) or a genuine navigation
+        // failure. Either way there is no "DOM ready but still loading"
+        // state to report, so this is the whole answer.
+        if (first.error) throw first.error;
+        return { url: page.getURL(), title: page.getTitle(), loaded: true };
+      }
+
+      const graceOutcome = await Promise.race([
+        loadOutcome,
+        new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), OPEN_LOAD_GRACE_MS)),
+      ]);
+      // A load failure that happens *after* DOM-ready already succeeded is
+      // not a command failure (e.g. a stalled subresource) — it just means
+      // the full load never completed, so `loaded` stays false.
+      const loaded = graceOutcome !== "timeout" && graceOutcome.via === "load" && graceOutcome.error === null;
+      return { url: page.getURL(), title: page.getTitle(), loaded };
+    }, this.openTimeoutMs);
   }
 
   async act(args: unknown): Promise<BrowserCommandResult> {
@@ -786,12 +880,16 @@ export class BrowserController {
     if (navigated) await this.waitForLoadStop(page, CLICK_LOAD_SETTLE_TIMEOUT_MS);
   }
 
-  private async withCommandTimeout(fn: () => Promise<BrowserCommandResult>): Promise<BrowserCommandResult> {
+  private async withCommandTimeout(
+    fn: () => Promise<BrowserCommandResult>,
+    budgetMs?: number,
+  ): Promise<BrowserCommandResult> {
+    const ms = budgetMs ?? this.timeoutMs;
     try {
       return await withTimeout(
         fn(),
-        this.timeoutMs,
-        `Browser command timed out after ${this.timeoutMs}ms.`,
+        ms,
+        `Browser command timed out after ${ms}ms.`,
       );
     } catch (err) {
       return errorResult(toMessage(err));

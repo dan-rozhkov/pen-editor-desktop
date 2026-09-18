@@ -258,6 +258,43 @@ commit, where every `getBoundingClientRect()` is 0×0, so the size filter
 dropped every image and the tool reported `count: 0` even on an image-rich
 page. `back`/`forward` still use the plain `waitForUrlChange` poll with
 their longer (2s) bound — addendum F's fix is scoped to the click path.
+
+**`open` resolves at DOM-ready, not at full load.** `webContents.loadURL()`'s
+own promise only resolves at `did-finish-load` — every subresource,
+including ads/trackers/video on a heavy commercial page, which routinely
+exceeds `BROWSER_COMMAND_TIMEOUT_MS` (20s) even though the page has been
+usable for most of that wait. `BrowserPageHandle.onceDomReady()`
+(`TabViewHandle.onceDomReady()` in `window.ts`, a one-shot listener on
+`webContents`'s `dom-ready` event) is armed **before** `loadURL()` is
+called — arming it after risks missing an event that can fire while
+`loadURL()` is still synchronously setting up the navigation — and raced
+against the `loadURL()` promise. If the full load settles first (a fast
+page, or a genuine navigation error before the DOM ever became ready), that
+result is trusted outright, a rejection surfacing as `{ error }` exactly as
+before this fix. If DOM-ready wins, the page gets a short, bounded grace
+period (`OPEN_LOAD_GRACE_MS`, 1500ms — well under the command timeout) to
+finish the full load too, so the common fast page still reports
+`loaded: true`; if the grace period expires first, the command returns with
+`loaded: false` instead. The result's new `loaded: boolean` field is the
+only way a caller can tell which case happened — `get_screenshot` or
+`browse_find_images` immediately after a `loaded: false` open should expect
+a page that's still filling in. `loadURL()`'s own promise is *always*
+awaited internally (via a `.then` that converts a rejection into a resolved
+value) regardless of which branch is taken, so a load failure or success
+that settles after `open` has already returned can never surface as an
+unhandled rejection — it's simply too late to change the `loaded` value
+already reported.
+
+One real limitation this fix does **not** paper over: Electron's own
+`webContents.executeJavaScript` defers running until the page *stops*
+loading (documented Electron behavior, not something under this repo's
+control — see electron/electron#5183) — so `snapshot`/`read`/`act`/`perform`
+against a `loaded: false` page will themselves block until whatever
+subresource is still pending finally settles (or the tab's own
+`BROWSER_COMMAND_TIMEOUT_MS` is hit, if it never does). `open`'s early
+return only means the *navigation* command itself doesn't block on that —
+it does not make the tab's DOM scriptable ahead of Electron's own gate.
+
 `pageScripts.ts`'s `findByText` (used by `click`/`type`, tried *before* a
 CSS-selector lookup — see below) searches genuinely clickable elements
 (`a, button, [role="button"], input, select, textarea, [onclick]`) before
@@ -556,6 +593,35 @@ incoming `tabbar:state` pushes don't overwrite it (so as not to clobber
 mid-typing), but nothing used to catch it up afterwards, leaving it stale
 indefinitely if a state change (e.g. an agent-driven `browse_open`) landed
 while the user had the address bar focused.
+
+**A fresh, empty-URL browser tab becoming active auto-focuses the address
+bar**, the way every real browser does on a new tab — File ▸ New Browser Tab
+used to produce a tab titled "New Tab" with a visible but unfocused,
+completely empty address row and a blank content area, with nothing at all
+inviting input (the placeholder "Search or enter address" only helps once
+the field is actually focused). The decision lives in `tabManager.ts`'s pure,
+exported, unit-tested `shouldFocusAddressBar(previous, next)` — true only
+when the *newly* active tab is a browser tab with an empty url (keyed off
+"the active tab id changed since the previous push", not just "kind browser,
+url empty", so the frequent non-activation pushes — title changes,
+navigation-state changes, MCP status changes, resizes — never steal focus
+from whatever the user is doing). `window.ts`'s `pushState` tracks the prior
+snapshot itself, calls the predicate, and folds the result into the existing
+`tabbar:state` snapshot as `focusAddressBar` rather than adding a new IPC
+channel. Two halves, both required, since the tab bar is its own
+`WebContentsView`: `window.ts` focuses `tabbarView.webContents` itself
+(OS-level — without this, focusing an input inside the tab bar's own DOM
+does nothing for where keystrokes actually go), and `renderer.ts` focuses
+and selects `#url-input` when it sees `focusAddressBar` on the pushed state.
+
+This auto-focus interacts with the blur-resync anti-clobber guard above in a
+way worth knowing: being merely *focused* is no longer by itself enough to
+suppress `onState`'s writes into `#url-input` — only an actual `input` event
+(`userEditingUrl` in `renderer.ts`) does. The auto-focus on a brand-new blank
+tab fires with no keystroke at all, and if focus alone suppressed syncing, a
+subsequent agent-driven `browse_open` navigating that same tab would never
+un-suppress it (nothing ever blurs the field in that flow), permanently
+wedging the address bar on `""` even once the tab had actually navigated.
 
 Only the desktop half of the design shipped from this repo. The backend
 `penTools` schemas (`browse_open`/`browse_act`/`browse_find_images`,

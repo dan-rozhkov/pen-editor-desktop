@@ -2,6 +2,7 @@ import path from "node:path";
 import { BaseWindow, WebContentsView, Menu, ipcMain, nativeTheme, shell } from "electron";
 import {
   TabManager,
+  shouldFocusAddressBar,
   type TabKind,
   type TabViewHandle,
   type TabsSnapshot,
@@ -95,6 +96,11 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
   void tabbarView.webContents.loadFile(path.join(__dirname, "../tabbar/tabbar.html"));
 
   const systemTheme = (): UITheme => (nativeTheme.shouldUseDarkColors ? "dark" : "light");
+  // The last snapshot actually pushed — kept only so shouldFocusAddressBar
+  // (tabManager.ts) has a "previous" to compare against. window.ts owns
+  // this bit of bookkeeping so the pure predicate itself stays stateless;
+  // it does not make the focus decision, only feeds and acts on it.
+  let previousSnapshot: TabsSnapshot | null = null;
   const pushState = (s: TabsSnapshot) => {
     // s.mcpActiveWebContentsId is computed by TabManager itself (see
     // TabsSnapshot's doc comment / finding 1) — window.ts just forwards it,
@@ -102,8 +108,27 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
     // sees a tab's destruction in time to repoint away from a dying editor
     // tab before this snapshot goes out.
     mcpService.setActiveTab(s.mcpActiveWebContentsId);
-    tabbarView.webContents.send("tabbar:state", s);
+    // A fresh, empty-URL browser tab (File ▸ New Browser Tab, or switching
+    // to one that was never navigated) becoming active must put the caret
+    // in the address bar, the way every real browser does on a new tab —
+    // otherwise the tab is a void with no cue where to type (its content
+    // area loads nothing on purpose; the input's placeholder is the only
+    // explanation, and it only helps once focused). Two halves, both
+    // required: focusing `tabbarView`'s own WebContentsView here (OS-level
+    // — the tab bar is its own view, so focusing an input inside its DOM
+    // from the renderer alone would not move where keystrokes actually go),
+    // and the renderer itself focusing/selecting `#url-input` once it sees
+    // `focusAddressBar` on the pushed snapshot (src/tabbar/renderer.ts).
+    // shouldFocusAddressBar is deliberately keyed off "the active tab
+    // changed since the previous push" so this never fires on the title/
+    // navigation-state/MCP-status/resize-driven pushes that also flow
+    // through here — those must never yank focus away from whatever the
+    // user is doing.
+    const focusAddressBar = shouldFocusAddressBar(previousSnapshot, s);
+    previousSnapshot = s;
+    tabbarView.webContents.send("tabbar:state", { ...s, focusAddressBar });
     tabbarView.webContents.send("tabbar:theme", s.activeTheme ?? systemTheme());
+    if (focusAddressBar) tabbarView.webContents.focus();
     // The active tab's kind can change (activating a browser tab, or an
     // editor tab) without a window resize — re-run layout every time the
     // snapshot changes so the address row's height tracks activeKind
@@ -248,6 +273,10 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         canGoForward: () => view.webContents.navigationHistory.canGoForward(),
         executeJavaScript: (code) => view.webContents.executeJavaScript(code),
         isLoading: () => view.webContents.isLoading(),
+        onceDomReady: () =>
+          new Promise<void>((resolve) => {
+            view.webContents.once("dom-ready", () => resolve());
+          }),
       };
     },
   });

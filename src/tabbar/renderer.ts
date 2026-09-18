@@ -13,6 +13,13 @@ type TabsSnapshot = {
   activeId: number | null;
   activeKind: TabKind | null;
   mcpStatus: McpStatus;
+  /**
+   * Set by window.ts (see tabManager.ts's shouldFocusAddressBar) exactly on
+   * the push where a fresh, empty-URL browser tab just became active — the
+   * renderer's cue to put the caret in #url-input, the way every real
+   * browser does on a new tab.
+   */
+  focusAddressBar?: boolean;
 };
 type UITheme = "light" | "dark";
 
@@ -85,19 +92,33 @@ urlFormEl.addEventListener("submit", (e) => {
   urlInputEl.classList.remove("invalid");
   window.penTabbar.navigate("url", normalized);
 });
-urlInputEl.addEventListener("input", () => urlInputEl.classList.remove("invalid"));
+urlInputEl.addEventListener("input", () => {
+  urlInputEl.classList.remove("invalid");
+  // A real keystroke — as opposed to the programmatic `.focus()` the new
+  // empty-browser-tab fix (window.ts's pushState / shouldFocusAddressBar)
+  // fires when a fresh blank tab becomes active. Only an actual edit must
+  // suppress onState's writes below; merely being *focused* is not enough
+  // — a blank tab that's about to be agent-navigated (browse_open creating
+  // its own browser tab) gets auto-focused too, and if focus alone
+  // suppressed syncing, nothing would ever un-suppress it (no blur ever
+  // happens in that flow), leaving the address bar permanently stuck on
+  // "" even once the tab actually navigated.
+  userEditingUrl = true;
+});
 
 window.penTabbar.onTheme((theme) => {
   document.documentElement.dataset.theme = theme;
 });
 
 let urlInputFocused = false;
+let userEditingUrl = false;
 let latestActiveUrl: string | undefined;
 urlInputEl.addEventListener("focus", () => {
   urlInputFocused = true;
 });
 urlInputEl.addEventListener("blur", () => {
   urlInputFocused = false;
+  userEditingUrl = false;
   // While focused, onState below skips writing into the input so it never
   // clobbers what the user is mid-typing — but nothing resynced it
   // afterwards, so an agent-driven browse_open that lands while the address
@@ -142,9 +163,23 @@ window.penTabbar.onState((state) => {
     navForwardEl.disabled = !active?.canGoForward;
     // Tracked unconditionally (finding 9) so a blur resync (above) always
     // has the latest value to fall back to, even though the input itself
-    // is only written here while not focused, so as not to clobber what
-    // the user is mid-typing.
+    // is only written here while the user isn't actively editing it, so as
+    // not to clobber what they're mid-typing. Being merely *focused* is not
+    // by itself enough to suppress this write — see the `input` listener's
+    // comment on `userEditingUrl` above for why (the new-browser-tab
+    // auto-focus below would otherwise permanently wedge the address bar on
+    // a stale/empty value once the tab is navigated by an agent rather than
+    // by the user).
     latestActiveUrl = active?.url ?? "";
-    if (!urlInputFocused) urlInputEl.value = latestActiveUrl;
+    if (!urlInputFocused || !userEditingUrl) urlInputEl.value = latestActiveUrl;
+
+    // Caret half of the new-browser-tab fix (see window.ts's pushState):
+    // the OS-level view focus alone lands the keyboard on the tab bar, but
+    // without this the caret has no reason to be in #url-input specifically.
+    // `select()` clears any stale value so typing replaces it outright.
+    if (state.focusAddressBar) {
+      urlInputEl.focus();
+      urlInputEl.select();
+    }
   }
 });

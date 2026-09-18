@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   TabManager,
   resolveMcpActiveTab,
+  shouldFocusAddressBar,
   type TabKind,
   type TabViewHandle,
   type TabsSnapshot,
@@ -39,6 +40,7 @@ function makeFakeView() {
     canGoForward: vi.fn(() => false),
     executeJavaScript: vi.fn(() => Promise.resolve(null)),
     isLoading: vi.fn(() => false),
+    onceDomReady: vi.fn(() => Promise.resolve()),
     emitTitle: (t: string) => titleCb?.(t),
     emitTheme: (theme: "light" | "dark") => themeCb?.(theme),
     emitNavState: (s: { url: string; title: string; canGoBack: boolean; canGoForward: boolean }) => navCb?.(s),
@@ -396,5 +398,77 @@ describe("mcpActiveWebContentsId (finding 1)", () => {
     const snapshot = tm.getSnapshot();
     expect(snapshot.tabs.some((t) => t.kind === "editor")).toBe(false);
     expect(snapshot.mcpActiveWebContentsId).toBeNull();
+  });
+});
+
+// The new-browser-tab focus fix: File ▸ New Browser Tab used to leave a
+// blank content area with an unfocused, empty address bar and no cue where
+// to type. shouldFocusAddressBar is the pure predicate window.ts's
+// pushState uses to decide, on every snapshot push, whether this is the one
+// push that should move focus into #url-input (see tabManager.ts's doc
+// comment on the function and window.ts's pushState).
+describe("shouldFocusAddressBar", () => {
+  const editorSnapshot: TabsSnapshot = {
+    tabs: [{ id: 1, title: "Untitled", kind: "editor" }],
+    activeId: 1,
+    activeKind: "editor",
+    activeTheme: null,
+    mcpStatus: "off",
+    mcpActiveWebContentsId: 1,
+  };
+
+  const emptyBrowserSnapshot: TabsSnapshot = {
+    tabs: [
+      { id: 1, title: "Untitled", kind: "editor" },
+      { id: 2, title: "New Tab", kind: "browser", url: "", canGoBack: false, canGoForward: false },
+    ],
+    activeId: 2,
+    activeKind: "browser",
+    activeTheme: null,
+    mcpStatus: "off",
+    mcpActiveWebContentsId: 1,
+  };
+
+  it("is true on editor -> empty-URL browser tab activation", () => {
+    expect(shouldFocusAddressBar(editorSnapshot, emptyBrowserSnapshot)).toBe(true);
+  });
+
+  it("is true even on the very first push, if it already lands on an empty browser tab", () => {
+    expect(shouldFocusAddressBar(null, emptyBrowserSnapshot)).toBe(true);
+  });
+
+  it("is false on a repeat of the exact same state", () => {
+    expect(shouldFocusAddressBar(emptyBrowserSnapshot, { ...emptyBrowserSnapshot })).toBe(false);
+  });
+
+  it("is false when the active browser tab already has a URL", () => {
+    const alreadyNavigated: TabsSnapshot = {
+      ...emptyBrowserSnapshot,
+      tabs: [
+        emptyBrowserSnapshot.tabs[0],
+        { ...emptyBrowserSnapshot.tabs[1], url: "https://example.com" },
+      ],
+    };
+    expect(shouldFocusAddressBar(editorSnapshot, alreadyNavigated)).toBe(false);
+  });
+
+  it("is false when activating an editor tab", () => {
+    expect(shouldFocusAddressBar(emptyBrowserSnapshot, editorSnapshot)).toBe(false);
+  });
+
+  it("is false when only mcpStatus changed (same active tab)", () => {
+    const mcpChanged: TabsSnapshot = { ...emptyBrowserSnapshot, mcpStatus: "listening" };
+    expect(shouldFocusAddressBar(emptyBrowserSnapshot, mcpChanged)).toBe(false);
+  });
+
+  it("is false when only the active tab's title changed (same active tab)", () => {
+    const titleChanged: TabsSnapshot = {
+      ...emptyBrowserSnapshot,
+      tabs: [
+        emptyBrowserSnapshot.tabs[0],
+        { ...emptyBrowserSnapshot.tabs[1], title: "Loading…" },
+      ],
+    };
+    expect(shouldFocusAddressBar(emptyBrowserSnapshot, titleChanged)).toBe(false);
   });
 });
