@@ -313,3 +313,71 @@ The post-click settle waits for the document to finish loading, not merely
 for the URL to change. Returning at navigation commit left the next
 `browse_find_images` measuring an unlaid-out document, where every
 `getBoundingClientRect()` is 0×0 and the size filter drops every image.
+
+---
+
+## Follow-ups from the first live run, 2026-09-18
+
+Findings from driving the real shell against a live Pinterest search
+(`?q=fintech onboarding ui`) through the real preload bridge — not a
+fixture. Both are quality limits the hermetic suites cannot see, because
+the fixtures are pages we wrote ourselves.
+
+What did hold up: `browse_open`/`snapshot`/`findImages`/`scroll` all worked,
+45 elements came back with a `snapshotId`, image URLs were all http(s), and
+the credentials rule fired correctly on a real login wall — the password
+input arrived as `isPassword: true, hasValue: false` with no `value`, while
+the search combobox correctly reported `value: "fintech onboarding ui"`.
+
+### BROWSE-01 — `find_images` returns 236px thumbnails
+
+The live run's URLs were all `https://i.pinimg.com/236x/…`, rendered at
+267×648 and smaller. That is a contact sheet, not a reference: dropped onto
+the canvas as an `imageFill`, a 236px-wide asset is unusable for anything
+but a thumbnail grid.
+
+§6 of this design says "Deliberately out of scope: rewriting image URLs to
+higher resolutions per site. Site-specific and rots." That reasoning still
+holds in general, but it was written before anyone had looked at what the
+tool actually returns, and the answer is "the smallest variant the page
+happens to render". Worth reopening with the evidence now in hand.
+
+Shape of a fix, in preference order:
+
+1. Prefer what the page already declares: `srcset`/`currentSrc` carry the
+   larger candidates for exactly this reason, and reading them is generic,
+   not site-specific. `FIND_IMAGES_JS` currently reads `currentSrc || src`
+   and ignores `srcset` entirely — the biggest win is also the most
+   portable one.
+2. Report the intrinsic size (`naturalWidth`/`naturalHeight`) alongside the
+   rendered box, so a consumer can tell a small asset from a small
+   *rendering* of a large one. Today both look identical.
+3. Only if 1 and 2 fall short: a narrow, clearly-labelled per-host upgrade
+   map. This is the part that rots, so it should be last and small.
+
+### BROWSE-02 — half the snapshot's elements have no usable label
+
+The same run returned a run of `div role="button"` entries labelled
+`"div #3"`, `"div #8"`, `"div #10"` — the tag-and-position fallback. That
+fallback exists so unlabelled icon buttons (cookie banners) stay
+selectable, and that part is right. But `"div #8"` tells the decision model
+nothing, so any step whose target is one of those is a coin flip, and
+`MIN_STEP_CONFIDENCE` will (correctly) block it — which means those
+controls are simply unreachable by `browse_task`.
+
+`labelOf` currently reads `aria-label` → own text → `placeholder` → `alt`.
+It should also consider, before falling back:
+
+- `aria-labelledby` (resolve the referenced element's text)
+- `title`
+- an `aria-label`/`title`/`alt` on a **descendant** — an icon button is
+  usually `<div role=button><svg aria-label="Save"></svg></div>`, and the
+  label is one level down
+- the nearest enclosing `<a>`/`<button>`'s accessible name
+- for an image-only control, the descendant `<img alt>`
+
+Only after all of those should the `tag #index` fallback apply.
+
+Both were found by a throwaway Playwright script driving the packaged shell
+against the live site; the cheapest way to check a fix is to re-run that
+same shape against the same query and compare.
