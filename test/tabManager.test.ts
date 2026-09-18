@@ -1,11 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { TabManager, type TabViewHandle, type TabsSnapshot } from "../src/main/tabManager";
+import {
+  TabManager,
+  resolveMcpActiveTab,
+  type TabKind,
+  type TabViewHandle,
+  type TabsSnapshot,
+} from "../src/main/tabManager";
 
 function makeFakeView() {
   let titleCb: ((t: string) => void) | undefined;
   let themeCb: ((theme: "light" | "dark") => void) | undefined;
+  let navCb: ((s: { url: string; title: string; canGoBack: boolean; canGoForward: boolean }) => void) | undefined;
   const view = {
-    loadURL: vi.fn(),
+    loadURL: vi.fn(() => Promise.resolve()),
     setBounds: vi.fn(),
     setVisible: vi.fn(),
     destroy: vi.fn(),
@@ -18,23 +25,55 @@ function makeFakeView() {
     onThemeChanged: vi.fn((cb: (theme: "light" | "dark") => void) => {
       themeCb = cb;
     }),
+    onNavigationStateChanged: vi.fn(
+      (cb: (s: { url: string; title: string; canGoBack: boolean; canGoForward: boolean }) => void) => {
+        navCb = cb;
+      },
+    ),
+    getURL: vi.fn(() => ""),
+    getTitle: vi.fn(() => ""),
+    goBack: vi.fn(),
+    goForward: vi.fn(),
+    reload: vi.fn(),
+    canGoBack: vi.fn(() => false),
+    canGoForward: vi.fn(() => false),
+    executeJavaScript: vi.fn(() => Promise.resolve(null)),
     emitTitle: (t: string) => titleCb?.(t),
     emitTheme: (theme: "light" | "dark") => themeCb?.(theme),
+    emitNavState: (s: { url: string; title: string; canGoBack: boolean; canGoForward: boolean }) => navCb?.(s),
   };
-  return view as TabViewHandle & { emitTitle: (t: string) => void; emitTheme: (theme: "light" | "dark") => void; loadURL: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn>; setVisible: ReturnType<typeof vi.fn>; setBounds: ReturnType<typeof vi.fn> };
+  return view as TabViewHandle & {
+    emitTitle: (t: string) => void;
+    emitTheme: (theme: "light" | "dark") => void;
+    emitNavState: (s: { url: string; title: string; canGoBack: boolean; canGoForward: boolean }) => void;
+    loadURL: ReturnType<typeof vi.fn>;
+    destroy: ReturnType<typeof vi.fn>;
+    setVisible: ReturnType<typeof vi.fn>;
+    setBounds: ReturnType<typeof vi.fn>;
+    goBack: ReturnType<typeof vi.fn>;
+    goForward: ReturnType<typeof vi.fn>;
+    reload: ReturnType<typeof vi.fn>;
+    getWebContentsId: ReturnType<typeof vi.fn>;
+    onDocumentTitleChanged: ReturnType<typeof vi.fn>;
+    onThemeChanged: ReturnType<typeof vi.fn>;
+    onNavigationStateChanged: ReturnType<typeof vi.fn>;
+  };
 }
 
 describe("TabManager", () => {
   let views: ReturnType<typeof makeFakeView>[];
   let states: TabsSnapshot[];
   let tm: TabManager;
+  let nextWebContentsId: number;
 
   beforeEach(() => {
     views = [];
     states = [];
+    nextWebContentsId = 1;
     tm = new TabManager({
-      createView: () => {
+      createView: (_kind: TabKind) => {
         const v = makeFakeView();
+        v.getWebContentsId.mockReturnValue(nextWebContentsId++);
         views.push(v);
         return v;
       },
@@ -49,6 +88,8 @@ describe("TabManager", () => {
     expect(tm.getSnapshot().activeId).toBe(id);
     expect(tm.count()).toBe(1);
     expect(tm.getSnapshot().tabs[0].title).toBe("Untitled");
+    expect(tm.getSnapshot().tabs[0].kind).toBe("editor");
+    expect(tm.getSnapshot().activeKind).toBe("editor");
   });
 
   it("second tab hides the first and shows itself", () => {
@@ -81,6 +122,14 @@ describe("TabManager", () => {
     tm.closeTab(a);
     expect(tm.count()).toBe(1);
     expect(tm.getSnapshot().activeId).not.toBe(a);
+  });
+
+  it("closing the last tab always respawns an EDITOR tab, even if the last tab was a browser tab", () => {
+    const a = tm.newTab("browser");
+    tm.closeTab(a);
+    expect(tm.count()).toBe(1);
+    expect(tm.getSnapshot().tabs[0].kind).toBe("editor");
+    expect(tm.getSnapshot().activeKind).toBe("editor");
   });
 
   it("closeTab does not corrupt state when destroy() throws", () => {
@@ -189,5 +238,106 @@ describe("TabManager", () => {
     expect(() => tm.destroyAll()).not.toThrow();
     expect(views[1].destroy).toHaveBeenCalled();
     expect(tm.count()).toBe(0);
+  });
+
+  describe("browser tabs", () => {
+    it("newTab(\"browser\") does not load the editor url, defaults title to New Tab, and does not wire title/theme callbacks", () => {
+      const id = tm.newTab("browser");
+      expect(views[0].loadURL).not.toHaveBeenCalled();
+      expect(views[0].onDocumentTitleChanged).not.toHaveBeenCalled();
+      expect(views[0].onThemeChanged).not.toHaveBeenCalled();
+      expect(views[0].onNavigationStateChanged).toHaveBeenCalled();
+      const snap = tm.getSnapshot();
+      expect(snap.tabs[0].kind).toBe("browser");
+      expect(snap.tabs[0].title).toBe("New Tab");
+      expect(snap.activeId).toBe(id);
+      expect(snap.activeKind).toBe("browser");
+    });
+
+    it("navigation state updates flow into the snapshot", () => {
+      tm.newTab("browser");
+      views[0].emitNavState({ url: "https://example.com/", title: "Example", canGoBack: true, canGoForward: false });
+      const last = states[states.length - 1];
+      expect(last.tabs[0]).toMatchObject({
+        title: "Example",
+        url: "https://example.com/",
+        canGoBack: true,
+        canGoForward: false,
+      });
+    });
+
+    it("an empty title falls back to New Tab", () => {
+      tm.newTab("browser");
+      views[0].emitNavState({ url: "https://example.com/", title: "  ", canGoBack: false, canGoForward: false });
+      expect(tm.getSnapshot().tabs[0].title).toBe("New Tab");
+    });
+
+    it("editor tabs are unaffected by browser-tab wiring (editor tabs still get title/theme callbacks, not onNavigationStateChanged use)", () => {
+      tm.newTab("editor");
+      expect(views[0].onDocumentTitleChanged).toHaveBeenCalled();
+      expect(views[0].onThemeChanged).toHaveBeenCalled();
+    });
+
+    it("browserHandle returns null when there is no browser tab", () => {
+      tm.newTab("editor");
+      expect(tm.browserHandle()).toBeNull();
+    });
+
+    it("browserHandle returns the active browser tab when it is active", () => {
+      tm.newTab("editor");
+      const b = tm.newTab("browser");
+      expect(tm.getSnapshot().activeId).toBe(b);
+      expect(tm.browserHandle()).toBe(views[1]);
+    });
+
+    it("browserHandle falls back to the most recently created browser tab when a different (editor) tab is active", () => {
+      tm.newTab("browser"); // views[0]
+      tm.newTab("browser"); // views[1]
+      const e = tm.newTab("editor"); // views[2], becomes active
+      expect(tm.getSnapshot().activeId).toBe(e);
+      expect(tm.browserHandle()).toBe(views[1]);
+    });
+
+    it("isEditorTab is true only for editor tabs' webContents ids", () => {
+      tm.newTab("editor");
+      tm.newTab("browser");
+      const editorWcId = views[0].getWebContentsId();
+      const browserWcId = views[1].getWebContentsId();
+      expect(tm.isEditorTab(editorWcId)).toBe(true);
+      expect(tm.isEditorTab(browserWcId)).toBe(false);
+      expect(tm.isEditorTab(999)).toBe(false);
+    });
+
+    it("activeKind tracks the active tab's kind across activation", () => {
+      const e = tm.newTab("editor");
+      const b = tm.newTab("browser");
+      expect(tm.getSnapshot().activeKind).toBe("browser");
+      tm.activate(e);
+      expect(tm.getSnapshot().activeKind).toBe("editor");
+      tm.activate(b);
+      expect(tm.getSnapshot().activeKind).toBe("browser");
+    });
+  });
+});
+
+// Finding 1: activating a browser tab must not knock out
+// McpService.getActiveTab() for un-targeted tools/call requests while an
+// editor tab is still open elsewhere in the strip.
+describe("resolveMcpActiveTab", () => {
+  it("reports the active webContents id while an editor tab is active", () => {
+    expect(resolveMcpActiveTab("editor", 7, null)).toBe(7);
+    expect(resolveMcpActiveTab("editor", 7, 3)).toBe(7);
+  });
+
+  it("falls back to the last active editor tab id while a browser tab is active, instead of nulling it out", () => {
+    expect(resolveMcpActiveTab("browser", 9, 3)).toBe(3);
+  });
+
+  it("stays null while a browser tab is active and no editor tab has ever been active", () => {
+    expect(resolveMcpActiveTab("browser", 9, null)).toBeNull();
+  });
+
+  it("falls back to the last editor tab id when there is no active tab at all (activeKind null)", () => {
+    expect(resolveMcpActiveTab(null, null, 3)).toBe(3);
   });
 });

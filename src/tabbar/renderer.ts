@@ -1,7 +1,17 @@
 type McpStatus = "listening" | "not-published" | "off" | "error";
+type TabKind = "editor" | "browser";
+type TabRow = {
+  id: number;
+  title: string;
+  kind: TabKind;
+  url?: string;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+};
 type TabsSnapshot = {
-  tabs: { id: number; title: string }[];
+  tabs: TabRow[];
   activeId: number | null;
+  activeKind: TabKind | null;
   mcpStatus: McpStatus;
 };
 type UITheme = "light" | "dark";
@@ -11,6 +21,7 @@ interface PenTabbarApi {
   newTab(): void;
   activateTab(id: number): void;
   closeTab(id: number): void;
+  navigate(action: "url" | "back" | "forward" | "reload", url?: string): void;
   onState(cb: (s: TabsSnapshot) => void): void;
   onTheme(cb: (theme: UITheme) => void): void;
 }
@@ -21,6 +32,13 @@ interface Window {
 
 const tabsEl = document.getElementById("tabs")!;
 const mcpStatusEl = document.getElementById("mcp-status")!;
+const chromeRowEl = document.getElementById("chrome-row")!;
+const navBackEl = document.getElementById("nav-back") as HTMLButtonElement;
+const navForwardEl = document.getElementById("nav-forward") as HTMLButtonElement;
+const navReloadEl = document.getElementById("nav-reload") as HTMLButtonElement;
+const urlFormEl = document.getElementById("url-form") as HTMLFormElement;
+const urlInputEl = document.getElementById("url-input") as HTMLInputElement;
+
 document.documentElement.toggleAttribute("data-macos", window.penTabbar.isMac);
 document.getElementById("new-tab")!.addEventListener("click", () => window.penTabbar.newTab());
 
@@ -42,8 +60,51 @@ function mcpStatusTitle(status: McpStatus): string {
   }
 }
 
+// Typed input is normalized by `normalizeTypedUrl`/`isNavigableUrl` —
+// defined in urlNormalization.ts (loaded as its own <script> just before
+// this one; see that file's header for why it's split out and why calling
+// its functions here needs no import). See design doc §2/§5 and finding 5.
+
+navBackEl.addEventListener("click", () => window.penTabbar.navigate("back"));
+navForwardEl.addEventListener("click", () => window.penTabbar.navigate("forward"));
+navReloadEl.addEventListener("click", () => window.penTabbar.navigate("reload"));
+urlFormEl.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const normalized = normalizeTypedUrl(urlInputEl.value);
+  // Denial visibility (finding 5): main's onTabbarNavigate silently no-ops
+  // on a non-http(s) URL (decideBrowserNavigation), which used to leave the
+  // submit button looking like a dead control with no explanation. Mirror
+  // that same allow/deny check here so a rejected submission is visible —
+  // the input keeps its prior (unsent) value and gets a CSS hook instead of
+  // quietly doing nothing. No new IPC channel: main still independently
+  // validates before navigating.
+  if (!normalized || !isNavigableUrl(normalized)) {
+    urlInputEl.classList.add("invalid");
+    return;
+  }
+  urlInputEl.classList.remove("invalid");
+  window.penTabbar.navigate("url", normalized);
+});
+urlInputEl.addEventListener("input", () => urlInputEl.classList.remove("invalid"));
+
 window.penTabbar.onTheme((theme) => {
   document.documentElement.dataset.theme = theme;
+});
+
+let urlInputFocused = false;
+let latestActiveUrl: string | undefined;
+urlInputEl.addEventListener("focus", () => {
+  urlInputFocused = true;
+});
+urlInputEl.addEventListener("blur", () => {
+  urlInputFocused = false;
+  // While focused, onState below skips writing into the input so it never
+  // clobbers what the user is mid-typing — but nothing resynced it
+  // afterwards, so an agent-driven browse_open that lands while the address
+  // bar happens to be focused left the input showing a stale URL
+  // indefinitely (finding 9). Catch up on blur to whatever the most
+  // recently received snapshot actually says.
+  if (latestActiveUrl !== undefined) urlInputEl.value = latestActiveUrl;
 });
 
 window.penTabbar.onState((state) => {
@@ -70,5 +131,20 @@ window.penTabbar.onState((state) => {
     el.appendChild(close);
 
     tabsEl.appendChild(el);
+  }
+
+  // Address row: only shown for the active browser tab (design doc §2).
+  const isBrowser = state.activeKind === "browser";
+  chromeRowEl.toggleAttribute("hidden", !isBrowser);
+  if (isBrowser) {
+    const active = state.tabs.find((t) => t.id === state.activeId);
+    navBackEl.disabled = !active?.canGoBack;
+    navForwardEl.disabled = !active?.canGoForward;
+    // Tracked unconditionally (finding 9) so a blur resync (above) always
+    // has the latest value to fall back to, even though the input itself
+    // is only written here while not focused, so as not to clobber what
+    // the user is mid-typing.
+    latestActiveUrl = active?.url ?? "";
+    if (!urlInputFocused) urlInputEl.value = latestActiveUrl;
   }
 });

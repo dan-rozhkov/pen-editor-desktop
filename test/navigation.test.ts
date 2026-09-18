@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   decideNavigation,
+  decideBrowserNavigation,
   attachNavigationPolicy,
+  attachBrowserTabPolicy,
   attachOfflineFallback,
   attachLocalOnlyPolicy,
   shouldDropMcpRegistration,
@@ -75,6 +77,57 @@ describe("attachNavigationPolicy", () => {
     openExternal.mockClear();
     expect(contents.open("javascript:alert(1)")).toEqual({ action: "deny" });
     expect(openExternal).not.toHaveBeenCalled();
+  });
+});
+
+describe("decideBrowserNavigation", () => {
+  it("allows http(s), regardless of origin", () => {
+    expect(decideBrowserNavigation("https://pinterest.com/search")).toBe("allow");
+    expect(decideBrowserNavigation("http://example.com/")).toBe("allow");
+    expect(decideBrowserNavigation("https://totally-unrelated-domain.test/x")).toBe("allow");
+  });
+  it("denies non-http schemes and garbage", () => {
+    expect(decideBrowserNavigation("file:///etc/passwd")).toBe("deny");
+    expect(decideBrowserNavigation("javascript:alert(1)")).toBe("deny");
+    expect(decideBrowserNavigation("%%%")).toBe("deny");
+  });
+});
+
+describe("attachBrowserTabPolicy", () => {
+  it("lets in-place http(s) navigation through", () => {
+    const contents = fakeContents();
+    const openInNewBrowserTab = vi.fn();
+    attachBrowserTabPolicy(contents as never, openInNewBrowserTab);
+    const ev = { preventDefault: vi.fn() };
+    contents.emit("will-navigate", ev, "https://example.com/x");
+    expect(ev.preventDefault).not.toHaveBeenCalled();
+    expect(openInNewBrowserTab).not.toHaveBeenCalled();
+  });
+
+  it("denies in-place navigation to non-http(s) schemes", () => {
+    const contents = fakeContents();
+    const openInNewBrowserTab = vi.fn();
+    attachBrowserTabPolicy(contents as never, openInNewBrowserTab);
+    const ev = { preventDefault: vi.fn() };
+    contents.emit("will-navigate", ev, "file:///etc/passwd");
+    expect(ev.preventDefault).toHaveBeenCalled();
+    expect(openInNewBrowserTab).not.toHaveBeenCalled();
+  });
+
+  it("popups open as a new browser tab (never shell.openExternal) for http(s), and are always denied in-window", () => {
+    const contents = fakeContents();
+    const openInNewBrowserTab = vi.fn();
+    attachBrowserTabPolicy(contents as never, openInNewBrowserTab);
+    expect(contents.open("https://example.com/x")).toEqual({ action: "deny" });
+    expect(openInNewBrowserTab).toHaveBeenCalledWith("https://example.com/x");
+  });
+
+  it("popups to non-http(s) schemes are denied without opening a new browser tab", () => {
+    const contents = fakeContents();
+    const openInNewBrowserTab = vi.fn();
+    attachBrowserTabPolicy(contents as never, openInNewBrowserTab);
+    expect(contents.open("javascript:alert(1)")).toEqual({ action: "deny" });
+    expect(openInNewBrowserTab).not.toHaveBeenCalled();
   });
 });
 

@@ -98,9 +98,11 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `tabbar:state` main→tabbar (`TabsSnapshot`, now including `mcpStatus`), re-sent on tabbar `did-finish-load`
 - `tabbar:theme` main→tabbar (`light` | `dark`, active editor theme or system fallback)
 - `tabbar:new` / `tabbar:activate` / `tabbar:close` tabbar→main (sender-checked)
+- `tabbar:navigate` tabbar→main (sender-checked; `{action: "url" | "back" | "forward" | "reload", url?}`) — the address row driving the active browser tab, see "Built-in browser tab" below
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below
 - `mcp:call` main→tab only (`{callId, tool, args}`)
 - `mcp:result` tab→main (`{callId, type: "tool_result" | "tool_error", result?, error?}`)
+- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages", args}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; see "Built-in browser tab" below
 
 Both ends of every channel live in this repo — the editor only ever touches
 the preload API, never a channel name. `test/ipcContract.test.ts` scans `src/`
@@ -142,3 +144,128 @@ ever crosses into anything rendered — never the token or the port number. The
 tab strip's indicator and the File menu's "MCP: …"/"Use this app for MCP"
 items (see `menu.ts`) are the only diagnostics available, since a packaged app
 has no terminal.
+
+## Built-in browser tab
+
+A second `TabKind` (`tabManager.ts`'s `"editor" | "browser"`) — a real
+browser tab the design agent can drive to pull visual references from the
+open web (Pinterest in particular). Design spec:
+`docs/superpowers/specs/2026-09-18-builtin-browser-design.md`.
+
+A browser tab's `WebContentsView` is constructed with
+`partition: "persist:penbrowser"` — its own session, separate from the
+editor tabs' — and **no preload at all**: `contextIsolation`/`sandbox` are
+on as usual, but there is nothing exposing `window.penDesktop` to it. That
+dedicated partition is the whole security boundary: the editor's cookies are
+never in it, and whatever the user logs into inside the browser tab (a
+Pinterest account, say) is exactly what the agent can reach, nothing more.
+The partition also has no chrome to ever reveal or revoke a granted
+permission, so `index.ts` calls `denyAllPermissions` (`browser/permissions.ts`)
+on it exactly once, at startup, after `app.whenReady()` — deny-by-default
+`setPermissionRequestHandler`/`setPermissionCheckHandler`, since Electron
+grants permission requests by default and would otherwise silently hand any
+browsed page geolocation, notifications, clipboard-read, or media devices.
+Consequently a browser tab is never passed to `mcpService.registerTab()`,
+never gets the `editor:*` title/theme IPC (there is no preload to send them
+from), and its title/url/back-forward state instead comes from real
+navigation events (`did-navigate`, `did-navigate-in-page`,
+`page-title-updated`) that `window.ts` wires into
+`TabViewHandle.onNavigationStateChanged` — wired by `TabManager.newTab()`
+only for `kind: "browser"`, the same way title/theme callbacks are wired
+only for `kind: "editor"`.
+
+Because a browser tab is never MCP-registered, `window.ts`'s `pushState`
+must not blindly forward the active tab's webContents id to
+`mcpService.setActiveTab()` — activating a browser tab would otherwise point
+the MCP dispatcher at an id it never registered, breaking every
+un-targeted `tools/call` ("No editor tab is open") even while an editor tab
+is still open elsewhere in the strip. `tabManager.ts`'s pure
+`resolveMcpActiveTab(activeKind, activeWebContentsId, lastEditorTabId)`
+reports the active id only while an editor tab is active, and otherwise
+keeps pointing at whichever editor tab was last active (never nulled out)
+— `window.ts` just tracks `lastEditorTabId` and calls it.
+
+The `browser:command` `ipcMain.handle` in `window.ts` checks the sender
+against `TabManager.isEditorTab()` — the single source of truth for "which
+webContents id is an editor tab" (there used to be a second, ad hoc `Set`
+kept in `window.ts` alongside it; the two could drift, so it was deleted).
+
+Popups (`target="_blank"`, `window.open`) inside a browser tab open as a new
+browser tab (`navigation.ts`'s `attachBrowserTabPolicy` /
+`decideBrowserNavigation` — any http(s) URL is allowed, anything else is
+denied) rather than escaping to the system browser via `shell.openExternal`,
+unlike editor tabs' `attachNavigationPolicy`.
+
+`src/main/browser/controller.ts` (`BrowserController`) is the command
+surface, in the same Electron-free, injected-handle style as
+`mcp/dispatcher.ts` — a `BrowserTarget`/`BrowserPageHandle` pair stands in
+for the real tab, so it is unit-tested under plain Node/vitest
+(`test/browserController.test.ts`). Its three commands (`open`, `act`,
+`findImages`) are exposed to an *editor* tab's preload as
+`window.penDesktop.browser.{open,act,findImages}`
+(`src/preload/tab.ts`), each forwarding to the single `browser:command`
+`ipcMain.handle` in `window.ts`. That handler is the trust boundary — every
+argument ultimately comes from an LLM tool call, so `BrowserController`
+validates shape and type itself rather than trusting the caller, and every
+command resolves (never rejects), coming back as `{ error: string }` on any
+failure, matching how `dispatcher.ts`'s calls and pen-editor's own
+`toolHandlers` behave. `act`'s `click`/`type`/`scroll` commands run small
+injected page scripts (`src/main/browser/pageScripts.ts`) via
+`executeJavaScript`, with arguments always embedded as a `JSON.stringify`d
+literal via a **function** replacer (`.replace(ARGS_MARKER, () =>
+JSON.stringify(args))`) — the string form of `replace` treats `$&`, `` $` ``,
+`$'` and `$$` in the replacement as special patterns, which would otherwise
+let a click target or typed text containing one of those sequences mangle
+the script or (for `` $' ``) splice page source into the JSON literal,
+defeating the "never break out of the script" invariant. `back`/`forward`
+are guarded by `canGoBack()`/`canGoForward()` before calling
+`goBack()`/`goForward()` — an ungoverned `goForward()` with no forward
+history is a silent no-op that used to report false success after burning
+the full settle wait. `click`'s page script reads
+`location.href`/`document.title` synchronously, so if the click itself
+starts a navigation it can report the page just left rather than the one
+landed on; `runClick` gives it a short (300ms) bounded window to actually
+navigate before trusting the result's url/title, the same
+`waitForUrlChange` poll `back`/`forward` use with their longer (2s) bound.
+`pageScripts.ts`'s `findByText` (used by `click`/`type` when `target` isn't
+a CSS selector) searches genuinely clickable elements
+(`a, button, [role="button"], input, select, textarea, [onclick]`) before
+falling back to any element, and within each candidate set prefers the
+innermost match over an enclosing wrapper — a plain document-order scan
+picks the outermost element whose trimmed `textContent` matches, typically
+a wrapper `<div>` around the real control, and `el.click()` on that wrapper
+never reaches a descendant's listener. `FIND_IMAGES_JS`'s `consider()` only
+accepts `http:`/`https:` resolved URLs — an inline `data:`/`blob:` image has
+no size cap and would otherwise flood chat history with base64 (this repo's
+been bitten by that twice before).
+
+The address row (a second, 32px-tall row inside the *existing* tab-bar
+`WebContentsView` — no new view, no new preload) is shown only while the
+active tab is a browser tab; `window.ts`'s `layout()` re-runs on every
+`tabbar:state` push (not just on window resize) since the active tab's kind
+can change without one. Its back/forward/reload/url controls send
+`tabbar:navigate` (sender-checked against the tab-bar view, like
+`tabbar:new`/`tabbar:activate`/`tabbar:close`). Typed input is normalized by
+`normalizeTypedUrl` in `src/tabbar/urlNormalization.ts` — its own file
+(loaded as a second plain `<script src>` before `renderer.js`, same
+no-import/export global-script constraint as `renderer.ts`, so its
+functions are testable in isolation) — into a navigable URL: whitespace in
+the input always means a search query (routed to a Pinterest search),
+otherwise it is parsed as a URL (`https://` prepended if there's no
+scheme) and falls back to search if that fails or the parsed host has no
+dot. A submission that still can't be normalized into an `http(s)` URL
+(`isNavigableUrl`, also in that file) leaves the input showing its prior
+value with a `.invalid` CSS class instead of silently doing nothing. The
+input also resyncs to the tab's latest known url on blur — while focused,
+incoming `tabbar:state` pushes don't overwrite it (so as not to clobber
+mid-typing), but nothing used to catch it up afterwards, leaving it stale
+indefinitely if a state change (e.g. an agent-driven `browse_open`) landed
+while the user had the address bar focused.
+
+Only the desktop half of the design shipped from this repo. The backend
+`penTools` schemas (`browse_open`/`browse_act`/`browse_find_images`,
+client-executed, no `execute`) and the frontend `toolRegistry.ts` handlers
+that call `window.penDesktop.browser` are a separate change in
+`pen-editor-backend`/`pen-editor`, gated behind a `clientCapabilities.desktopBrowser`
+flag the frontend derives from `Boolean(window.penDesktop?.browser)` — see
+the design doc's §6–§8 for that half and its merge order.

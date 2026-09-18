@@ -7,6 +7,8 @@ const api = {
   newTab: () => ipcRenderer.send("tabbar:new"),
   activateTab: (id: number) => ipcRenderer.send("tabbar:activate", id),
   closeTab: (id: number) => ipcRenderer.send("tabbar:close", id),
+  navigate: (action: "url" | "back" | "forward" | "reload", url?: string) =>
+    ipcRenderer.send("tabbar:navigate", { action, url }),
   onState: (cb: (s: TabsSnapshot) => void) => {
     ipcRenderer.on("tabbar:state", (_e: IpcRendererEvent, s: TabsSnapshot) => cb(s));
   },

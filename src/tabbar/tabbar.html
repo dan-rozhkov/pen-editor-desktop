@@ -9,9 +9,20 @@
     <link rel="stylesheet" href="tabbar.css" />
   </head>
   <body>
-    <div id="tabs"></div>
-    <div id="mcp-status" class="mcp-status mcp-status--off"></div>
-    <button id="new-tab" title="New Tab (⌘T)" aria-label="New tab"></button>
+    <div id="tab-row" class="tab-row">
+      <div id="tabs"></div>
+      <div id="mcp-status" class="mcp-status mcp-status--off"></div>
+      <button id="new-tab" title="New Tab (⌘T)" aria-label="New tab"></button>
+    </div>
+    <div id="chrome-row" class="chrome-row" hidden>
+      <button id="nav-back" class="nav-btn" aria-label="Back" title="Back">‹</button>
+      <button id="nav-forward" class="nav-btn" aria-label="Forward" title="Forward">›</button>
+      <button id="nav-reload" class="nav-btn" aria-label="Reload" title="Reload">⟳</button>
+      <form id="url-form" class="url-form">
+        <input id="url-input" class="url-input" type="text" aria-label="Address" placeholder="Search or enter address" />
+      </form>
+    </div>
+    <script src="urlNormalization.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

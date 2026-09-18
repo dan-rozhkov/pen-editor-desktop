@@ -2,6 +2,8 @@ import path from "node:path";
 import { BaseWindow, WebContentsView, Menu, ipcMain, nativeTheme, shell } from "electron";
 import {
   TabManager,
+  resolveMcpActiveTab,
+  type TabKind,
   type TabViewHandle,
   type TabsSnapshot,
   type UITheme,
@@ -11,11 +13,18 @@ import {
   attachNavigationPolicy,
   attachOfflineFallback,
   attachLocalOnlyPolicy,
+  attachBrowserTabPolicy,
+  decideBrowserNavigation,
   shouldDropMcpRegistration,
 } from "./navigation";
+import { BrowserController, type BrowserTarget, type BrowserPageHandle } from "./browser/controller";
 import type { McpService, IpcListenerGateway } from "./mcp/service";
 
 export const TABBAR_HEIGHT = 38;
+// The address row (design doc `2026-09-18-builtin-browser-design.md` §2) —
+// rendered as a second row inside the existing tab-bar view, shown only
+// when the active tab is a browser tab.
+export const CHROME_HEIGHT = 32;
 
 // Real ipcMain wiring for McpService.registerAppLevelIpc — kept here (not in
 // service.ts, which stays Electron-free for testability, see its header
@@ -39,6 +48,10 @@ function createMcpIpcGateway(): IpcListenerGateway {
       else ipcMain.removeListener("mcp:result", w);
     },
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -83,6 +96,12 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
   void tabbarView.webContents.loadFile(path.join(__dirname, "../tabbar/tabbar.html"));
 
   const systemTheme = (): UITheme => (nativeTheme.shouldUseDarkColors ? "dark" : "light");
+  // Tracks the webContents id of the last *editor* tab that was active —
+  // browser tabs are never registered with the MCP bridge (see
+  // resolveMcpActiveTab's doc comment / finding 1), so this is what
+  // mcpService keeps pointing at while a browser tab is focused instead of
+  // being nulled out.
+  let lastEditorTabId: number | null = null;
   const pushState = (s: TabsSnapshot) => {
     // s.activeId is TabManager's own sequential tab id — a different id
     // space from the webContents id mcp/service.ts's tab registry is keyed
@@ -91,9 +110,19 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
     // handle rather than passing s.activeId straight through, or every real
     // tools/call would 404 against a tab that was never registered under
     // that id — see TabViewHandle.getWebContentsId's doc comment.
-    mcpService.setActiveTab(tabs.activeHandle()?.getWebContentsId() ?? null);
+    const activeWebContentsId = tabs.activeHandle()?.getWebContentsId() ?? null;
+    if (s.activeKind === "editor" && activeWebContentsId !== null) lastEditorTabId = activeWebContentsId;
+    mcpService.setActiveTab(resolveMcpActiveTab(s.activeKind, activeWebContentsId, lastEditorTabId));
     tabbarView.webContents.send("tabbar:state", s);
     tabbarView.webContents.send("tabbar:theme", s.activeTheme ?? systemTheme());
+    // The active tab's kind can change (activating a browser tab, or an
+    // editor tab) without a window resize — re-run layout every time the
+    // snapshot changes so the address row's height tracks activeKind
+    // (design doc §2). `layout` is defined below `tabs`, but this closure is
+    // never invoked until TabManager itself calls onStateChanged, which
+    // happens no earlier than the first tabs.newTab() call at the bottom of
+    // this function — by then `layout` is already assigned.
+    layout();
   };
   // tabs.setMcpStatus() (below) folds the current MCP status into every
   // TabsSnapshot pushState already sends — the tab strip's indicator reuses
@@ -123,46 +152,93 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
   const tabs = new TabManager({
     editorUrl,
     onStateChanged: pushState,
-    createView: (): TabViewHandle => {
-      const view = new WebContentsView({
-        webPreferences: {
-          preload: path.join(__dirname, "../preload/tab.js"),
-          contextIsolation: true,
-          nodeIntegration: false,
-          sandbox: true,
-        },
-      });
-      attachNavigationPolicy(view.webContents, editorOrigin, (url) => void shell.openExternal(url));
-      attachOfflineFallback(view.webContents, offlineFile);
+    createView: (kind: TabKind): TabViewHandle => {
+      const view = new WebContentsView(
+        kind === "browser"
+          ? {
+              webPreferences: {
+                // Dedicated session partition — the security boundary for
+                // the built-in browser (design doc §1): the editor's
+                // cookies are never in it, and whatever the user logs into
+                // here is all the agent can ever reach. Deliberately no
+                // preload: a browser tab must never see `penDesktop`.
+                partition: "persist:penbrowser",
+                contextIsolation: true,
+                nodeIntegration: false,
+                sandbox: true,
+              },
+            }
+          : {
+              webPreferences: {
+                preload: path.join(__dirname, "../preload/tab.js"),
+                contextIsolation: true,
+                nodeIntegration: false,
+                sandbox: true,
+              },
+            },
+      );
       win.contentView.addChildView(view);
       const viewId = view.webContents.id;
-      mcpService.registerTab(viewId, {
-        sendMcpCall: (callId, tool, args) => view.webContents.send("mcp:call", { callId, tool, args }),
-        isDestroyed: () => view.webContents.isDestroyed(),
-      });
-      // A tab's page reload drops whatever registerMcpBridge() call the
-      // previous page made — the new page has to re-register (design doc
-      // §2/§3). Only the main frame counts: an iframe navigating inside the
-      // editor page is not the editor tab itself going away. `isSameDocument`
-      // must also be excluded: Electron fires did-start-navigation for
-      // pushState/replaceState/hash navigation too (same-document, main
-      // frame), and pen-editor is a react-router SPA — an in-app link click
-      // would otherwise be treated as a full page reload, dropping the
-      // registration even though registerMcpBridge() was never re-run (its
-      // module-scoped `teardown` guard makes initDesktopMcpBridge() a no-op
-      // on the next call), permanently killing the bridge until a manual
-      // reload.
-      view.webContents.on("did-start-navigation", (details) => {
-        if (shouldDropMcpRegistration(details)) mcpService.handleTabNavigated(viewId);
-      });
+
+      if (kind === "editor") {
+        attachNavigationPolicy(view.webContents, editorOrigin, (url) => void shell.openExternal(url));
+        attachOfflineFallback(view.webContents, offlineFile);
+        mcpService.registerTab(viewId, {
+          sendMcpCall: (callId, tool, args) => view.webContents.send("mcp:call", { callId, tool, args }),
+          isDestroyed: () => view.webContents.isDestroyed(),
+        });
+        // A tab's page reload drops whatever registerMcpBridge() call the
+        // previous page made — the new page has to re-register (design doc
+        // §2/§3). Only the main frame counts: an iframe navigating inside the
+        // editor page is not the editor tab itself going away. `isSameDocument`
+        // must also be excluded: Electron fires did-start-navigation for
+        // pushState/replaceState/hash navigation too (same-document, main
+        // frame), and pen-editor is a react-router SPA — an in-app link click
+        // would otherwise be treated as a full page reload, dropping the
+        // registration even though registerMcpBridge() was never re-run (its
+        // module-scoped `teardown` guard makes initDesktopMcpBridge() a no-op
+        // on the next call), permanently killing the bridge until a manual
+        // reload.
+        view.webContents.on("did-start-navigation", (details) => {
+          if (shouldDropMcpRegistration(details)) mcpService.handleTabNavigated(viewId);
+        });
+      } else {
+        // Browser tabs: never registered with the MCP bridge, never get the
+        // editor:* IPC callbacks (there is no preload to send them from
+        // anyway). Popups open as a new browser tab instead of escaping to
+        // the system browser.
+        attachBrowserTabPolicy(view.webContents, (url) => {
+          tabs.newTab("browser");
+          tabs
+            .activeHandle()
+            ?.loadURL(url)
+            .catch((err) => console.error("browser tab: popup navigation failed", err));
+        });
+      }
+
+      let navListener: ((s: { url: string; title: string; canGoBack: boolean; canGoForward: boolean }) => void) | null =
+        null;
+      const reportNavState = () => {
+        if (!navListener) return;
+        navListener({
+          url: view.webContents.getURL(),
+          title: view.webContents.getTitle(),
+          canGoBack: view.webContents.navigationHistory.canGoBack(),
+          canGoForward: view.webContents.navigationHistory.canGoForward(),
+        });
+      };
+      view.webContents.on("did-navigate", reportNavState);
+      view.webContents.on("did-navigate-in-page", reportNavState);
+      view.webContents.on("page-title-updated", reportNavState);
+
       return {
-        loadURL: (url) => void view.webContents.loadURL(url),
+        loadURL: (url) => view.webContents.loadURL(url),
         setBounds: (b) => view.setBounds(b),
         setVisible: (v) => view.setVisible(v),
         destroy: () => {
           themeCallbacks.delete(viewId);
           titleCallbacks.delete(viewId);
-          mcpService.unregisterTab(viewId);
+          if (kind === "editor") mcpService.unregisterTab(viewId);
           win.contentView.removeChildView(view);
           view.webContents.close();
         },
@@ -171,15 +247,64 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         onDocumentTitleChanged: (cb) => titleCallbacks.set(viewId, cb),
         onThemeChanged: (cb) => themeCallbacks.set(viewId, cb),
         getWebContentsId: () => viewId,
+        onNavigationStateChanged: (cb) => {
+          navListener = cb;
+        },
+        getURL: () => view.webContents.getURL(),
+        getTitle: () => view.webContents.getTitle(),
+        goBack: () => view.webContents.navigationHistory.goBack(),
+        goForward: () => view.webContents.navigationHistory.goForward(),
+        reload: () => view.webContents.reload(),
+        canGoBack: () => view.webContents.navigationHistory.canGoBack(),
+        canGoForward: () => view.webContents.navigationHistory.canGoForward(),
+        executeJavaScript: (code) => view.webContents.executeJavaScript(code),
       };
     },
   });
 
+  // --- built-in browser (design doc §3/§4) ---
+  const browserTarget: BrowserTarget = {
+    ensurePage: async (): Promise<BrowserPageHandle> => {
+      const existing = tabs.browserHandle();
+      if (existing) return existing;
+      tabs.newTab("browser");
+      const created = tabs.browserHandle();
+      if (!created) throw new Error("Failed to create a browser tab.");
+      return created;
+    },
+    currentPage: (): BrowserPageHandle | null => tabs.browserHandle(),
+  };
+  const browserController = new BrowserController(browserTarget);
+
+  const onBrowserCommand = (event: Electron.IpcMainInvokeEvent, payload: unknown) => {
+    // Single source of truth for "which webContents id is an editor tab" —
+    // TabManager.isEditorTab (finding 10). Deliberately not a second,
+    // window.ts-local registry: two independent lists of the same fact can
+    // drift, and TabManager's is already kept correct by newTab/destroy.
+    if (!tabs.isEditorTab(event.sender.id)) return { error: "Not allowed." };
+    if (!isRecord(payload) || typeof payload.command !== "string") {
+      return { error: "Malformed browser command." };
+    }
+    switch (payload.command) {
+      case "open":
+        return browserController.open(payload.args);
+      case "act":
+        return browserController.act(payload.args);
+      case "findImages":
+        return browserController.findImages(payload.args);
+      default:
+        return { error: `Unknown browser command: ${payload.command}` };
+    }
+  };
+  ipcMain.handle("browser:command", onBrowserCommand);
+
   // --- layout ---
   const layout = () => {
     const { width, height } = win.getContentBounds();
-    tabbarView.setBounds({ x: 0, y: 0, width, height: TABBAR_HEIGHT });
-    tabs.layout({ width, height }, TABBAR_HEIGHT);
+    const activeKind = tabs.getSnapshot().activeKind;
+    const tabbarHeight = TABBAR_HEIGHT + (activeKind === "browser" ? CHROME_HEIGHT : 0);
+    tabbarView.setBounds({ x: 0, y: 0, width, height: tabbarHeight });
+    tabs.layout({ width, height }, tabbarHeight);
   };
   win.on("resize", layout);
   layout();
@@ -187,14 +312,29 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
   // --- tab bar IPC (scoped to this window's tabbar webContents) ---
   const tabbarId = tabbarView.webContents.id;
   const fromOurTabbar = (event: Electron.IpcMainEvent) => event.sender.id === tabbarId;
-  const onTabbarNew = (e: Electron.IpcMainEvent) => fromOurTabbar(e) && tabs.newTab();
+  const onTabbarNew = (e: Electron.IpcMainEvent) => fromOurTabbar(e) && tabs.newTab("editor");
   const onTabbarActivate = (e: Electron.IpcMainEvent, id: number) =>
     fromOurTabbar(e) && tabs.activate(id);
   const onTabbarClose = (e: Electron.IpcMainEvent, id: number) =>
     fromOurTabbar(e) && tabs.closeTab(id);
+  const onTabbarNavigate = (e: Electron.IpcMainEvent, payload: unknown) => {
+    if (!fromOurTabbar(e)) return;
+    if (!isRecord(payload)) return;
+    const action = payload.action;
+    const handle = tabs.browserHandle();
+    if (!handle) return;
+    if (action === "back") handle.goBack();
+    else if (action === "forward") handle.goForward();
+    else if (action === "reload") handle.reload();
+    else if (action === "url" && typeof payload.url === "string") {
+      if (decideBrowserNavigation(payload.url) !== "allow") return;
+      void handle.loadURL(payload.url).catch(() => {});
+    }
+  };
   ipcMain.on("tabbar:new", onTabbarNew);
   ipcMain.on("tabbar:activate", onTabbarActivate);
   ipcMain.on("tabbar:close", onTabbarClose);
+  ipcMain.on("tabbar:navigate", onTabbarNavigate);
   // Re-send current state when the tab bar (re)loads — it may have missed
   // snapshots emitted before its DOM was ready.
   tabbarView.webContents.on("did-finish-load", () => pushState(tabs.getSnapshot()));
@@ -213,8 +353,10 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
     ipcMain.removeListener("tabbar:new", onTabbarNew);
     ipcMain.removeListener("tabbar:activate", onTabbarActivate);
     ipcMain.removeListener("tabbar:close", onTabbarClose);
+    ipcMain.removeListener("tabbar:navigate", onTabbarNavigate);
     ipcMain.removeListener("editor:theme", onEditorTheme);
     ipcMain.removeListener("editor:document-title", onEditorDocumentTitle);
+    ipcMain.removeHandler("browser:command");
     nativeTheme.removeListener("updated", onSystemThemeChanged);
     unsubscribeMcpStatus();
     tabs.destroyAll();
@@ -231,7 +373,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
     const menu = Menu.buildFromTemplate(
       buildMenuTemplate(
         {
-          newTab: () => tabs.newTab(),
+          newTab: () => tabs.newTab("editor"),
+          newBrowserTab: () => tabs.newTab("browser"),
           closeTab: () => {
             const active = tabs.getSnapshot().activeId;
             if (active !== null) tabs.closeTab(active);
@@ -254,6 +397,6 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
     rebuildMenu();
   });
 
-  tabs.newTab();
+  tabs.newTab("editor");
   return win;
 }

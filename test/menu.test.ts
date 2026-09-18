@@ -12,6 +12,7 @@ describe("buildMenuTemplate", () => {
   beforeEach(() => {
     actions = {
       newTab: vi.fn(),
+      newBrowserTab: vi.fn(),
       closeTab: vi.fn(),
       nextTab: vi.fn(),
       prevTab: vi.fn(),
@@ -39,6 +40,12 @@ describe("buildMenuTemplate", () => {
     expect(i.accelerator).toBe("CmdOrCtrl+T");
     (i.click as () => void)();
     expect(actions.newTab).toHaveBeenCalled();
+  });
+
+  it("New Browser Tab triggers newBrowserTab", () => {
+    const i = item("New Browser Tab");
+    (i.click as () => void)();
+    expect(actions.newBrowserTab).toHaveBeenCalled();
   });
 
   it("Close Tab triggers closeTab with CmdOrCtrl+W", () => {

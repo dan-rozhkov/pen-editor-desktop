@@ -42,20 +42,28 @@
 
 body {
   margin: 0;
-  height: 38px;
   box-sizing: border-box;
-  border-bottom: 1px solid var(--border);
   display: flex;
-  align-items: stretch;
+  flex-direction: column;
   background: var(--bar-bg);
   color: var(--text);
   font: 12px -apple-system, BlinkMacSystemFont, sans-serif;
   user-select: none;
   overflow: hidden;
+}
+
+/* --- tab strip (row 1, always visible) --- */
+.tab-row {
+  height: 38px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
   app-region: drag;
   -webkit-app-region: drag;
 }
-:root[data-macos] body { padding-left: 78px; }
+:root[data-macos] .tab-row { padding-left: 78px; }
 #tabs { display: flex; align-items: stretch; overflow: hidden; flex: 1; }
 .tab {
   display: flex; align-items: center; gap: 6px;
@@ -103,3 +111,43 @@ body {
   outline: 1px solid currentColor;
   outline-offset: -2px;
 }
+
+/* --- address row (row 2, browser tabs only — design doc §2) --- */
+.chrome-row {
+  height: 32px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  app-region: drag;
+  -webkit-app-region: drag;
+}
+.chrome-row[hidden] { display: none; }
+.nav-btn {
+  flex: 0 0 24px; width: 24px; height: 24px;
+  border: 0; background: none; color: var(--text); cursor: pointer;
+  border-radius: 4px; font-size: 14px; line-height: 1;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
+.nav-btn:hover:not(:disabled) { color: var(--text-active); background: var(--control-hover-bg); }
+.nav-btn:disabled { opacity: 0.35; cursor: default; }
+.nav-btn:focus-visible { outline: 1px solid currentColor; outline-offset: -2px; }
+.url-form { flex: 1; min-width: 0; app-region: no-drag; -webkit-app-region: no-drag; }
+.url-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--tab-active-bg);
+  color: var(--text-active);
+  font: inherit;
+  padding: 0 8px;
+}
+.url-input:focus-visible { outline: 1px solid currentColor; outline-offset: -1px; }
+/* Finding 5: a rejected submission (couldn't be normalized into a
+   navigable http(s) URL) stays visible instead of silently doing nothing. */
+.url-input.invalid { border-color: #d64545; }

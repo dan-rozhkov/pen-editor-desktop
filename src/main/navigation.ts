@@ -36,6 +36,42 @@ export function attachNavigationPolicy(
 }
 
 /**
+ * Pure policy for browser tabs (design doc `2026-09-18-builtin-browser-design.md`
+ * §1): any http(s) navigation is allowed in place — a browser tab is a real
+ * browser, so there is no origin clamp — and anything else (file:, custom
+ * schemes, javascript:, garbage) is denied.
+ */
+export function decideBrowserNavigation(targetUrl: string): "allow" | "deny" {
+  let url: URL;
+  try {
+    url = new URL(targetUrl);
+  } catch {
+    return "deny";
+  }
+  return url.protocol === "http:" || url.protocol === "https:" ? "allow" : "deny";
+}
+
+/**
+ * Wires a browser tab's WebContents per `decideBrowserNavigation`: in-place
+ * http(s) navigation is left alone, everything else is blocked. Popups
+ * (`target="_blank"`, `window.open`) open as a new browser tab instead of
+ * escaping to the system browser — the whole point of the built-in browser is
+ * to keep the user's session inside the app.
+ */
+export function attachBrowserTabPolicy(
+  contents: WebContents,
+  openInNewBrowserTab: (url: string) => void,
+): void {
+  contents.on("will-navigate", (event, url) => {
+    if (decideBrowserNavigation(url) === "deny") event.preventDefault();
+  });
+  contents.setWindowOpenHandler(({ url }) => {
+    if (decideBrowserNavigation(url) === "allow") openInNewBrowserTab(url);
+    return { action: "deny" };
+  });
+}
+
+/**
  * Locks a WebContents down to whatever it was constructed with — used for the
  * tabbar view, which only ever loads local tabbar.html but has the penTabbar
  * IPC API attached. Any navigation attempt (e.g. a URL dragged onto the tab

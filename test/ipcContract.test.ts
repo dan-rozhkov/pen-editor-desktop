@@ -24,6 +24,8 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "tabbar:new", direction: "renderer->main" },
   { name: "tabbar:activate", direction: "renderer->main" },
   { name: "tabbar:close", direction: "renderer->main" },
+  { name: "tabbar:navigate", direction: "renderer->main" },
+  { name: "browser:command", direction: "renderer->main" },
   { name: "mcp:register", direction: "renderer->main" },
   { name: "mcp:call", direction: "main->renderer" },
   { name: "mcp:result", direction: "renderer->main" },

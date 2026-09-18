@@ -1,7 +1,8 @@
-import { app, BaseWindow } from "electron";
+import { app, BaseWindow, session } from "electron";
 import { resolveEditorUrl } from "./config";
 import { createMainWindow } from "./window";
 import { createMcpService } from "./mcp/service";
+import { denyAllPermissions } from "./browser/permissions";
 
 const editorUrl = resolveEditorUrl(process.env);
 
@@ -26,6 +27,15 @@ app.whenReady().then(async () => {
   // either way) and rebuild themselves via mcpService.onStatusChanged when
   // start() actually resolves, so nothing here depends on start() having
   // already finished.
+  // Built-in browser's dedicated session partition (see window.ts / design
+  // doc §1) — a real browser tab with no chrome to ever reveal or revoke a
+  // granted permission, so every permission request/check is denied
+  // outright (finding 6). `session.fromPartition` needs the app to be
+  // ready; `Session` objects for a given partition are singletons within
+  // the app, and this must be set once, not per browser tab, so it lives
+  // here rather than inside TabManager's per-tab createView.
+  denyAllPermissions(session.fromPartition("persist:penbrowser"));
+
   createMainWindow(editorUrl, mcpService);
 
   app.on("activate", () => {

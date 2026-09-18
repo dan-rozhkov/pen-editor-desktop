@@ -13,14 +13,36 @@ export type UITheme = "light" | "dark";
 // only diagnostic a packaged user has (finding 1/3).
 export type McpStatus = "listening" | "not-published" | "off" | "error";
 
+/**
+ * Two kinds of tab. "editor" is the original (and default) kind — a
+ * WebContentsView loading the deployed pen-editor frontend, with the
+ * `preload/tab.js` bridge, MCP registration, and title/theme IPC callbacks
+ * wired the way they always have been. "browser" is the built-in browser tab
+ * (design doc `2026-09-18-builtin-browser-design.md`) — a plain web page with
+ * no preload at all, never registered with the MCP bridge, whose title/url
+ * are learned from real navigation events instead of the editor's own IPC
+ * channels.
+ */
+export type TabKind = "editor" | "browser";
+
+/** The navigation state a browser tab reports back into its TabState. */
+export interface BrowserNavState {
+  url: string;
+  title: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
+}
+
 export interface TabViewHandle {
-  loadURL(url: string): void;
+  loadURL(url: string): Promise<void>;
   setBounds(bounds: { x: number; y: number; width: number; height: number }): void;
   setVisible(visible: boolean): void;
   destroy(): void;
   sendMenuCommand(commandId: string): void;
   focus(): void;
+  /** Editor tabs only — wired by TabManager only for kind "editor". */
   onDocumentTitleChanged(cb: (title: string) => void): void;
+  /** Editor tabs only — wired by TabManager only for kind "editor". */
   onThemeChanged(cb: (theme: UITheme) => void): void;
   /**
    * The webContents id backing this tab — a different id space from
@@ -30,16 +52,68 @@ export interface TabViewHandle {
    * McpService.registerTab/setActiveTab, both keyed by webContents.id).
    */
   getWebContentsId(): number;
+
+  // --- Browser tabs only below. Every real WebContentsView-backed
+  // implementation trivially supports these (they are all thin wrappers
+  // around webContents), so window.ts implements them uniformly for both
+  // kinds — but TabManager only *wires* onNavigationStateChanged, and only
+  // for kind "browser" (see newTab's doc comment). This is also the surface
+  // window.ts adapts into browser/controller.ts's Electron-free
+  // BrowserPageHandle for the BrowserController.
+
+  /** Browser tabs only — wired by TabManager only for kind "browser". */
+  onNavigationStateChanged(cb: (s: BrowserNavState) => void): void;
+  getURL(): string;
+  getTitle(): string;
+  goBack(): void;
+  goForward(): void;
+  reload(): void;
+  canGoBack(): boolean;
+  canGoForward(): boolean;
+  executeJavaScript(code: string): Promise<unknown>;
+}
+
+/** What TabManager.browserHandle() hands to the browser controller (see window.ts). */
+export type BrowserTabHandle = TabViewHandle;
+
+/**
+ * Which webContents id `McpService.setActiveTab` should be told about, given
+ * the currently active tab's kind (finding 1). Browser tabs are deliberately
+ * never `registerTab()`'d with the MCP bridge (design doc §1) — so if this
+ * just forwarded the active tab's webContents id unconditionally, activating
+ * a browser tab would point `McpService` at an id it never registered,
+ * `getActiveTab()` would return null, and every un-targeted `tools/call`
+ * would answer "No editor tab is open" even while an editor tab is still
+ * open in another tab strip slot. The fix: report the active webContents id
+ * only while an *editor* tab is active, and keep pointing at whichever
+ * editor tab was last active otherwise — never null it out, which would
+ * regress un-targeted calls made while the user is simply reading a browser
+ * tab.
+ */
+export function resolveMcpActiveTab(
+  activeKind: TabKind | null,
+  activeWebContentsId: number | null,
+  lastEditorTabId: number | null,
+): number | null {
+  if (activeKind === "editor") return activeWebContentsId;
+  return lastEditorTabId;
 }
 
 export interface TabState {
   id: number;
   title: string;
+  kind: TabKind;
+  /** Browser tabs only: the current page URL, for the address bar. */
+  url?: string;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
 }
 
 export interface TabsSnapshot {
   tabs: TabState[];
   activeId: number | null;
+  /** null when there are no tabs at all (never happens in steady state — see newTab's "never leave zero tabs" rule). */
+  activeKind: TabKind | null;
   activeTheme: UITheme | null;
   mcpStatus: McpStatus;
 }
@@ -47,13 +121,19 @@ export interface TabsSnapshot {
 interface TabEntry {
   id: number;
   title: string;
+  kind: TabKind;
   view: TabViewHandle;
   theme: UITheme | null;
+  url?: string;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
 }
 
 /**
- * Owns the ordered list of editor tabs. Pure logic — Electron's
- * WebContentsView is injected via `createView` so this is unit-testable.
+ * Owns the ordered list of tabs — editor tabs (the original kind) and
+ * browser tabs (see design doc `2026-09-18-builtin-browser-design.md`). Pure
+ * logic — Electron's WebContentsView is injected via `createView` so this is
+ * unit-testable.
  */
 export class TabManager {
   private tabs: TabEntry[] = [];
@@ -65,27 +145,52 @@ export class TabManager {
 
   constructor(
     private readonly opts: {
-      createView: () => TabViewHandle;
+      createView: (kind: TabKind) => TabViewHandle;
       editorUrl: string;
       onStateChanged: (s: TabsSnapshot) => void;
     },
   ) {}
 
-  newTab(): number {
+  newTab(kind: TabKind = "editor"): number {
     const id = this.nextId++;
-    const view = this.opts.createView();
-    const entry: TabEntry = { id, title: "Untitled", view, theme: null };
-    view.onDocumentTitleChanged((title) => {
-      entry.title = title;
-      this.emit();
-    });
-    view.onThemeChanged((theme) => {
-      if (entry.theme === theme) return;
-      entry.theme = theme;
-      this.emit();
-    });
+    const view = this.opts.createView(kind);
+    const entry: TabEntry = {
+      id,
+      title: kind === "browser" ? "New Tab" : "Untitled",
+      kind,
+      view,
+      theme: null,
+      url: kind === "browser" ? "" : undefined,
+      canGoBack: kind === "browser" ? false : undefined,
+      canGoForward: kind === "browser" ? false : undefined,
+    };
+    if (kind === "editor") {
+      view.onDocumentTitleChanged((title) => {
+        entry.title = title;
+        this.emit();
+      });
+      view.onThemeChanged((theme) => {
+        if (entry.theme === theme) return;
+        entry.theme = theme;
+        this.emit();
+      });
+      view.loadURL(this.opts.editorUrl).catch((err) => {
+        console.error("TabManager: editor tab failed to load", err);
+      });
+    } else {
+      // Browser tabs get their own url/title updates (design doc §1) — no
+      // document-title/theme IPC callbacks, since there is no preload to
+      // send them. A fresh browser tab loads nothing until
+      // BrowserController navigates it (browse_open).
+      view.onNavigationStateChanged((s) => {
+        entry.title = s.title.trim() || "New Tab";
+        entry.url = s.url;
+        entry.canGoBack = s.canGoBack;
+        entry.canGoForward = s.canGoForward;
+        this.emit();
+      });
+    }
     this.tabs.push(entry);
-    view.loadURL(this.opts.editorUrl);
     if (this.lastLayout) this.applyLayout(entry);
     this.setActive(id);
     return id;
@@ -97,7 +202,7 @@ export class TabManager {
     const [closed] = this.tabs.splice(idx, 1);
     if (this.tabs.length === 0) {
       this.activeId = null;
-      this.newTab(); // newTab emits
+      this.newTab("editor"); // newTab emits — closing the last tab always respawns an editor tab.
     } else if (this.activeId === id) {
       const neighbor = this.tabs[Math.max(0, idx - 1)];
       this.setActive(neighbor.id); // setActive emits
@@ -127,11 +232,39 @@ export class TabManager {
     return this.tabs.find((t) => t.id === this.activeId)?.view ?? null;
   }
 
+  /**
+   * The browser tab the BrowserController should drive: the active tab if
+   * it is a browser tab, else the most recently created browser tab, else
+   * null when no browser tab is open (design doc §1/§3 — read-only browser
+   * commands fail cleanly in that last case, and `ensurePage()` creates one).
+   */
+  browserHandle(): BrowserTabHandle | null {
+    const active = this.tabs.find((t) => t.id === this.activeId);
+    if (active?.kind === "browser") return active.view;
+    for (let i = this.tabs.length - 1; i >= 0; i--) {
+      if (this.tabs[i].kind === "browser") return this.tabs[i].view;
+    }
+    return null;
+  }
+
+  isEditorTab(webContentsId: number): boolean {
+    return this.tabs.some((t) => t.kind === "editor" && t.view.getWebContentsId() === webContentsId);
+  }
+
   getSnapshot(): TabsSnapshot {
+    const active = this.tabs.find((t) => t.id === this.activeId);
     return {
-      tabs: this.tabs.map(({ id, title }) => ({ id, title })),
+      tabs: this.tabs.map(({ id, title, kind, url, canGoBack, canGoForward }) => ({
+        id,
+        title,
+        kind,
+        url,
+        canGoBack,
+        canGoForward,
+      })),
       activeId: this.activeId,
-      activeTheme: this.tabs.find((tab) => tab.id === this.activeId)?.theme ?? null,
+      activeKind: active?.kind ?? null,
+      activeTheme: active?.theme ?? null,
       mcpStatus: this.mcpStatus,
     };
   }

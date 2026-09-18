@@ -102,6 +102,20 @@ function registerMcpBridge(handler: McpBridgeHandler): () => void {
   return teardown;
 }
 
+// Built-in browser bridge (design doc `2026-09-18-builtin-browser-design.md`
+// §5) — each call is a plain request/response over "browser:command". No
+// validation here: main (src/main/window.ts's "browser:command" handler,
+// BrowserController) is the trust boundary and validates everything, since
+// these arguments ultimately come from an LLM tool call.
+const browser = {
+  open: (args: { url: string }): Promise<unknown> =>
+    ipcRenderer.invoke("browser:command", { command: "open", args }),
+  act: (args: Record<string, unknown>): Promise<unknown> =>
+    ipcRenderer.invoke("browser:command", { command: "act", args }),
+  findImages: (args: Record<string, unknown>): Promise<unknown> =>
+    ipcRenderer.invoke("browser:command", { command: "findImages", args }),
+};
+
 const api = {
   setDocumentTitle(title: string | null): void {
     ipcRenderer.send("editor:document-title", title);
@@ -112,6 +126,7 @@ const api = {
     return () => ipcRenderer.removeListener("menu:command", listener);
   },
   registerMcpBridge,
+  browser,
 };
 
 contextBridge.exposeInMainWorld("penDesktop", api);
