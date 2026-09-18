@@ -14,9 +14,108 @@
 
 import { randomUUID } from "node:crypto";
 import { decideBrowserNavigation } from "../navigation";
-import { ARGS_MARKER, FIND_IMAGES_JS, CLICK_JS, TYPE_JS, SCROLL_JS, SNAPSHOT_JS, PERFORM_JS } from "./pageScripts";
+import {
+  ARGS_MARKER,
+  FIND_IMAGES_JS,
+  CLICK_JS,
+  TYPE_JS,
+  SCROLL_JS,
+  SNAPSHOT_JS,
+  PERFORM_JS,
+  SIGNATURE_JS,
+  READ_JS,
+} from "./pageScripts";
 
-const SCRIPT_TEMPLATES = { FIND_IMAGES_JS, CLICK_JS, TYPE_JS, SCROLL_JS, SNAPSHOT_JS, PERFORM_JS } as const;
+const SCRIPT_TEMPLATES = {
+  FIND_IMAGES_JS,
+  CLICK_JS,
+  TYPE_JS,
+  SCROLL_JS,
+  SNAPSHOT_JS,
+  PERFORM_JS,
+  READ_JS,
+} as const;
+
+/** jev-loop design doc "Addendum 2, 2026-09-19" §2: default/hard-cap for
+ * browse_read's `maxChars`. */
+const READ_MAX_CHARS_DEFAULT = 6_000;
+const READ_MAX_CHARS_HARD_CAP = 20_000;
+
+/** The `{ changed, changes }` signature diffed before/after an action —
+ * "Addendum 2" §1. `changes` entries are stable, documented category names
+ * ("url" | "title" | "dom" | "text" | "main-image"), not raw field names. */
+export interface EffectEvidence {
+  changed: boolean;
+  changes: string[];
+}
+
+/** A single element's own signature — SCOPED_SIGNATURE_JS in pageScripts.ts.
+ * Review finding 4: the element actually acted on, not the whole document,
+ * is the real evidence on a live page. */
+interface ScopedSignature {
+  nodeCount: number;
+  textHash: number;
+  src: string;
+  valueLength: number;
+  ariaExpanded: string;
+  ariaSelected: string;
+  checked: boolean;
+}
+
+function isScopedSignature(value: unknown): value is ScopedSignature {
+  return (
+    isRecord(value) &&
+    typeof value.nodeCount === "number" &&
+    typeof value.textHash === "number" &&
+    typeof value.src === "string" &&
+    typeof value.valueLength === "number" &&
+    typeof value.ariaExpanded === "string" &&
+    typeof value.ariaSelected === "string" &&
+    typeof value.checked === "boolean"
+  );
+}
+
+interface PageSignature {
+  url: string;
+  title: string;
+  nodeCount: number;
+  textLength: number;
+  textHash: number;
+  mainImageSrc: string;
+  /** Review finding 3: absent from the original signature, so a successful
+   * scroll and a scroll on a dead page were indistinguishable. */
+  scrollY: number;
+  /** Review finding 3: a *length*, never the focused field's content — see
+   * SCOPED_SIGNATURE_JS's doc comment for the same reasoning applied to the
+   * scoped-target signature. */
+  focusedValueLength: number;
+  /** Only present on a `phase: "after"` capture, and only when the acting
+   * script stamped a target element — review finding 4. */
+  scopedAfter?: ScopedSignature | null;
+}
+
+function isPageSignature(value: unknown): value is PageSignature {
+  return (
+    isRecord(value) &&
+    typeof value.url === "string" &&
+    typeof value.title === "string" &&
+    typeof value.nodeCount === "number" &&
+    typeof value.textLength === "number" &&
+    typeof value.textHash === "number" &&
+    typeof value.mainImageSrc === "string" &&
+    typeof value.scrollY === "number" &&
+    typeof value.focusedValueLength === "number" &&
+    (value.scopedAfter === undefined || value.scopedAfter === null || isScopedSignature(value.scopedAfter))
+  );
+}
+
+/** Review finding 3: type/scroll (and perform's TYPE_TEXT/SELECT/SCROLL_*)
+ * had no settle at all between the action and the after-capture, and the
+ * fields that would show they worked (scrollY, a focused input's value
+ * length) weren't even in the signature — a successful type/scroll and a
+ * dead one both reported changed: false. Short, because unlike a click
+ * there is no navigation to wait for, just a paint/reflow. */
+const NON_CLICK_SETTLE_MS = 50;
 
 /** Spec `2026-09-18-browse-task-jev-loop-design.md` §1: the element table is
  * the whole request payload for /api/browse/step, so an uncapped snapshot on
@@ -119,6 +218,38 @@ function validateOpenArgs(args: unknown): { ok: true; url: string } | { ok: fals
     return { ok: false, error: `browse_open only supports http(s) URLs, got: ${url}` };
   }
   return { ok: true, url };
+}
+
+interface ValidatedReadArgs {
+  maxChars: number;
+  selector?: string;
+}
+
+function validateReadArgs(args: unknown): { ok: true; value: ValidatedReadArgs } | { ok: false; error: string } {
+  if (args !== undefined && !isRecord(args)) {
+    return { ok: false, error: "browse_read requires an object (or no arguments)." };
+  }
+  const raw = isRecord(args) ? args : {};
+
+  let maxChars = READ_MAX_CHARS_DEFAULT;
+  if (raw.maxChars !== undefined) {
+    if (typeof raw.maxChars !== "number" || !Number.isFinite(raw.maxChars) || raw.maxChars <= 0) {
+      return { ok: false, error: 'browse_read requires "maxChars" to be a positive number when provided.' };
+    }
+    // Hard cap regardless of what the caller asked for — the default (6000)
+    // is a courtesy, the cap (20000) is not negotiable.
+    maxChars = Math.min(raw.maxChars, READ_MAX_CHARS_HARD_CAP);
+  }
+
+  let selector: string | undefined;
+  if (raw.selector !== undefined) {
+    if (typeof raw.selector !== "string" || raw.selector.trim() === "") {
+      return { ok: false, error: 'browse_read requires "selector" to be a non-empty string when provided.' };
+    }
+    selector = raw.selector;
+  }
+
+  return { ok: true, value: { maxChars, selector } };
 }
 
 type ActAction = "click" | "type" | "scroll" | "back" | "forward";
@@ -262,10 +393,17 @@ export class BrowserController {
         // before reading it back, so the result reflects the page the user
         // lands on rather than a stale pre-navigation URL.
         const previousUrl = page.getURL();
+        const before = await this.captureSignature(page, "before");
         if (action === "back") page.goBack();
         else page.goForward();
         await this.waitForUrlChange(page, previousUrl);
-        return { url: page.getURL(), title: page.getTitle() };
+        const after = await this.captureSignature(page, "after");
+        const currentUrl = page.getURL();
+        return {
+          url: currentUrl,
+          title: page.getTitle(),
+          ...this.diffSignatures(before, after, { previousUrl, currentUrl }),
+        };
       });
     }
 
@@ -274,7 +412,7 @@ export class BrowserController {
         return errorResult('browse_act "scroll" requires "amount" to be a number when provided.');
       }
       const amount = typeof args.amount === "number" ? args.amount : 1;
-      return this.withCommandTimeout(() => this.runOnPage("SCROLL_JS", { amount }));
+      return this.withCommandTimeout(() => this.runOnPageWithEvidence("SCROLL_JS", { amount }));
     }
 
     // click / type
@@ -291,7 +429,7 @@ export class BrowserController {
         return errorResult('browse_act "type" requires a string "text".');
       }
       const text = args.text;
-      return this.withCommandTimeout(() => this.runOnPage("TYPE_JS", { target, text }));
+      return this.withCommandTimeout(() => this.runOnPageWithEvidence("TYPE_JS", { target, text }));
     }
     return this.withCommandTimeout(() => this.runClick(target));
   }
@@ -302,15 +440,37 @@ export class BrowserController {
    * location.href/document.title synchronously, so on its own it reports
    * whatever page the agent was just on, not the one the click navigated
    * to, and a following browse_find_images would then race the new page's
-   * load (finding 7). */
+   * load (finding 7).
+   *
+   * "Addendum 2" §1: a signature is captured before the click and again
+   * after the settle, and the diff is merged into the result as
+   * `{ changed, changes }` — the whole point being that `changed: false` is
+   * a normal, reportable answer (a click on a wrapper that did nothing),
+   * never an error.
+   *
+   * Review finding 4: CLICK_JS also stamps the element it actually clicked
+   * and returns that element's own before-signature (`__scopedBefore`) —
+   * extracted here (and stripped from the result, see extractScopedBefore)
+   * so diffSignatures can compare it against the same element's after
+   * state, the real evidence on a page whose whole-document dom/text moves
+   * on its own. */
   private async runClick(target: string): Promise<BrowserCommandResult> {
     const page = this.target.currentPage();
     if (!page) return errorResult("No browser tab is open — call browse_open first.");
     const previousUrl = page.getURL();
+    const before = await this.captureSignature(page, "before");
     const result = await this.executeScript(page, "CLICK_JS", { target });
     if ("error" in result) return result;
+    const scopedBefore = extractScopedBefore(result);
     await this.settleAfterClick(page, previousUrl);
-    return { ...result, url: page.getURL(), title: page.getTitle() };
+    const after = await this.captureSignature(page, "after");
+    const currentUrl = page.getURL();
+    return {
+      ...result,
+      url: currentUrl,
+      title: page.getTitle(),
+      ...this.diffSignatures(before, after, { previousUrl, currentUrl, scopedBefore }),
+    };
   }
 
   async findImages(args: unknown): Promise<BrowserCommandResult> {
@@ -328,6 +488,20 @@ export class BrowserController {
 
     return this.withCommandTimeout(() =>
       this.runOnPage("FIND_IMAGES_JS", { minWidth: minWidth.value, minHeight: minHeight.value, limit }),
+    );
+  }
+
+  /** A readable digest of the current page — jev-loop design doc "Addendum
+   * 2, 2026-09-19" §2. Read-only, so unlike act/perform it carries no
+   * `{ changed, changes }` evidence. A `selector` that matches nothing is a
+   * page-script `{ error }`, surfaced here exactly like any other page
+   * error, not silently widened to a whole-page read. */
+  async read(args: unknown): Promise<BrowserCommandResult> {
+    const validated = validateReadArgs(args);
+    if (!validated.ok) return errorResult(validated.error);
+    const { maxChars, selector } = validated.value;
+    return this.withCommandTimeout(() =>
+      this.runOnPage("READ_JS", { maxChars, selector: selector ?? null }),
     );
   }
 
@@ -378,18 +552,35 @@ export class BrowserController {
     return this.withCommandTimeout(async () => {
       if (operation === "CLICK") {
         const previousUrl = page.getURL();
+        const before = await this.captureSignature(page, "before");
         const result = await this.executeScript(page, "PERFORM_JS", { snapshotId, index, operation, text });
         if ("error" in result) return result;
+        const scopedBefore = extractScopedBefore(result);
         await this.settleAfterClick(page, previousUrl);
-        return { ...result, url: page.getURL(), title: page.getTitle() };
+        const after = await this.captureSignature(page, "after");
+        const currentUrl = page.getURL();
+        return {
+          ...result,
+          url: currentUrl,
+          title: page.getTitle(),
+          ...this.diffSignatures(before, after, { previousUrl, currentUrl, scopedBefore }),
+        };
       }
 
-      return this.executeScript(page, "PERFORM_JS", { snapshotId, index, operation, text });
+      // Review finding 3: TYPE_TEXT/SELECT/SCROLL_UP/SCROLL_DOWN get a short
+      // settle before the after-capture too — see NON_CLICK_SETTLE_MS.
+      const before = await this.captureSignature(page, "before");
+      const result = await this.executeScript(page, "PERFORM_JS", { snapshotId, index, operation, text });
+      if ("error" in result) return result;
+      const scopedBefore = extractScopedBefore(result);
+      await this.settleShort();
+      const after = await this.captureSignature(page, "after");
+      return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
     });
   }
 
   private async runOnPage(
-    script: "FIND_IMAGES_JS" | "CLICK_JS" | "TYPE_JS" | "SCROLL_JS",
+    script: "FIND_IMAGES_JS" | "CLICK_JS" | "TYPE_JS" | "SCROLL_JS" | "READ_JS",
     scriptArgs: Record<string, unknown>,
   ): Promise<BrowserCommandResult> {
     const page = this.target.currentPage();
@@ -397,9 +588,33 @@ export class BrowserController {
     return this.executeScript(page, script, scriptArgs);
   }
 
+  /** Like runOnPage, but wraps the call with a before/after page-signature
+   * diff merged into a successful result as `{ changed, changes }` —
+   * "Addendum 2" §1. Used by act's `type`/`scroll` (click has its own
+   * variant inlined in runClick, since it also needs the click-settle
+   * wait in between the two captures).
+   *
+   * Review finding 3: a short settle (NON_CLICK_SETTLE_MS) now runs between
+   * the action and the after-capture — type/scroll used to capture "after"
+   * immediately, with no settle at all. */
+  private async runOnPageWithEvidence(
+    script: "TYPE_JS" | "SCROLL_JS",
+    scriptArgs: Record<string, unknown>,
+  ): Promise<BrowserCommandResult> {
+    const page = this.target.currentPage();
+    if (!page) return errorResult("No browser tab is open — call browse_open first.");
+    const before = await this.captureSignature(page, "before");
+    const result = await this.executeScript(page, script, scriptArgs);
+    if ("error" in result) return result;
+    const scopedBefore = extractScopedBefore(result);
+    await this.settleShort();
+    const after = await this.captureSignature(page, "after");
+    return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
+  }
+
   private async executeScript(
     page: BrowserPageHandle,
-    script: "FIND_IMAGES_JS" | "CLICK_JS" | "TYPE_JS" | "SCROLL_JS" | "SNAPSHOT_JS" | "PERFORM_JS",
+    script: "FIND_IMAGES_JS" | "CLICK_JS" | "TYPE_JS" | "SCROLL_JS" | "SNAPSHOT_JS" | "PERFORM_JS" | "READ_JS",
     scriptArgs: Record<string, unknown>,
   ): Promise<BrowserCommandResult> {
     // A function replacer, not a plain string — String.prototype.replace's
@@ -416,6 +631,106 @@ export class BrowserController {
     const result = await page.executeJavaScript(code);
     if (!isRecord(result)) return errorResult("Unexpected response from the page script.");
     return result;
+  }
+
+  /** Runs SIGNATURE_JS for the given phase and returns the parsed signature,
+   * or `null` on any failure (a throwing/rejecting executeJavaScript, or a
+   * malformed response) — evidence capture must never itself turn a
+   * successful action into an error result, so a capture failure degrades
+   * to "no evidence available" rather than propagating.
+   *
+   * Review finding 4: SIGNATURE_JS now takes `phase` (via ARGS_MARKER, like
+   * every other script here) — it needs to know "before" from "after" to
+   * coordinate the `data-pen-sig-mainimg`/`data-pen-sig-target` identity
+   * markers across the two calls (see SIGNATURE_JS's doc comment). */
+  private async captureSignature(page: BrowserPageHandle, phase: "before" | "after"): Promise<PageSignature | null> {
+    try {
+      const code = SIGNATURE_JS.replace(ARGS_MARKER, () => JSON.stringify({ phase }));
+      const result = await page.executeJavaScript(code);
+      return isPageSignature(result) ? result : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** "Addendum 2" §1, reshaped by review findings 2/4: diffs two page
+   * signatures into `{ changed, changes }`. `changes` uses stable category
+   * names, not raw field names.
+   *
+   * Finding 2: when either capture is missing (most likely the AFTER one —
+   * `executeJavaScript` rejecting mid a cross-origin navigation's frame
+   * swap is exactly when the page is most likely to have actually changed),
+   * this used to unconditionally report `changed: false` — self-contradictory
+   * at the moment of the biggest effect. `opts.previousUrl`/`opts.currentUrl`
+   * (both already tracked by every caller that navigates) are used as a
+   * fallback signal instead of guessing "no change".
+   *
+   * Finding 4: a whole-document `dom`/`text` delta is noisy on a live page
+   * (carousels, lazy images, ads) and is reported in `changes` for context,
+   * but never gates `changed` on its own — only url/title/main-image
+   * (identity-guarded via SIGNATURE_JS's marker, see its doc comment) and
+   * the acted-on element's own scoped signature do. `scrollY` and
+   * `focusedValueLength` (finding 3) also gate `changed`: unlike `dom`/
+   * `text`, neither one drifts on its own between two captures of the same
+   * page — they only move because the action itself scrolled the page or
+   * changed what's typed into a field — so they're trustworthy evidence,
+   * not noise. */
+  private diffSignatures(
+    before: PageSignature | null,
+    after: PageSignature | null,
+    opts?: { previousUrl?: string; currentUrl?: string; scopedBefore?: ScopedSignature | null },
+  ): EffectEvidence {
+    if (!before || !after) {
+      const changes: string[] = [];
+      if (opts?.previousUrl !== undefined && opts?.currentUrl !== undefined && opts.previousUrl !== opts.currentUrl) {
+        changes.push("url");
+      }
+      return { changed: changes.length > 0, changes };
+    }
+
+    const changes: string[] = [];
+    const urlChanged = before.url !== after.url;
+    const titleChanged = before.title !== after.title;
+    const mainImageChanged = before.mainImageSrc !== after.mainImageSrc;
+    const scrollChanged = before.scrollY !== after.scrollY;
+    const valueChanged = before.focusedValueLength !== after.focusedValueLength;
+
+    if (urlChanged) changes.push("url");
+    if (titleChanged) changes.push("title");
+    // Report-only — see the doc comment above for why these don't gate.
+    if (before.nodeCount !== after.nodeCount) changes.push("dom");
+    if (before.textLength !== after.textLength || before.textHash !== after.textHash) changes.push("text");
+    if (scrollChanged) changes.push("scroll");
+    if (valueChanged) changes.push("value");
+    if (mainImageChanged) changes.push("main-image");
+
+    let scopedChanged = false;
+    if (opts && opts.scopedBefore !== undefined) {
+      const scopedBefore = opts.scopedBefore;
+      const scopedAfter = after.scopedAfter ?? null;
+      if (scopedBefore || scopedAfter) {
+        scopedChanged =
+          !scopedBefore ||
+          !scopedAfter ||
+          scopedBefore.nodeCount !== scopedAfter.nodeCount ||
+          scopedBefore.textHash !== scopedAfter.textHash ||
+          scopedBefore.src !== scopedAfter.src ||
+          scopedBefore.valueLength !== scopedAfter.valueLength ||
+          scopedBefore.ariaExpanded !== scopedAfter.ariaExpanded ||
+          scopedBefore.ariaSelected !== scopedAfter.ariaSelected ||
+          scopedBefore.checked !== scopedAfter.checked;
+      }
+      if (scopedChanged) changes.push("target");
+    }
+
+    const changed = urlChanged || titleChanged || mainImageChanged || scrollChanged || valueChanged || scopedChanged;
+    return { changed, changes };
+  }
+
+  /** Review finding 3: a short, fixed settle for a non-click action before
+   * capturing "after" — see NON_CLICK_SETTLE_MS's doc comment. */
+  private async settleShort(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, NON_CLICK_SETTLE_MS));
   }
 
   /** Polls briefly for `page.getURL()` to move away from `previousUrl` —
@@ -493,4 +808,15 @@ function normalizeNonNegativeNumber(
     return { value: fallback, error: "must be a non-negative number." };
   }
   return { value };
+}
+
+/** Review finding 4: CLICK_JS/TYPE_JS/PERFORM_JS (for CLICK/TYPE_TEXT/SELECT)
+ * embed the acted-on element's own before-signature in their result as an
+ * internal `__scopedBefore` field. This pulls it out for diffSignatures and
+ * deletes it from `result` in place, so it never leaks into the value a
+ * caller (the chat tool, ultimately) ends up seeing. */
+function extractScopedBefore(result: BrowserCommandResult): ScopedSignature | null {
+  const raw = result.__scopedBefore;
+  delete result.__scopedBefore;
+  return isScopedSignature(raw) ? raw : null;
 }

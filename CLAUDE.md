@@ -102,7 +102,7 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below
 - `mcp:call` main→tab only (`{callId, tool, args}`)
 - `mcp:result` tab→main (`{callId, type: "tool_result" | "tool_error", result?, error?}`)
-- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform", args}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; see "Built-in browser tab" below
+- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read", args}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; see "Built-in browser tab" below
 
 Both ends of every channel live in this repo — the editor only ever touches
 the preload API, never a channel name. `test/ipcContract.test.ts` scans `src/`
@@ -215,11 +215,11 @@ unlike editor tabs' `attachNavigationPolicy`.
 surface, in the same Electron-free, injected-handle style as
 `mcp/dispatcher.ts` — a `BrowserTarget`/`BrowserPageHandle` pair stands in
 for the real tab, so it is unit-tested under plain Node/vitest
-(`test/browserController.test.ts`). Its five commands (`open`, `act`,
-`findImages`, `snapshot`, `perform`) are exposed to an *editor* tab's
-preload as `window.penDesktop.browser.{open,act,findImages,snapshot,perform}`
+(`test/browserController.test.ts`). Its six commands (`open`, `act`,
+`findImages`, `snapshot`, `perform`, `read`) are exposed to an *editor* tab's
+preload as `window.penDesktop.browser.{open,act,findImages,snapshot,perform,read}`
 (`src/preload/tab.ts`), each forwarding to the single `browser:command`
-`ipcMain.handle` in `window.ts` — `snapshot`/`perform` are a second pair of
+`ipcMain.handle` in `window.ts` — `snapshot`/`perform`/`read` are additional
 commands on that *same* channel, not a new IPC channel, so
 `test/ipcContract.test.ts`'s table is unaffected by them. That handler is the trust boundary — every
 argument ultimately comes from an LLM tool call, so `BrowserController`
@@ -332,6 +332,207 @@ two-phase post-click settle wait as `act`'s click (`settleAfterClick`, see
 above); `SCROLL_UP`/`SCROLL_DOWN` need no element lookup. `snapshot`/`perform`
 are loop internals only — they are never exposed as their own `penTools`
 entries, reachable solely through this preload.
+
+### Evidence of effect, `browse_read`, and better images/labels (Addendum 2, 2026-09-19)
+
+A live Amazon run exposed a gap the hermetic suites can't see on their own:
+navigation and clicks landed correctly, but the agent *narrated* effects that
+never happened (claiming an image gallery had switched when it was
+pixel-identical, claiming a filter it never applied) because `act`/`perform`
+gave it nothing to check itself against. Four fixes, all in this repo (design
+doc's "Addendum 2, 2026-09-19"):
+
+1. **Evidence of effect.** `act` and `perform` now merge an
+   `{ changed: boolean, changes: string[] }` pair into every successful
+   result (an `{ error }` result is unaffected — no evidence is attached to a
+   failure). `BrowserController.captureSignature` runs a new page script,
+   `SIGNATURE_JS`, once before the action and once after the existing settle
+   wait, and `diffSignatures` compares the two. `changed: false` is a normal,
+   reportable answer — a click that landed on a wrapper and did nothing is
+   still a successful command, never an error. `captureSignature` swallows
+   its own failures (a throwing/rejecting `executeJavaScript`) and returns
+   `null`. Applied to every `act` action (`click`/`type`/`scroll`/`back`/
+   `forward`) and every `perform` operation (`CLICK`/`TYPE_TEXT`/`SELECT`/
+   `SCROLL_UP`/`SCROLL_DOWN`); `open`, `findImages`, `snapshot`, and `read`
+   are read-only or one-shot and carry no evidence field.
+
+   **A high-effort review of this design found the first cut too coarse and
+   too fragile, in four ways that reshaped it further (all still in this
+   repo — `pageScripts.ts`/`controller.ts`/`test/browserController.test.ts`/
+   `e2e/browser-tab.spec.ts`):**
+
+   - **`changed` no longer gates on whole-document `dom`/`text` deltas.**
+     The original signature was `{ url, title, nodeCount, textLength,
+     textHash, mainImageSrc }`, and *any* difference — including node count
+     or visible-text-hash — set `changed: true`. On a live page (a rotating
+     carousel, a lazy-loading image, a live price, an injected ad) that
+     moves between two captures milliseconds apart regardless of what the
+     agent did, handing back exactly the false "it worked" confirmation this
+     whole feature exists to prevent. `dom`/`text` are still *reported* in
+     `changes` as useful context, but only `"url"`, `"title"`, `"main-image"`
+     (see below), `"scroll"`, `"value"` and `"target"` (see below) gate the
+     boolean.
+   - **The acted-on element gets its own scoped signature.** `CLICK_JS`/
+     `TYPE_JS`/`PERFORM_JS` (for `CLICK`/`TYPE_TEXT`/`SELECT`) stamp the
+     element they actually found with `data-pen-sig-target` and compute its
+     own signature (subtree node count, text hash, `src`, a **value
+     length** — never the raw value — `aria-expanded`, `aria-selected`,
+     `checked`) *before* mutating it, inline in the action script itself
+     (returned as an internal `__scopedBefore` field the controller strips
+     before the result reaches a caller — see `extractScopedBefore`).
+     `SIGNATURE_JS`'s `"after"` phase re-finds the same marked element and
+     reports its current signature as `scopedAfter`. A change here reports
+     `"target"` in `changes` and gates `changed` — this is the real evidence
+     on a page whose document-wide numbers are noise, and it's also what
+     makes a successful `type`/`select` (which moves a form field's value,
+     not the visible text) distinguishable from a dead one.
+   - **`main-image` is now identity-guarded.** The original signature just
+     recomputed "the largest visible `<img>`" independently before and
+     after — so a newly-loaded ad becoming larger than the real photo, with
+     the photo itself completely unchanged, still reported `"main-image"`
+     changed. `SIGNATURE_JS`'s `"before"` phase picks that element once and
+     stamps it `data-pen-sig-mainimg`; the `"after"` phase re-reads the
+     *same* stamped element (or reports an empty src if it's gone) rather
+     than recomputing "largest" from scratch, so `"main-image"` only fires
+     when that specific element's own `src` actually changed.
+   - **`scrollY` and a focused element's value length joined the
+     document-wide signature**, and `type`/`scroll` (both `act`'s and
+     `perform`'s) now get a short (`NON_CLICK_SETTLE_MS`, 50ms) settle before
+     the "after" capture. The original signature had nothing that moved for
+     a successful scroll at all, and `type`/`scroll` captured "after"
+     immediately with no settle — a successful action and a dead one (typed
+     into a field that dropped the keystrokes, scrolled a page that didn't
+     move) were indistinguishable. Unlike `dom`/`text`, `scrollY` and the
+     focused value's length don't drift on their own between two captures of
+     the same page, so — like the scoped-target signature — they gate
+     `changed` rather than being noise.
+   - **A missing capture no longer silently means "no change".** The
+     original `diffSignatures` returned `{ changed: false, changes: [] }`
+     whenever either the before or after capture was `null` — but a `null`
+     *after* capture is most likely to happen exactly when the page *did*
+     change: `executeJavaScript` rejecting mid a cross-origin navigation's
+     frame swap. `runClick`/`perform`'s `CLICK` branch/`back`/`forward`
+     already track `previousUrl`/`currentUrl`; `diffSignatures` now falls
+     back to comparing those (reporting `"url"` only — there's no equivalent
+     fallback for `title`) instead of guessing "unchanged".
+
+   `SIGNATURE_JS` now takes `args.phase` (`"before" | "after"`, via the same
+   `ARGS_MARKER` substitution every other script uses) so it can coordinate
+   the `data-pen-sig-mainimg`/`data-pen-sig-target` markers across the two
+   calls — it is no longer argument-free.
+
+2. **`read` / `browse_read`.** A sixth command, `read`, runs a new page
+   script, `READ_JS`, and returns
+   `{ url, title, headings, text, links, truncated }` — the first thing in
+   this bridge that gives the agent a text digest of a page rather than only
+   an element table or an image list. `text` is visible text with
+   `script`/`style`/`noscript`/`nav` (and anything `role="navigation"`)
+   stripped and whitespace collapsed, capped at `maxChars` (default 6000,
+   hard cap 20000 — `BrowserController.validateReadArgs` clamps a caller's
+   request to the hard cap rather than rejecting it, the same "payload valid
+   by construction" posture as `SNAPSHOT_JS`'s option/value caps). `headings`
+   are `h1`-`h3` in document order, capped at 40; `links` are `a[href]`
+   resolved to absolute URLs, http(s) only, deduped by resolved href, capped
+   at 60, with each label trimmed to 120 chars. An optional `selector`
+   narrows the whole read to one subtree; when it matches nothing, `READ_JS`
+   itself returns `{ error }` — the controller surfaces that verbatim rather
+   than silently widening back out to a whole-page read, the same principle
+   `perform`'s stale-snapshot check already enforces elsewhere in this file.
+   Read-only, so unlike `act`/`perform` it carries no `{ changed, changes }`.
+
+   Review fixes: `truncated` only ever reflected the *text* cap — the
+   40-heading/60-link caps were applied silently, so a page with hundreds of
+   links reported 60 of them with `truncated: false` and a consumer had no
+   way to know anything was cut. `headingsTruncated`/`linksTruncated` now
+   report each collection's own truncation alongside the unchanged
+   (text-only) `truncated` field. Separately, with a `selector`, `text`
+   already included the root element's own text (`collectText` walks the
+   root's own children), but `headings`/`links` used
+   `root.querySelectorAll(...)`, which only matches *descendants* — so
+   `read({ selector: "h1" })` returned that heading's text in `text` but an
+   empty `headings` array. `queryIncludingSelf` makes root inclusion
+   consistent: the root itself is checked against the selector too, not just
+   its descendants.
+
+3. **BROWSE-01 (better images).** `FIND_IMAGES_JS` now parses an `<img>`'s
+   `srcset` and picks the largest declared candidate — by `w` width
+   descriptor when present, else by `x` density descriptor as a relative-size
+   proxy — falling back to `currentSrc || src` only when there is no usable
+   srcset. This is deliberately generic (no per-host URL rewriting, which is
+   the part that rots): a live Pinterest run had the agent guessing at
+   higher-resolution URLs itself after `find_images` only ever returned
+   236px thumbnails, and the fix is to read what the page already declares
+   instead. Every found image also now reports `naturalWidth`/
+   `naturalHeight` alongside the existing `width`/`height` — which still
+   means *rendered* size, the e2e suite pins that — so a consumer can tell a
+   genuinely small asset from a small CSS rendering of a large one. A
+   background-image element has no natural-size concept reachable
+   synchronously without decoding it, so its `naturalWidth`/`naturalHeight`
+   fall back to its rendered size, same as before this addendum.
+
+   **Review fixes (HIGH):** the original `srcset.split(",")` broke on the
+   comma-bearing URLs real CDNs routinely serve
+   (`https://cdn/x/w_800,h_600/a.jpg 800w` — a Cloudinary/imgix transform) —
+   the URL itself split at the internal comma, the descriptor-less fragment
+   was skipped, and the *other* fragment (missing its own scheme/host) won on
+   score and was returned as-is, silently 404ing every image `find_images`
+   returned on such a host — worse than the bug this fix originally set out
+   to solve. `pickLargestSrcsetCandidate` now splits on `,\s+` (comma
+   *followed by whitespace*, which is how the srcset grammar actually
+   separates candidates, and something a comma embedded in a URL essentially
+   never looks like), and additionally verifies the winning candidate
+   resolves as a URL at all before returning it. Separately, `naturalWidth`/
+   `naturalHeight` used to always come from `img.naturalWidth`/
+   `naturalHeight` even once this fix started preferring a different,
+   possibly-unfetched `srcset` candidate — worse, per the HTML spec a `w`
+   descriptor selection makes the browser report *density-corrected* natural
+   size (divided by an implied pixel density computed from the descriptor
+   and the viewport-width-dependent "sizes" target), so even the "candidate
+   the browser did fetch" case doesn't reliably reflect the resource's real
+   pixel size. Whenever the returned URL came from a `w`-descriptor `srcset`
+   candidate at all, the descriptor's own declared width is reported
+   instead, with height estimated from the loaded image's aspect ratio
+   (density correction scales both dimensions equally, so the ratio itself
+   stays meaningful) — or omitted entirely when there's no declared width to
+   fall back on (an `x`-density-only srcset).
+
+4. **BROWSE-02 (better labels).** `SNAPSHOT_JS`'s `labelOf` gained several
+   steps, all tried before the positional `tag #index` fallback, which stays
+   last on purpose (dropping an unlabelled element outright is worse — cookie
+   banners are made of exactly these): `aria-label` → `aria-labelledby`
+   (resolved through the referenced element's own text) → own text →
+   `placeholder` → `alt` → `title` → a **descendant's** `aria-label`/`title`/
+   `alt` (the common icon-button shape,
+   `<div role="button"><svg aria-label="Save"></svg></div>`, where the real
+   label sits one level below the interactive element itself) → the
+   accessible name of the **nearest enclosing** `<a>`/`<button>` (guarded
+   against matching the element itself, which every earlier step already
+   covers) → `name`/`id` attribute → the positional fallback. A live Amazon
+   run degraded to a run of `div #6`/`input #7` entries that
+   `MIN_STEP_CONFIDENCE` then (correctly) refused to act on, making those
+   controls unreachable by `browse_task`; the new steps recover a real label
+   in exactly the shapes that run exposed. One consequence worth knowing for
+   test fixtures: since `id` is now a legitimate label source, any element
+   that should exercise the *positional* fallback in a test must have no
+   `id` either, not just no `aria-label`/text/etc.
+
+   **Review fixes:** the descendant step used to inspect only the *first*
+   element matching `[aria-label], [title], [alt]` and give up if its
+   attributes were blank — `<div role="button"><img alt=""><svg
+   aria-label="Save"></svg></div>` (a very common shape) matches the `<img>`
+   first, which yields nothing, so the label was lost. Every match is now
+   tried, in document order, until one actually has a non-empty value.
+   Separately, falling back to `el.id` turns a machine-generated id (React
+   useId's `":r3:"`, Ember's `"ember123"`, Amazon's `"a-autoid-1-announce"`)
+   into a label — worse than the honest positional fallback, since it reads
+   as plausible to the Jev decision model and both defeats
+   `MIN_STEP_CONFIDENCE`'s ability to refuse a bad guess and invites a wrong
+   pick. `looksGenerated` skips ids that are digits-only, digit-suffixed,
+   React-useId-shaped (leading/trailing `:`), or start with a known
+   framework prefix, falling through to whatever label source comes next (or
+   ultimately the positional fallback) — a genuinely hand-authored id
+   (`"inp-search"`, `"btn-checkout"`) is still a legitimate label source and
+   is left alone.
 
 The address row (a second, 32px-tall row inside the *existing* tab-bar
 `WebContentsView` — no new view, no new preload) is shown only while the

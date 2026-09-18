@@ -4,17 +4,63 @@ import {
   type BrowserPageHandle,
   type BrowserTarget,
 } from "../src/main/browser/controller";
+// "Addendum 2, 2026-09-19" §1: act/perform now capture a page signature via
+// SIGNATURE_JS before an action and again after its settle, diffing them
+// into `{ changed, changes }`. Review finding 4 made SIGNATURE_JS take a
+// `phase` argument (via the same ARGS_MARKER substitution every other
+// script uses, so it can coordinate identity markers across the two
+// calls — see its doc comment), so a signature call's code no longer
+// equals the SIGNATURE_JS constant verbatim; "data-pen-sig-mainimg" is a
+// string that appears only in SIGNATURE_JS's own body (not in any other
+// script, even though "data-pen-sig-target" is shared with
+// CLICK_JS/TYPE_JS/PERFORM_JS), so it reliably identifies a signature call
+// regardless of which phase it was run for.
+function isSignatureCall(code: unknown): boolean {
+  return typeof code === "string" && code.includes("data-pen-sig-mainimg");
+}
+
+/** Finds the one non-signature executeJavaScript call whose code contains
+ * `needle` — the action script's call, not one of the SIGNATURE_JS calls
+ * bracketing it. */
+function findScriptCall(mock: ReturnType<typeof vi.fn>, needle: string): string {
+  const call = mock.mock.calls.find((c) => !isSignatureCall(c[0]) && (c[0] as string).includes(needle));
+  expect(call, `no executeJavaScript call contained ${JSON.stringify(needle)}`).toBeTruthy();
+  return call![0] as string;
+}
 
 // A real goBack()/goForward() is fire-and-forget but the URL does change —
 // this fake mutates its own url/title synchronously on goBack/goForward so
 // BrowserController's post-navigation URL-change poll (waitForUrlChange)
 // resolves on its very first check, keeping these tests fast.
+//
+// The default executeJavaScript is signature-aware: a SIGNATURE_JS call
+// (captureSignature) gets a real signature reflecting the page's *current*
+// getURL()/getTitle() (so a navigating action's before/after diff correctly
+// shows `changed: true` on "url"/"title" even under the default fake),
+// while every other script gets the generic `{ ok: true }` most tests never
+// inspect. A test that overrides executeJavaScript entirely takes on the
+// responsibility of handling SIGNATURE_JS itself (see the "evidence of
+// effect" describe block below for the pattern).
 function makeFakePage(overrides: Partial<BrowserPageHandle> = {}): BrowserPageHandle {
   let url = "https://example.com/";
   let title = "Example";
-  return {
+  const page: BrowserPageHandle = {
     loadURL: vi.fn(() => Promise.resolve()),
-    executeJavaScript: vi.fn(() => Promise.resolve({ ok: true })),
+    executeJavaScript: vi.fn((code: string) => {
+      if (isSignatureCall(code)) {
+        return Promise.resolve({
+          url: page.getURL(),
+          title: page.getTitle(),
+          nodeCount: 1,
+          textLength: 0,
+          textHash: 0,
+          mainImageSrc: "",
+          scrollY: 0,
+          focusedValueLength: 0,
+        });
+      }
+      return Promise.resolve({ ok: true });
+    }),
     getURL: vi.fn(() => url),
     getTitle: vi.fn(() => title),
     goBack: vi.fn(() => {
@@ -31,6 +77,7 @@ function makeFakePage(overrides: Partial<BrowserPageHandle> = {}): BrowserPageHa
     isLoading: vi.fn(() => false),
     ...overrides,
   };
+  return page;
 }
 
 function makeFakeTarget(page: BrowserPageHandle | null): BrowserTarget & { ensurePage: ReturnType<typeof vi.fn> } {
@@ -149,11 +196,17 @@ describe("BrowserController", () => {
         });
         const controller = new BrowserController(makeFakeTarget(page));
         const result = await controller.act({ action: "click", target: "Buy now" });
-        expect(page.executeJavaScript).toHaveBeenCalledTimes(1);
-        const code = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-        expect(code).toContain(JSON.stringify("Buy now"));
+        // 3 calls: captureSignature (before), CLICK_JS, captureSignature
+        // (after) — see "Addendum 2" §1. This fake's executeJavaScript
+        // returns the same canned CLICK_JS-shaped object for every call
+        // (including the two signature calls), which is not a valid
+        // signature, so evidence capture degrades to changed: false rather
+        // than throwing — covered on its own in the "evidence of effect"
+        // block below.
+        expect(page.executeJavaScript).toHaveBeenCalledTimes(3);
+        const code = findScriptCall(page.executeJavaScript as ReturnType<typeof vi.fn>, JSON.stringify("Buy now"));
         expect(code).not.toContain("PEN_BROWSER_ARGS");
-        expect(result).toEqual({ url: "https://x/", title: "X", matched: "Buy now" });
+        expect(result).toEqual({ url: "https://x/", title: "X", matched: "Buy now", changed: false, changes: [] });
       });
 
       it("finding 7: settles to the post-navigation url/title when a click starts a navigation, rather than trusting the script's stale pre-navigation read", async () => {
@@ -180,7 +233,23 @@ describe("BrowserController", () => {
           const promise = controller.act({ action: "click", target: "Go" });
           await vi.advanceTimersByTimeAsync(300);
           const result = await promise;
-          expect(result).toEqual({ url: "https://example.com/next", title: "Next", matched: "Go" });
+          // This fake's executeJavaScript is not signature-aware — it
+          // returns the same click-shaped object for every call, including
+          // the two signature captures — so before/after both fail
+          // isPageSignature and captureSignature degrades to null for both.
+          // Review finding 2: that must not silently report "no change" when
+          // the URL plainly did (exactly the case a rejecting/malformed
+          // signature capture during a cross-origin navigation swap is meant
+          // to model) — diffSignatures falls back to the previousUrl/
+          // currentUrl runClick already tracks, which is enough to report
+          // "url" (title has no equivalent fallback, so it's not reported).
+          expect(result).toEqual({
+            url: "https://example.com/next",
+            title: "Next",
+            matched: "Go",
+            changed: true,
+            changes: ["url"],
+          });
         } finally {
           vi.useRealTimers();
         }
@@ -200,7 +269,13 @@ describe("BrowserController", () => {
           const promise = controller.act({ action: "click", target: "Go" });
           await vi.advanceTimersByTimeAsync(300);
           const result = await promise;
-          expect(result).toEqual({ url: "https://example.com/", title: "Example", matched: "Go" });
+          expect(result).toEqual({
+            url: "https://example.com/",
+            title: "Example",
+            matched: "Go",
+            changed: false,
+            changes: [],
+          });
         } finally {
           vi.useRealTimers();
         }
@@ -242,8 +317,16 @@ describe("BrowserController", () => {
           await vi.advanceTimersByTimeAsync(1_050);
           const result = await promise;
           // Must trust the settled post-load title, not the mid-load one, and
-          // not the pre-navigation one either.
-          expect(result).toEqual({ url: "https://example.com/next", title: "Next" });
+          // not the pre-navigation one either. Review finding 2: as above,
+          // this fake's executeJavaScript isn't signature-aware, so the diff
+          // comes from the previousUrl/currentUrl fallback — it correctly
+          // reports the navigation ("url") rather than "no change".
+          expect(result).toEqual({
+            url: "https://example.com/next",
+            title: "Next",
+            changed: true,
+            changes: ["url"],
+          });
         } finally {
           vi.useRealTimers();
         }
@@ -283,7 +366,11 @@ describe("BrowserController", () => {
           const promise = controller.act({ action: "click", target: "Go" });
           await vi.advanceTimersByTimeAsync(650);
           const result = await promise;
-          expect(result).toEqual({ url: "https://example.com/next", title: "Next" });
+          // Review finding 2: see the comment on the first "finding 7" test
+          // above — this fake's executeJavaScript isn't signature-aware
+          // either, so the diff again comes from the previousUrl/currentUrl
+          // fallback.
+          expect(result).toEqual({ url: "https://example.com/next", title: "Next", changed: true, changes: ["url"] });
         } finally {
           vi.useRealTimers();
         }
@@ -326,7 +413,7 @@ describe("BrowserController", () => {
         const page = makeFakePage();
         const controller = new BrowserController(makeFakeTarget(page));
         await controller.act({ action: "type", target: "Search", text: 'a "quoted" value' });
-        const code = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+        const code = findScriptCall(page.executeJavaScript as ReturnType<typeof vi.fn>, JSON.stringify("Search"));
         expect(code).toContain(JSON.stringify("Search"));
         expect(code).toContain(JSON.stringify('a "quoted" value'));
       });
@@ -340,7 +427,10 @@ describe("BrowserController", () => {
         const page = makeFakePage();
         const controller = new BrowserController(makeFakeTarget(page));
         await controller.act({ action: "type", target: "Price", text: "price is $&" });
-        const code = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+        const code = findScriptCall(
+          page.executeJavaScript as ReturnType<typeof vi.fn>,
+          JSON.stringify({ target: "Price", text: "price is $&" }),
+        );
         expect(code).toContain(JSON.stringify({ target: "Price", text: "price is $&" }));
       });
 
@@ -348,7 +438,10 @@ describe("BrowserController", () => {
         const page = makeFakePage();
         const controller = new BrowserController(makeFakeTarget(page));
         await controller.act({ action: "click", target: "a$`b" });
-        const code = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+        const code = findScriptCall(
+          page.executeJavaScript as ReturnType<typeof vi.fn>,
+          JSON.stringify({ target: "a$`b" }),
+        );
         expect(code).toContain(JSON.stringify({ target: "a$`b" }));
       });
 
@@ -356,7 +449,7 @@ describe("BrowserController", () => {
         const page = makeFakePage();
         const controller = new BrowserController(makeFakeTarget(page));
         await controller.act({ action: "click", target: "$'" });
-        const code = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+        const code = findScriptCall(page.executeJavaScript as ReturnType<typeof vi.fn>, JSON.stringify({ target: "$'" }));
         expect(code).toContain(JSON.stringify({ target: "$'" }));
         // The rest of the script (e.g. the findByText helper) must still be
         // present intact after the substitution point.
@@ -367,7 +460,10 @@ describe("BrowserController", () => {
         const page = makeFakePage();
         const controller = new BrowserController(makeFakeTarget(page));
         await controller.act({ action: "type", target: "Amount", text: "$$100" });
-        const code = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+        const code = findScriptCall(
+          page.executeJavaScript as ReturnType<typeof vi.fn>,
+          JSON.stringify({ target: "Amount", text: "$$100" }),
+        );
         expect(code).toContain(JSON.stringify({ target: "Amount", text: "$$100" }));
       });
     });
@@ -377,7 +473,7 @@ describe("BrowserController", () => {
         const page = makeFakePage();
         const controller = new BrowserController(makeFakeTarget(page));
         await controller.act({ action: "scroll" });
-        const code = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+        const code = findScriptCall(page.executeJavaScript as ReturnType<typeof vi.fn>, JSON.stringify({ amount: 1 }));
         expect(code).toContain(JSON.stringify({ amount: 1 }));
       });
 
@@ -391,18 +487,26 @@ describe("BrowserController", () => {
         const page = makeFakePage();
         const controller = new BrowserController(makeFakeTarget(page));
         await controller.act({ action: "scroll", amount: 2.5 });
-        const code = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+        const code = findScriptCall(page.executeJavaScript as ReturnType<typeof vi.fn>, JSON.stringify({ amount: 2.5 }));
         expect(code).toContain(JSON.stringify({ amount: 2.5 }));
       });
     });
 
     describe("back / forward", () => {
-      it("back calls goBack and reports the post-navigation url/title", async () => {
+      it("back calls goBack and reports the post-navigation url/title, with changed evidence for the navigation", async () => {
         const page = makeFakePage({ canGoBack: vi.fn(() => true) });
         const controller = new BrowserController(makeFakeTarget(page));
         const result = await controller.act({ action: "back" });
         expect(page.goBack).toHaveBeenCalled();
-        expect(result).toEqual({ url: "https://example.com/back", title: "Example (back)" });
+        // The default fake's signature capture reflects the page's live
+        // getURL()/getTitle(), so a real navigation is real evidence here —
+        // "Addendum 2" §1.
+        expect(result).toEqual({
+          url: "https://example.com/back",
+          title: "Example (back)",
+          changed: true,
+          changes: ["url", "title"],
+        });
       });
 
       it("back errors cleanly when there is no history", async () => {
@@ -413,12 +517,17 @@ describe("BrowserController", () => {
         expect(result).toHaveProperty("error");
       });
 
-      it("forward calls goForward when there is forward history, and reports the post-navigation url/title", async () => {
+      it("forward calls goForward when there is forward history, and reports the post-navigation url/title with changed evidence", async () => {
         const page = makeFakePage({ canGoForward: vi.fn(() => true) });
         const controller = new BrowserController(makeFakeTarget(page));
         const result = await controller.act({ action: "forward" });
         expect(page.goForward).toHaveBeenCalled();
-        expect(result).toEqual({ url: "https://example.com/forward", title: "Example (forward)" });
+        expect(result).toEqual({
+          url: "https://example.com/forward",
+          title: "Example (forward)",
+          changed: true,
+          changes: ["url", "title"],
+        });
       });
 
       // Finding 4: forward had no equivalent to back's canGoBack() guard —
@@ -447,6 +556,324 @@ describe("BrowserController", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  // jev-loop design doc "Addendum 2, 2026-09-19" §1: act/perform must
+  // report `{ changed, changes }` alongside their existing return shape,
+  // and `changed: false` must be a normal, reportable answer — never an
+  // error. These use a signature-aware executeJavaScript override so the
+  // before/after diff reflects a real (or genuinely absent) page change,
+  // unlike most of the tests above whose fakes return a fixed shape for
+  // every script and so always degrade to changed: false.
+  describe("evidence of effect ('changed'/'changes')", () => {
+    it("click reports changed: false, changes: [] when nothing about the page changed — not an error", async () => {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) =>
+          isSignatureCall(code)
+            ? Promise.resolve({
+                url: "https://example.com/",
+                title: "Example",
+                nodeCount: 42,
+                textLength: 100,
+                textHash: 555,
+                mainImageSrc: "https://example.com/same.jpg",
+                scrollY: 0,
+                focusedValueLength: 0,
+              })
+            : Promise.resolve({ url: "https://example.com/", title: "Example", matched: "Go" }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.act({ action: "click", target: "Go" });
+      expect(result).not.toHaveProperty("error");
+      expect(result).toMatchObject({ changed: false, changes: [] });
+    });
+
+    it("click reports changed: true with 'main-image' when the largest visible image swaps and nothing else does", async () => {
+      let signatureCalls = 0;
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) => {
+          if (isSignatureCall(code)) {
+            signatureCalls += 1;
+            return Promise.resolve({
+              url: "https://example.com/",
+              title: "Example",
+              nodeCount: 42,
+              textLength: 100,
+              textHash: 555,
+              mainImageSrc: signatureCalls === 1 ? "https://example.com/before.jpg" : "https://example.com/after.jpg",
+              scrollY: 0,
+              focusedValueLength: 0,
+            });
+          }
+          return Promise.resolve({ url: "https://example.com/", title: "Example", matched: "Next" });
+        }),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.act({ action: "click", target: "Next" });
+      expect(result).toMatchObject({ changed: true, changes: ["main-image"] });
+    });
+
+    // Review finding 4: a whole-document text delta used to gate `changed`
+    // on its own, but that's exactly the noise finding 4 exists to filter
+    // out — a rotating carousel, a live price, or an injected ad moves
+    // nodeCount/textLength/textHash between two captures milliseconds apart
+    // with nothing the agent did causing it. "text" (and "dom") are still
+    // reported in `changes` as useful context, but no longer set `changed`
+    // by themselves; only url/title/main-image (identity-guarded)/scroll/
+    // focused-value/the acted-on element's own scoped signature do. This
+    // test used to assert the opposite (changed: true) — updated to match
+    // the corrected semantics.
+    it("click reports changed: false even though 'text' is in `changes`, when only the whole-document text delta moved (no navigation, no image change, no scoped-element change)", async () => {
+      let signatureCalls = 0;
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) => {
+          if (isSignatureCall(code)) {
+            signatureCalls += 1;
+            return Promise.resolve({
+              url: "https://example.com/",
+              title: "Example",
+              nodeCount: 42,
+              textLength: signatureCalls === 1 ? 100 : 140,
+              textHash: signatureCalls === 1 ? 555 : 777,
+              mainImageSrc: "",
+              scrollY: 0,
+              focusedValueLength: 0,
+            });
+          }
+          return Promise.resolve({ url: "https://example.com/", title: "Example", matched: "Add to cart" });
+        }),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.act({ action: "click", target: "Add to cart" });
+      expect(result).toMatchObject({ changed: false, changes: ["text"] });
+    });
+
+    it("perform CLICK also carries changed evidence, computed the same way as act's click", async () => {
+      let signatureCalls = 0;
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) => {
+          if (isSignatureCall(code)) {
+            signatureCalls += 1;
+            return Promise.resolve({
+              url: "https://example.com/",
+              title: signatureCalls === 1 ? "Example" : "Example (after)",
+              nodeCount: 10,
+              textLength: 10,
+              textHash: 10,
+              mainImageSrc: "",
+              scrollY: 0,
+              focusedValueLength: 0,
+            });
+          }
+          return Promise.resolve({ url: "https://example.com/", title: "Example" });
+        }),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      const result = await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+      expect(result).toMatchObject({ changed: true, changes: ["title"] });
+    });
+
+    it("perform SCROLL_DOWN with no real page change reports changed: false, not an error", async () => {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) =>
+          isSignatureCall(code)
+            ? Promise.resolve({
+                url: "https://example.com/",
+                title: "Example",
+                nodeCount: 10,
+                textLength: 10,
+                textHash: 10,
+                mainImageSrc: "",
+                scrollY: 0,
+                focusedValueLength: 0,
+              })
+            : Promise.resolve({ url: "https://example.com/", title: "Example" }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      const result = await controller.perform({ snapshotId: snapshot.snapshotId, operation: "SCROLL_DOWN" });
+      expect(result).not.toHaveProperty("error");
+      expect(result).toMatchObject({ changed: false, changes: [] });
+    });
+
+    it("a signature-capture failure (executeJavaScript rejects) degrades to changed: false rather than turning a successful action into an error", async () => {
+      let signatureCalls = 0;
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) => {
+          if (isSignatureCall(code)) {
+            signatureCalls += 1;
+            return Promise.reject(new Error("signature capture boom"));
+          }
+          return Promise.resolve({ url: "https://example.com/", title: "Example", matched: "Go" });
+        }),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.act({ action: "click", target: "Go" });
+      expect(result).not.toHaveProperty("error");
+      expect(result).toMatchObject({ changed: false, changes: [] });
+      expect(signatureCalls).toBeGreaterThan(0);
+    });
+
+    // Review finding 4: the acted-on element's own scoped signature (via
+    // CLICK_JS's `__scopedBefore` + SIGNATURE_JS's `scopedAfter`) must gate
+    // `changed` even while the whole-document dom/text noise moves too —
+    // dom/text alone (asserted above) must not, but a real per-element
+    // change must, regardless of what else is moving around it.
+    it("click reports changed: true via the scoped target signature (aria-expanded flip) even while dom/text noise moves around it", async () => {
+      let signatureCalls = 0;
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) => {
+          if (isSignatureCall(code)) {
+            signatureCalls += 1;
+            return Promise.resolve({
+              url: "https://example.com/",
+              title: "Example",
+              // Whole-document noise moves on every call — a carousel/ad —
+              // but must not by itself set changed (see the "text" test
+              // above); it's the scopedAfter diff that should.
+              nodeCount: signatureCalls,
+              textLength: signatureCalls,
+              textHash: signatureCalls,
+              mainImageSrc: "",
+              scrollY: 0,
+              focusedValueLength: 0,
+              scopedAfter:
+                signatureCalls === 1
+                  ? undefined
+                  : { nodeCount: 3, textHash: 9, src: "", valueLength: 0, ariaExpanded: "true", ariaSelected: "", checked: false },
+            });
+          }
+          return Promise.resolve({
+            url: "https://example.com/",
+            title: "Example",
+            matched: "Menu",
+            __scopedBefore: { nodeCount: 3, textHash: 9, src: "", valueLength: 0, ariaExpanded: "false", ariaSelected: "", checked: false },
+          });
+        }),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.act({ action: "click", target: "Menu" });
+      expect(result).toMatchObject({ changed: true, changes: expect.arrayContaining(["dom", "text", "target"]) });
+      // The internal marker field must never leak into the caller-visible result.
+      expect(result).not.toHaveProperty("__scopedBefore");
+    });
+
+    // Review finding 4 (main-image identity guard): the largest visible
+    // image can change identity between captures (an ad finishes loading
+    // and is now bigger than the real photo) without the *original* image's
+    // own src having changed at all — that must not be reported as
+    // "main-image" changed, since nothing the click did moved that element.
+    it("click does not report 'main-image' when a newly-loaded element becomes the largest visible image but the originally-tracked image's own src is unchanged", async () => {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) =>
+          isSignatureCall(code)
+            ? Promise.resolve({
+                url: "https://example.com/",
+                title: "Example",
+                nodeCount: 10,
+                textLength: 10,
+                textHash: 10,
+                // SIGNATURE_JS's own identity marker means "after" always
+                // re-reads the *same* element "before" marked as largest —
+                // this fake models that directly: the src never changes.
+                mainImageSrc: "https://example.com/original.jpg",
+                scrollY: 0,
+                focusedValueLength: 0,
+              })
+            : Promise.resolve({ url: "https://example.com/", title: "Example", matched: "Load ad" }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.act({ action: "click", target: "Load ad" });
+      expect(result).toMatchObject({ changed: false, changes: [] });
+    });
+
+    // Review finding 3: scroll used to have no field in the signature that
+    // moved when it succeeded, and no settle before the after-capture —
+    // indistinguishable from scrolling a dead page. scrollY is now part of
+    // the signature and gates `changed` on its own (it doesn't drift on its
+    // own the way dom/text can, so it's trustworthy evidence, not noise).
+    it("act scroll reports changed: true via scrollY moving, and waits for the settle before capturing 'after'", async () => {
+      let signatureCalls = 0;
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) =>
+          isSignatureCall(code)
+            ? Promise.resolve({
+                url: "https://example.com/",
+                title: "Example",
+                nodeCount: 10,
+                textLength: 10,
+                textHash: 10,
+                mainImageSrc: "",
+                scrollY: signatureCalls++ === 0 ? 0 : 600,
+                focusedValueLength: 0,
+              })
+            : Promise.resolve({ url: "https://example.com/", title: "Example" }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.act({ action: "scroll", amount: 1 });
+      expect(result).toMatchObject({ changed: true, changes: ["scroll"] });
+    });
+
+    it("act scroll with no real scroll movement reports changed: false, not an error", async () => {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) =>
+          isSignatureCall(code)
+            ? Promise.resolve({
+                url: "https://example.com/",
+                title: "Example",
+                nodeCount: 10,
+                textLength: 10,
+                textHash: 10,
+                mainImageSrc: "",
+                scrollY: 0,
+                focusedValueLength: 0,
+              })
+            : Promise.resolve({ url: "https://example.com/", title: "Example" }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.act({ action: "scroll", amount: 1 });
+      expect(result).not.toHaveProperty("error");
+      expect(result).toMatchObject({ changed: false, changes: [] });
+    });
+
+    // Review finding 3: typing into a field used to report changed: false
+    // unconditionally (nothing in the signature moved for it) — the scoped
+    // target signature (TYPE_JS marks the field and reports its own
+    // valueLength, same mechanism as CLICK_JS) is what now makes a
+    // successful type distinguishable from typing into a dead field.
+    it("act type reports changed: true via the scoped target's valueLength, even with no document-wide change", async () => {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) =>
+          isSignatureCall(code)
+            ? Promise.resolve({
+                url: "https://example.com/",
+                title: "Example",
+                nodeCount: 10,
+                textLength: 10,
+                textHash: 10,
+                mainImageSrc: "",
+                scrollY: 0,
+                focusedValueLength: 0,
+                scopedAfter: { nodeCount: 1, textHash: 0, src: "", valueLength: 5, ariaExpanded: "", ariaSelected: "", checked: false },
+              })
+            : Promise.resolve({
+                url: "https://example.com/",
+                title: "Example",
+                matched: "Search",
+                __scopedBefore: { nodeCount: 1, textHash: 0, src: "", valueLength: 0, ariaExpanded: "", ariaSelected: "", checked: false },
+              }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.act({ action: "type", target: "Search", text: "hello" });
+      expect(result).toMatchObject({ changed: true, changes: ["target"] });
     });
   });
 
@@ -512,6 +939,122 @@ describe("BrowserController", () => {
     it("errors cleanly when no browser tab is open", async () => {
       const noPageController = new BrowserController(makeFakeTarget(null));
       const result = await noPageController.findImages({});
+      expect(result).toHaveProperty("error");
+    });
+  });
+
+  // jev-loop design doc "Addendum 2, 2026-09-19" §2.
+  describe("read", () => {
+    it("rejects array/string arguments", async () => {
+      const controller = new BrowserController(makeFakeTarget(makeFakePage()));
+      expect(await controller.read([1, 2])).toHaveProperty("error");
+      expect(await controller.read("nope")).toHaveProperty("error");
+    });
+
+    it("rejects a non-positive or non-numeric maxChars", async () => {
+      const controller = new BrowserController(makeFakeTarget(makeFakePage()));
+      expect(await controller.read({ maxChars: 0 })).toHaveProperty("error");
+      expect(await controller.read({ maxChars: -5 })).toHaveProperty("error");
+      expect(await controller.read({ maxChars: "big" })).toHaveProperty("error");
+    });
+
+    it("rejects an empty/non-string selector", async () => {
+      const controller = new BrowserController(makeFakeTarget(makeFakePage()));
+      expect(await controller.read({ selector: "" })).toHaveProperty("error");
+      expect(await controller.read({ selector: "   " })).toHaveProperty("error");
+      expect(await controller.read({ selector: 5 })).toHaveProperty("error");
+    });
+
+    it("defaults maxChars to 6000 and selector to null when no args are given", async () => {
+      const page = makeFakePage();
+      const controller = new BrowserController(makeFakeTarget(page));
+      await controller.read(undefined);
+      const code = findScriptCall(
+        page.executeJavaScript as ReturnType<typeof vi.fn>,
+        JSON.stringify({ maxChars: 6000, selector: null }),
+      );
+      expect(code).toContain(JSON.stringify({ maxChars: 6000, selector: null }));
+    });
+
+    it("passes a provided selector through", async () => {
+      const page = makeFakePage();
+      const controller = new BrowserController(makeFakeTarget(page));
+      await controller.read({ selector: "#main" });
+      const code = findScriptCall(
+        page.executeJavaScript as ReturnType<typeof vi.fn>,
+        JSON.stringify({ maxChars: 6000, selector: "#main" }),
+      );
+      expect(code).toContain(JSON.stringify({ maxChars: 6000, selector: "#main" }));
+    });
+
+    // Hard cap: 20000, regardless of what the caller asks for.
+    it("clamps a requested maxChars above the 20000 hard cap", async () => {
+      const page = makeFakePage();
+      const controller = new BrowserController(makeFakeTarget(page));
+      await controller.read({ maxChars: 999_999 });
+      const code = findScriptCall(
+        page.executeJavaScript as ReturnType<typeof vi.fn>,
+        JSON.stringify({ maxChars: 20_000, selector: null }),
+      );
+      expect(code).toContain(JSON.stringify({ maxChars: 20_000, selector: null }));
+    });
+
+    it("accepts a requested maxChars under the hard cap unchanged", async () => {
+      const page = makeFakePage();
+      const controller = new BrowserController(makeFakeTarget(page));
+      await controller.read({ maxChars: 500 });
+      const code = findScriptCall(
+        page.executeJavaScript as ReturnType<typeof vi.fn>,
+        JSON.stringify({ maxChars: 500, selector: null }),
+      );
+      expect(code).toContain(JSON.stringify({ maxChars: 500, selector: null }));
+    });
+
+    it("returns the page script's digest on success", async () => {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) =>
+          isSignatureCall(code)
+            ? Promise.resolve({ ok: true })
+            : Promise.resolve({
+                url: "https://example.com/",
+                title: "Example",
+                headings: ["Welcome"],
+                text: "Hello world",
+                links: [{ label: "Home", href: "https://example.com/" }],
+                truncated: false,
+              }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.read({});
+      expect(result).toEqual({
+        url: "https://example.com/",
+        title: "Example",
+        headings: ["Welcome"],
+        text: "Hello world",
+        links: [{ label: "Home", href: "https://example.com/" }],
+        truncated: false,
+      });
+    });
+
+    // "A selector that matches nothing is an error, not a silent whole-page
+    // read" — the page script itself decides this (READ_JS returns
+    // { error } rather than falling back), and the controller must surface
+    // it verbatim rather than widening the read.
+    it("surfaces the page script's selector-miss error rather than falling back to a whole-page read", async () => {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn(() =>
+          Promise.resolve({ error: 'browse_read: no element matched selector "#nope"' }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.read({ selector: "#nope" });
+      expect(result).toEqual({ error: 'browse_read: no element matched selector "#nope"' });
+    });
+
+    it("errors cleanly when no browser tab is open", async () => {
+      const controller = new BrowserController(makeFakeTarget(null));
+      const result = await controller.read({});
       expect(result).toHaveProperty("error");
     });
   });
@@ -630,7 +1173,10 @@ describe("BrowserController", () => {
       const up = await controller.perform({ snapshotId: snapshot.snapshotId, operation: "SCROLL_UP" });
       expect(up).not.toHaveProperty("error");
       // The script args sent must not carry a garbage/undefined index.
-      const lastCode = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as string;
+      const lastCode = findScriptCall(
+        page.executeJavaScript as ReturnType<typeof vi.fn>,
+        JSON.stringify({ snapshotId: snapshot.snapshotId, operation: "SCROLL_UP" }),
+      );
       expect(lastCode).toContain(JSON.stringify({ snapshotId: snapshot.snapshotId, operation: "SCROLL_UP" }));
     });
 
@@ -681,8 +1227,14 @@ describe("BrowserController", () => {
       const controller = new BrowserController(makeFakeTarget(page));
       const snapshot = (await controller.snapshot()) as { snapshotId: string };
       const result = await controller.perform({ snapshotId: snapshot.snapshotId, index: 3, operation: "CLICK" });
-      expect(result).toEqual({ url: "https://x/", title: "X" });
-      const code = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls[1][0] as string;
+      // This fake's executeJavaScript ignores which script it was called
+      // with, so neither before/after signature capture (see makeFakePage's
+      // doc comment) sees a valid signature here — changed stays false.
+      expect(result).toEqual({ url: "https://x/", title: "X", changed: false, changes: [] });
+      const code = findScriptCall(
+        page.executeJavaScript as ReturnType<typeof vi.fn>,
+        JSON.stringify({ snapshotId: snapshot.snapshotId, index: 3, operation: "CLICK" }),
+      );
       // JSON.stringify drops an `undefined` property (text is omitted for CLICK).
       expect(code).toContain(JSON.stringify({ snapshotId: snapshot.snapshotId, index: 3, operation: "CLICK" }));
     });
@@ -708,13 +1260,22 @@ describe("BrowserController", () => {
         const promise = controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
         await vi.advanceTimersByTimeAsync(300);
         const result = await promise;
-        expect(result).toEqual({ url: "https://example.com/next", title: "Next" });
+        // Review finding 2: this fake's executeJavaScript isn't
+        // signature-aware, so before/after both degrade to null and the
+        // diff comes from the previousUrl/currentUrl fallback — see the
+        // "finding 7"/"finding 4" comments in the act/click tests above for
+        // the full explanation.
+        expect(result).toEqual({ url: "https://example.com/next", title: "Next", changed: true, changes: ["url"] });
       } finally {
         vi.useRealTimers();
       }
     });
 
     it("surfaces a page-reported error (element not found) as the result", async () => {
+      // Three executeJavaScript calls before PERFORM_JS's error is reached:
+      // snapshot()'s SNAPSHOT_JS, perform()'s before-signature capture, then
+      // PERFORM_JS itself — an error result short-circuits before the
+      // after-signature capture, so no fourth call/entry is needed.
       const executeJavaScript = vi
         .fn()
         .mockResolvedValueOnce({
@@ -723,6 +1284,7 @@ describe("BrowserController", () => {
           elements: [],
           scroll: { y: 0, height: 0, atBottom: true },
         })
+        .mockResolvedValueOnce({ url: "https://example.com/", title: "Example" }) // before-signature (not a valid one; harmless)
         .mockResolvedValueOnce({ error: "No element at index 0 for this snapshot." });
       const page = makeFakePage({ executeJavaScript });
       const controller = new BrowserController(makeFakeTarget(page));

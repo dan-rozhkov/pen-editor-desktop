@@ -286,6 +286,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         return browserController.snapshot();
       case "perform":
         return browserController.perform(payload.args);
+      case "read":
+        return browserController.read(payload.args);
       default:
         return { error: `Unknown browser command: ${payload.command}` };
     }

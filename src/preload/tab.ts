@@ -121,6 +121,11 @@ const browser = {
   snapshot: (): Promise<unknown> => ipcRenderer.invoke("browser:command", { command: "snapshot" }),
   perform: (args: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke("browser:command", { command: "perform", args }),
+  // jev-loop design doc "Addendum 2, 2026-09-19" §2 — a readable digest of
+  // the current page. Same "no validation here" shape as every other
+  // command; main is the trust boundary.
+  read: (args?: Record<string, unknown>): Promise<unknown> =>
+    ipcRenderer.invoke("browser:command", { command: "read", args }),
 };
 
 const api = {

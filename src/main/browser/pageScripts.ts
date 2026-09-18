@@ -84,12 +84,112 @@ const FIND_BY_TEXT_JS = `
 `;
 
 /**
+ * Shared `scopedSignatureOf` body, interpolated into CLICK_JS, TYPE_JS,
+ * PERFORM_JS and SIGNATURE_JS — a cheap signature of a *single element's own
+ * subtree*, not the whole document.
+ *
+ * Review finding 4 (jev-loop design doc "Addendum 2, 2026-09-19" §1, further
+ * scoped by the follow-up review): a whole-document signature (node count,
+ * full innerText hash, largest visible `<img>`) is noisy on exactly the
+ * pages this design exists for — a rotating carousel, a lazy-loading image,
+ * a live price, an injected ad all move it between two captures
+ * milliseconds apart, so a click that did nothing gets `changed: true`
+ * anyway, handing the agent the same false confirmation "Addendum 2" was
+ * written to stop. `scopedSignatureOf` is called on the *specific* element a
+ * click/type/select acted on (CLICK_JS/TYPE_JS/PERFORM_JS stamp it with
+ * `data-pen-sig-target` and compute this signature inline, before mutating
+ * anything, so the "before" half is captured at the true start of the
+ * action rather than via a second round trip); the "after" half is computed
+ * by SIGNATURE_JS re-finding the same stamped element. Its own subtree node
+ * count / text hash / src / value length / aria-expanded / aria-selected /
+ * checked are the properties that actually move when *that* element reacts
+ * — not whatever else happens to be moving elsewhere on the page.
+ */
+const SCOPED_SIGNATURE_JS = `
+  function scopedSignatureOf(el) {
+    var nodeCount = el.querySelectorAll("*").length + 1;
+    var text = (el.textContent || "").replace(/\\s+/g, " ").trim();
+    var hash = 0;
+    for (var i = 0; i < text.length; i++) {
+      hash = (hash * 31 + text.charCodeAt(i)) | 0;
+    }
+    return {
+      nodeCount: nodeCount,
+      textHash: hash,
+      src: el.getAttribute("src") || "",
+      // A length, not the content — the raw value never needs to leave the
+      // page for a diff, and this element can be a form field (see the
+      // credentials rule elsewhere in this file for why raw field content
+      // is treated as sensitive by default).
+      valueLength: "value" in el ? String(el.value || "").length : 0,
+      ariaExpanded: el.getAttribute("aria-expanded") || "",
+      ariaSelected: el.getAttribute("aria-selected") || "",
+      checked: "checked" in el ? !!el.checked : false,
+    };
+  }
+`;
+
+/**
  * Collects every `<img>` and every element with a CSS `background-image`,
  * resolves URLs against the document, dedupes by resolved URL, filters by
  * minimum rendered size, sorts by rendered area descending, and caps the
  * result at `limit`. Deliberately does not try to rewrite thumbnail URLs to
  * higher resolutions (site-specific, rots) — it returns what the page
  * actually shows.
+ *
+ * BROWSE-01 (jev-loop design doc, "Addendum 2, 2026-09-19"): a live
+ * Pinterest run showed this returning only the page's rendered `/236x/`
+ * thumbnails, which the agent then took to guessing at higher-resolution
+ * URLs itself (a confident 404 waiting to happen on any other host). Fixed
+ * generically, not per-host: an `<img>`'s `srcset` is parsed and the
+ * largest *declared* candidate (by `w` width descriptor, or by `x` density
+ * descriptor as a proxy when only density descriptors are present) is
+ * preferred over `currentSrc`/`src`, which the page may only be rendering
+ * at a smaller size. `naturalWidth`/`naturalHeight` are reported alongside
+ * the existing rendered `width`/`height` (which still means rendered size —
+ * the e2e suite pins that) so a consumer can tell a small asset from a
+ * small *rendering* of a large one. Still no per-host URL rewriting — that
+ * is the part that rots.
+ *
+ * Review finding 1 (HIGH): the original `srcset.split(",")` broke on the
+ * comma-bearing URLs real CDNs routinely serve (Cloudinary/imgix transforms
+ * like `https://cdn/x/w_800,h_600/a.jpg 800w`) — the URL itself split into
+ * two pieces, the descriptor-less fragment ("…w_800") was skipped, and the
+ * remainder ("h_600/a.jpg 800w") won on score and got returned as a
+ * relative URL fragment, silently 404ing every image `browse_find_images`
+ * returned on such a host — worse than the bug this fix originally set out
+ * to solve. Splitting on `,\\s+` (comma *followed by whitespace*, which is
+ * how the srcset grammar actually separates candidates — a raw comma
+ * embedded in a URL is essentially never followed by whitespace) fixes the
+ * real-world case; `pickLargestSrcsetCandidate` additionally verifies the
+ * winning candidate resolves as a URL at all before returning it, falling
+ * back to `currentSrc || src` rather than ever handing back something that
+ * isn't a URL.
+ *
+ * Review finding 5: `naturalWidth`/`naturalHeight` used to always come from
+ * the `<img>` element's *loaded* resource, even once this fix started
+ * preferring a *different*, larger URL from `srcset` that the browser may
+ * never have fetched — reporting a real thumbnail's tiny naturalWidth next
+ * to a much larger returned URL defeats the documented "tell a small asset
+ * from a small rendering" use of these fields. Whenever the returned URL
+ * came from a `w`-descriptor `srcset` candidate at all, the descriptor's own
+ * declared width is reported instead of `img.naturalWidth`/`naturalHeight` —
+ * *even when that candidate happens to be the one the browser actually
+ * fetched*: per the HTML spec, a `w`-descriptor selection makes the browser
+ * report a *density-corrected* `naturalWidth`/`naturalHeight` (the resource's
+ * real pixel size divided by an implied pixel density computed from the
+ * descriptor and the "sizes"-resolved target width, which defaults to the
+ * viewport width) rather than the resource's true pixel dimensions — so
+ * trusting `img.naturalWidth` even in the "matches what's loaded" case
+ * quietly reports a viewport-width-dependent number instead of the image's
+ * real size. Height is estimated from the loaded image's own aspect ratio
+ * (density correction scales both dimensions by the same factor, so the
+ * *ratio* stays meaningful even though the absolute numbers don't) or the
+ * rendered box's, if even that isn't known. With no `srcset` involved at
+ * all, `img.naturalWidth`/`naturalHeight` are reported as-is (no density
+ * correction applies without `srcset`). With no declared width to fall back
+ * on (an `x`-density-only srcset), natural size is omitted entirely rather
+ * than reporting a number that describes the wrong image.
  */
 export const FIND_IMAGES_JS = `(() => {
   var args = ${ARGS_MARKER};
@@ -122,10 +222,66 @@ export const FIND_IMAGES_JS = `(() => {
     return raw;
   }
 
+  // Picks the largest declared candidate out of an <img srcset> — by "w"
+  // width descriptor when present, else by "x" density descriptor as a
+  // relative-size proxy (a 1000x multiplier keeps it comparable against a
+  // "w" descriptor without ever mattering in practice, since a page mixing
+  // both descriptor kinds in one srcset is not something the spec allows).
+  // Returns null (falls back to currentSrc||src) when there is no srcset,
+  // nothing in it parses, or the winning candidate doesn't even resolve as
+  // a URL (finding 1's defence-in-depth, on top of the split fix above).
+  // Returns { url, declaredWidth } — declaredWidth is the "w" descriptor's
+  // pixel value when the winner came from one, else null (finding 5).
+  function pickLargestSrcsetCandidate(srcset) {
+    if (!srcset) return null;
+    // Finding 1: split on a comma *followed by whitespace* — that's how the
+    // srcset grammar actually separates candidates, and it's what a raw
+    // comma embedded in a URL (a CDN transform parameter, say) essentially
+    // never looks like. A plain split(",") tore exactly such a URL in two.
+    var entries = srcset.split(/,\\s+/);
+    var best = null;
+    var bestScore = -1;
+    var bestDeclaredWidth = null;
+    for (var i = 0; i < entries.length; i++) {
+      var entry = entries[i].trim();
+      if (!entry) continue;
+      var parts = entry.split(/\\s+/);
+      var url = parts[0];
+      var descriptor = parts[1] || "";
+      var score = -1;
+      var declaredWidth = null;
+      if (descriptor.slice(-1) === "w") {
+        var w = parseInt(descriptor.slice(0, -1), 10);
+        if (!isNaN(w)) {
+          score = w;
+          declaredWidth = w;
+        }
+      } else if (descriptor.slice(-1) === "x") {
+        var x = parseFloat(descriptor.slice(0, -1));
+        if (!isNaN(x)) score = x * 1000;
+      }
+      if (url && score > bestScore) {
+        bestScore = score;
+        best = url;
+        bestDeclaredWidth = declaredWidth;
+      }
+    }
+    if (!best) return null;
+    // Finding 1: validate the winner actually resolves as a URL before
+    // handing it back — a malformed/mis-split fragment should fall back to
+    // currentSrc||src rather than being returned as-is.
+    try {
+      new URL(best, document.baseURI);
+    } catch (err) {
+      return null;
+    }
+    return { url: best, declaredWidth: bestDeclaredWidth };
+  }
+
   var seen = Object.create(null);
   var found = [];
 
-  function consider(rawUrl, alt, width, height) {
+  function consider(rawUrl, alt, width, height, naturalWidth, naturalHeight) {
     var url = resolve(rawUrl);
     if (!url) return;
     // Only http(s) — an inline data:/blob: URL (background images and
@@ -138,19 +294,59 @@ export const FIND_IMAGES_JS = `(() => {
     if (width < minWidth || height < minHeight) return;
     if (seen[url]) return;
     seen[url] = true;
-    found.push({
+    var entry = {
       url: url,
       alt: (alt || "").trim().slice(0, 200),
       width: width,
       height: height,
-    });
+    };
+    // Finding 5: omit rather than report a natural size known to describe
+    // the wrong image.
+    if (naturalWidth !== undefined && naturalWidth !== null) entry.naturalWidth = naturalWidth;
+    if (naturalHeight !== undefined && naturalHeight !== null) entry.naturalHeight = naturalHeight;
+    found.push(entry);
   }
 
   var imgs = document.images;
   for (var i = 0; i < imgs.length; i++) {
     var img = imgs[i];
     var rect = img.getBoundingClientRect();
-    consider(img.currentSrc || img.src, img.alt, Math.round(rect.width), Math.round(rect.height));
+    var srcsetPick = pickLargestSrcsetCandidate(img.getAttribute("srcset"));
+    var chosenUrl = (srcsetPick && srcsetPick.url) || img.currentSrc || img.src;
+    var naturalWidth, naturalHeight;
+    if (!srcsetPick || !srcsetPick.url) {
+      // No srcset candidate was used at all — no "w"-descriptor density
+      // correction applies, so img.naturalWidth/naturalHeight are the
+      // resource's real pixel size and are trustworthy as-is.
+      naturalWidth = img.naturalWidth || Math.round(rect.width);
+      naturalHeight = img.naturalHeight || Math.round(rect.height);
+    } else if (srcsetPick.declaredWidth) {
+      // Finding 5: a "w"-descriptor srcset candidate was used — report its
+      // own declared width rather than img.naturalWidth, which (per the
+      // HTML spec) is density-corrected against the "sizes"-resolved target
+      // width for a "w" descriptor and so does NOT reflect the resource's
+      // real pixel size, even when this candidate is the one actually
+      // loaded. Height isn't declared by a "w" descriptor, so it's
+      // estimated from whatever aspect ratio is available — the loaded
+      // image's own (density correction scales both dimensions equally, so
+      // the ratio itself stays meaningful), or failing that the rendered
+      // box's.
+      var aspect =
+        img.naturalWidth && img.naturalHeight
+          ? img.naturalHeight / img.naturalWidth
+          : rect.width
+            ? rect.height / rect.width
+            : 1;
+      naturalWidth = srcsetPick.declaredWidth;
+      naturalHeight = Math.round(srcsetPick.declaredWidth * aspect);
+    } else {
+      // Only an "x" density descriptor was available (no pixel width to
+      // report) — natural size can't be known without fetching the
+      // candidate ourselves, so it's omitted rather than guessed.
+      naturalWidth = undefined;
+      naturalHeight = undefined;
+    }
+    consider(chosenUrl, img.alt, Math.round(rect.width), Math.round(rect.height), naturalWidth, naturalHeight);
   }
 
   var all = document.querySelectorAll("*");
@@ -160,7 +356,17 @@ export const FIND_IMAGES_JS = `(() => {
     var bgUrl = extractBackgroundUrl(bg);
     if (!bgUrl) continue;
     var elRect = el.getBoundingClientRect();
-    consider(bgUrl, el.getAttribute("aria-label") || el.getAttribute("title") || "", Math.round(elRect.width), Math.round(elRect.height));
+    // A CSS background image has no "natural size" concept reachable
+    // synchronously without decoding it ourselves — rendered size is the
+    // best available proxy, same as before this addendum.
+    consider(
+      bgUrl,
+      el.getAttribute("aria-label") || el.getAttribute("title") || "",
+      Math.round(elRect.width),
+      Math.round(elRect.height),
+      Math.round(elRect.width),
+      Math.round(elRect.height)
+    );
   }
 
   found.sort(function (a, b) {
@@ -176,6 +382,12 @@ export const FIND_IMAGES_JS = `(() => {
  * FIND_BY_TEXT_JS above: clickable elements preferred over any element,
  * innermost match preferred over an enclosing wrapper, exact match
  * preferred over a substring match), scrolls it into view, and clicks it.
+ *
+ * Review finding 4: before mutating anything, the located element is
+ * stamped `data-pen-sig-target` and its own scoped signature is captured
+ * (see SCOPED_SIGNATURE_JS above) — returned as `__scopedBefore`, an
+ * internal field controller.ts reads and strips before the result ever
+ * reaches a caller.
  */
 export const CLICK_JS = `(() => {
   var args = ${ARGS_MARKER};
@@ -190,6 +402,7 @@ export const CLICK_JS = `(() => {
   }
 
   ${FIND_BY_TEXT_JS}
+  ${SCOPED_SIGNATURE_JS}
 
   // Text first, selector as fallback (not the reverse): a bare word like
   // "Search", "Map", "Details", "Select", "Menu", "Address" or "Video" is
@@ -203,15 +416,23 @@ export const CLICK_JS = `(() => {
   // for genuine selectors.
   var el = findByText(target) || findBySelector(target);
   if (!el) return { error: "No element matched: " + target };
+
+  var staleTargets = document.querySelectorAll("[data-pen-sig-target]");
+  for (var st = 0; st < staleTargets.length; st++) staleTargets[st].removeAttribute("data-pen-sig-target");
+  el.setAttribute("data-pen-sig-target", "1");
+  var scopedBefore = scopedSignatureOf(el);
+
   el.scrollIntoView({ block: "center" });
   el.click();
-  return { url: location.href, title: document.title, matched: target };
+  return { url: location.href, title: document.title, matched: target, __scopedBefore: scopedBefore };
 })()`;
 
 /**
  * Locates a target the same way CLICK_JS does, then sets its value (input /
  * textarea) or text content (contenteditable), dispatching `input` and
- * `change` so framework-bound listeners see the change.
+ * `change` so framework-bound listeners see the change. Also stamps and
+ * scoped-signatures the target element before mutating it — see CLICK_JS's
+ * doc comment, finding 4.
  */
 export const TYPE_JS = `(() => {
   var args = ${ARGS_MARKER};
@@ -227,10 +448,17 @@ export const TYPE_JS = `(() => {
   }
 
   ${FIND_BY_TEXT_JS}
+  ${SCOPED_SIGNATURE_JS}
 
   // Text first, selector as fallback — see CLICK_JS's comment for why.
   var el = findByText(target) || findBySelector(target);
   if (!el) return { error: "No element matched: " + target };
+
+  var staleTargets = document.querySelectorAll("[data-pen-sig-target]");
+  for (var st = 0; st < staleTargets.length; st++) staleTargets[st].removeAttribute("data-pen-sig-target");
+  el.setAttribute("data-pen-sig-target", "1");
+  var scopedBefore = scopedSignatureOf(el);
+
   el.scrollIntoView({ block: "center" });
   el.focus();
   var tag = (el.tagName || "").toLowerCase();
@@ -245,7 +473,7 @@ export const TYPE_JS = `(() => {
   }
   el.dispatchEvent(new Event("input", { bubbles: true }));
   el.dispatchEvent(new Event("change", { bubbles: true }));
-  return { url: location.href, title: document.title, matched: target };
+  return { url: location.href, title: document.title, matched: target, __scopedBefore: scopedBefore };
 })()`;
 
 /** Scrolls the page vertically by `amount` viewport heights (default 1). */
@@ -301,15 +529,110 @@ export const SNAPSHOT_JS = `(() => {
     return (el.tagName || "").toLowerCase();
   }
 
-  function labelOf(el) {
+  // Review finding 7: a machine-generated id (React useId's ":r3:", Ember's
+  // "ember123", Amazon's "a-autoid-1-announce") makes a worse label than the
+  // honest positional fallback — it reads as plausible to a decision model,
+  // which both defeats MIN_STEP_CONFIDENCE's ability to refuse a bad guess
+  // and actively invites a wrong one. A real, hand-authored id ("inp-search",
+  // "btn-checkout") is still a legitimate label source and is left alone;
+  // only ids that *look* generated are skipped, falling through to whatever
+  // label source comes next (and ultimately to the positional fallback).
+  function looksGenerated(id) {
+    var trimmed = (id || "").trim();
+    if (!trimmed) return true;
+    if (/^\\d+$/.test(trimmed)) return true; // digits-only, e.g. "123"
+    if (/^:.*:$/.test(trimmed)) return true; // React useId, e.g. ":r3:"
+    if (/^(react-select|radix-|headlessui-|mui-|chakra-|css-)/i.test(trimmed)) return true; // known framework prefixes
+    if (/\\d{2,}$/.test(trimmed)) return true; // digit-suffixed, e.g. "ember123"
+    if (/-\\d+(-|$)/.test(trimmed)) return true; // hyphen-digit segment, e.g. "a-autoid-1-announce"
+    return false;
+  }
+
+  // BROWSE-02 (jev-loop design doc, "Addendum 2, 2026-09-19"): a live
+  // Amazon run degraded to a run of unlabelled "div #6"/"input #7" entries
+  // whenever the real accessible name lived one level away from the
+  // element itself — a descendant icon ("<div role=button><svg
+  // aria-label=Save>"), an aria-labelledby reference, or an enclosing
+  // <a>/<button> wrapping a plain element. Every step below is tried, in
+  // order, before the positional "tag #index" fallback in the caller —
+  // which stays last on purpose: dropping an unlabelled element entirely is
+  // worse, since cookie banners are made of exactly these.
+  function accessibleNameOf(el) {
     var aria = el.getAttribute("aria-label");
     if (aria && aria.trim()) return aria.trim();
     var text = (el.textContent || "").trim().replace(/\\s+/g, " ");
     if (text) return text;
+    var title = el.getAttribute("title");
+    if (title && title.trim()) return title.trim();
+    return "";
+  }
+
+  function labelOf(el) {
+    var aria = el.getAttribute("aria-label");
+    if (aria && aria.trim()) return aria.trim();
+
+    var labelledBy = el.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      var ids = labelledBy.split(/\\s+/);
+      var combined = [];
+      for (var i = 0; i < ids.length; i++) {
+        if (!ids[i]) continue;
+        var ref = document.getElementById(ids[i]);
+        if (!ref) continue;
+        var refText = (ref.textContent || "").trim().replace(/\\s+/g, " ");
+        if (refText) combined.push(refText);
+      }
+      var joined = combined.join(" ").trim();
+      if (joined) return joined;
+    }
+
+    var text = (el.textContent || "").trim().replace(/\\s+/g, " ");
+    if (text) return text;
+
     var placeholder = el.getAttribute("placeholder");
     if (placeholder && placeholder.trim()) return placeholder.trim();
+
     var alt = el.getAttribute("alt");
     if (alt && alt.trim()) return alt.trim();
+
+    var title = el.getAttribute("title");
+    if (title && title.trim()) return title.trim();
+
+    // Review finding 6: a descendant's aria-label/title/alt — the common
+    // icon-button shape, e.g. <div role="button"><img alt=""><svg
+    // aria-label="Save"></svg></div>. The *first* element matching
+    // [aria-label],[title],[alt] is not necessarily the labelled one (an
+    // empty-alt <img> placed before the real svg[aria-label] used to make
+    // this whole step yield nothing) — every match is tried, in document
+    // order, until one actually has a non-empty value.
+    var descendants = el.querySelectorAll("[aria-label], [title], [alt]");
+    for (var di = 0; di < descendants.length; di++) {
+      var d = descendants[di];
+      var dAria = d.getAttribute("aria-label");
+      if (dAria && dAria.trim()) return dAria.trim();
+      var dTitle = d.getAttribute("title");
+      if (dTitle && dTitle.trim()) return dTitle.trim();
+      var dAlt = d.getAttribute("alt");
+      if (dAlt && dAlt.trim()) return dAlt.trim();
+    }
+
+    // The accessible name of the nearest enclosing <a>/<button> — for an
+    // element that is itself unlabelled but sits inside a labelled control
+    // (a plain <input> wrapped by an <a aria-label="…">, say). Guarded
+    // against matching el itself, which every earlier step already
+    // covered.
+    var enclosing = el.closest("a, button");
+    if (enclosing && enclosing !== el) {
+      var enclosingName = accessibleNameOf(enclosing);
+      if (enclosingName) return enclosingName;
+    }
+
+    var name = el.getAttribute("name");
+    if (name && name.trim()) return name.trim();
+
+    var id = el.id;
+    if (id && id.trim() && !looksGenerated(id)) return id.trim();
+
     return "";
   }
 
@@ -440,6 +763,10 @@ export const SNAPSHOT_JS = `(() => {
  * (see SNAPSHOT_JS's doc comment for why this is a lookup, not a
  * recomputed candidate list). `SCROLL_UP`/`SCROLL_DOWN` act on the page
  * itself and never need an element.
+ *
+ * Review finding 4: for CLICK/TYPE_TEXT/SELECT, the located element is
+ * additionally stamped `data-pen-sig-target` and scoped-signatured before
+ * being mutated — same as CLICK_JS/TYPE_JS, see their doc comments.
  */
 export const PERFORM_JS = `(() => {
   var args = ${ARGS_MARKER};
@@ -447,6 +774,8 @@ export const PERFORM_JS = `(() => {
   var index = args.index;
   var operation = args.operation;
   var text = args.text;
+
+  ${SCOPED_SIGNATURE_JS}
 
   if (operation === "SCROLL_UP" || operation === "SCROLL_DOWN") {
     var amount = operation === "SCROLL_UP" ? -1 : 1;
@@ -459,10 +788,15 @@ export const PERFORM_JS = `(() => {
     return { error: "No element at index " + index + " for this snapshot (stale or removed)." };
   }
 
+  var staleTargets = document.querySelectorAll("[data-pen-sig-target]");
+  for (var st = 0; st < staleTargets.length; st++) staleTargets[st].removeAttribute("data-pen-sig-target");
+  el.setAttribute("data-pen-sig-target", "1");
+  var scopedBefore = scopedSignatureOf(el);
+
   if (operation === "CLICK") {
     el.scrollIntoView({ block: "center" });
     el.click();
-    return { url: location.href, title: document.title };
+    return { url: location.href, title: document.title, __scopedBefore: scopedBefore };
   }
 
   if (operation === "TYPE_TEXT") {
@@ -480,7 +814,7 @@ export const PERFORM_JS = `(() => {
     }
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
-    return { url: location.href, title: document.title };
+    return { url: location.href, title: document.title, __scopedBefore: scopedBefore };
   }
 
   if (operation === "SELECT") {
@@ -500,8 +834,268 @@ export const PERFORM_JS = `(() => {
       return { error: "No option matching " + JSON.stringify(text) + " in element at index " + index + "." };
     }
     el.dispatchEvent(new Event("change", { bubbles: true }));
-    return { url: location.href, title: document.title };
+    return { url: location.href, title: document.title, __scopedBefore: scopedBefore };
   }
 
   return { error: "Unsupported operation: " + operation };
+})()`;
+
+/**
+ * A cheap, deterministic page signature — jev-loop design doc "Addendum 2,
+ * 2026-09-19" §1 ("Act results must carry evidence of effect"). Run once
+ * before an action and once after its settle, then diffed by
+ * controller.ts's `diffSignatures`.
+ *
+ * Review findings 2/3/4 reshaped this considerably from the original
+ * addendum:
+ *
+ * - It now takes `args.phase` ("before" | "after") — no longer argument-free
+ *   — because it needs to coordinate element-identity markers across the two
+ *   calls (see below), which a stateless single-shot script can't do.
+ * - `scrollY` and a `focusedValueLength` (the currently-focused input's
+ *   value length, never its content) join the signature (finding 3): the
+ *   old signature had nothing that moved for a successful scroll or a
+ *   successful type into a field, making them indistinguishable from typing
+ *   into/scrolling a dead one.
+ * - `mainImageSrc` is now identity-guarded (finding 4's "guard against the
+ *   largest visible img becoming a different element when an ad loads"): on
+ *   `phase: "before"`, the element currently largest-by-visible-area is
+ *   found and stamped `data-pen-sig-mainimg`; on `phase: "after"`, the
+ *   *same* stamped element (if it still exists) is re-read, rather than
+ *   recomputing "largest visible img" from scratch, which could now pick a
+ *   newly-loaded ad instead of the element that actually changed.
+ * - On `phase: "after"`, if the acting script (CLICK_JS/TYPE_JS/PERFORM_JS)
+ *   stamped an element `data-pen-sig-target`, its scoped signature is
+ *   re-computed and returned as `scopedAfter` (see SCOPED_SIGNATURE_JS).
+ * - `phase: "before"` also sweeps away any `data-pen-sig-mainimg` /
+ *   `data-pen-sig-target` markers left over from a *previous* action, so
+ *   each action's identity tracking starts clean.
+ *
+ * `nodeCount`/`textLength`/`textHash` (the whole-document numbers) are
+ * still computed and returned — controller.ts still reports them in
+ * `changes` as useful context — but per finding 4 they no longer gate
+ * `changed` on their own; see diffSignatures's doc comment.
+ */
+export const SIGNATURE_JS = `(() => {
+  var args = ${ARGS_MARKER};
+  var phase = args.phase;
+
+  function isVisible(el) {
+    var rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    var style = getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    if (parseFloat(style.opacity) === 0) return false;
+    return true;
+  }
+
+  ${SCOPED_SIGNATURE_JS}
+
+  if (phase === "before") {
+    var staleMain = document.querySelectorAll("[data-pen-sig-mainimg]");
+    for (var sm = 0; sm < staleMain.length; sm++) staleMain[sm].removeAttribute("data-pen-sig-mainimg");
+    var staleTarget = document.querySelectorAll("[data-pen-sig-target]");
+    for (var stg = 0; stg < staleTarget.length; stg++) staleTarget[stg].removeAttribute("data-pen-sig-target");
+  }
+
+  var rawText = (document.body ? document.body.innerText : "") || "";
+  var collapsed = rawText.replace(/\\s+/g, " ").trim();
+  var textLength = collapsed.length;
+
+  // A small, fast, non-cryptographic hash (djb2-ish) — good enough to
+  // detect "the visible text changed", not meant to be collision-proof.
+  var hash = 0;
+  for (var i = 0; i < collapsed.length; i++) {
+    hash = (hash * 31 + collapsed.charCodeAt(i)) | 0;
+  }
+
+  var mainImageSrc = "";
+  if (phase === "before") {
+    var bestArea = 0;
+    var bestEl = null;
+    var imgs = document.images;
+    for (var j = 0; j < imgs.length; j++) {
+      var img = imgs[j];
+      if (!isVisible(img)) continue;
+      var rect = img.getBoundingClientRect();
+      var area = rect.width * rect.height;
+      if (area > bestArea) {
+        bestArea = area;
+        bestEl = img;
+      }
+    }
+    if (bestEl) {
+      bestEl.setAttribute("data-pen-sig-mainimg", "1");
+      mainImageSrc = bestEl.currentSrc || bestEl.src || "";
+    }
+  } else {
+    var marked = document.querySelector("[data-pen-sig-mainimg]");
+    mainImageSrc = marked ? marked.currentSrc || marked.src || "" : "";
+  }
+
+  var activeEl = document.activeElement;
+  var focusedValueLength = 0;
+  if (activeEl) {
+    var activeTag = (activeEl.tagName || "").toLowerCase();
+    if (activeTag === "input" || activeTag === "textarea") {
+      focusedValueLength = String(activeEl.value || "").length;
+    } else if (activeEl.isContentEditable) {
+      focusedValueLength = (activeEl.textContent || "").length;
+    }
+  }
+
+  var result = {
+    url: location.href,
+    title: document.title,
+    nodeCount: document.querySelectorAll("*").length,
+    textLength: textLength,
+    textHash: hash,
+    mainImageSrc: mainImageSrc,
+    scrollY: window.scrollY,
+    focusedValueLength: focusedValueLength,
+  };
+
+  if (phase === "after") {
+    var targetEl = document.querySelector("[data-pen-sig-target]");
+    result.scopedAfter = targetEl ? scopedSignatureOf(targetEl) : null;
+  }
+
+  return result;
+})()`;
+
+/**
+ * A readable digest of the current page (jev-loop design doc "Addendum 2,
+ * 2026-09-19" §2, `browse_read`): visible text with script/style/noscript/
+ * nav chrome stripped and whitespace collapsed, h1-h3 headings in document
+ * order, and deduped http(s) links — each capped per the design doc so the
+ * payload is bounded by construction, not by trusting the caller.
+ * `args.selector`, when given, narrows the whole read to one subtree; when
+ * it matches nothing this returns `{ error }` rather than silently reading
+ * the whole page.
+ *
+ * Review finding 9: with a `selector`, `text` already included the root
+ * element itself (collectText walks the root's own child nodes), but
+ * `headings`/`links` used `root.querySelectorAll(...)`, which only matches
+ * *descendants* — so `read({ selector: "h1" })` returned that heading's own
+ * text in `text` but an empty `headings` array. `queryIncludingSelf` below
+ * makes the two consistent: the root itself is checked against the selector
+ * too, not just its descendants.
+ *
+ * Review finding 8: `truncated` used to reflect only the text cap — the
+ * 40-heading and 60-link caps were applied silently, so a page with (say)
+ * 500 links reported 60 of them with `truncated: false`, and a consumer had
+ * no way to know anything was cut. `headingsTruncated`/`linksTruncated` now
+ * report each collection's own truncation alongside the existing
+ * (text-only) `truncated` field.
+ */
+export const READ_JS = `(() => {
+  var args = ${ARGS_MARKER};
+  var selector = args.selector;
+  var maxChars = args.maxChars;
+
+  var root = document;
+  if (selector) {
+    try {
+      root = document.querySelector(selector);
+    } catch (err) {
+      root = null;
+    }
+    if (!root) {
+      return { error: "browse_read: no element matched selector " + JSON.stringify(selector) };
+    }
+  }
+
+  function isChrome(el) {
+    var tag = (el.tagName || "").toLowerCase();
+    if (tag === "script" || tag === "style" || tag === "noscript" || tag === "nav") return true;
+    var role = el.getAttribute ? el.getAttribute("role") : null;
+    if (role === "navigation") return true;
+    return false;
+  }
+
+  function isVisible(el) {
+    var style = getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    if (parseFloat(style.opacity) === 0) return false;
+    return true;
+  }
+
+  // Finding 9: root.querySelectorAll only matches descendants — when root
+  // itself (not document) matches the selector, it must be included too,
+  // the same way collectText already includes the root's own text.
+  function queryIncludingSelf(scopeRoot, sel) {
+    var results = [];
+    if (scopeRoot !== document && scopeRoot.matches && scopeRoot.matches(sel)) results.push(scopeRoot);
+    var descendants = scopeRoot.querySelectorAll(sel);
+    for (var i = 0; i < descendants.length; i++) results.push(descendants[i]);
+    return results;
+  }
+
+  function collectText(node) {
+    var parts = [];
+    function walk(n) {
+      if (n.nodeType === 3) {
+        if (n.nodeValue) parts.push(n.nodeValue);
+        return;
+      }
+      if (n.nodeType !== 1) return;
+      if (isChrome(n)) return;
+      if (!isVisible(n)) return;
+      var children = n.childNodes;
+      for (var i = 0; i < children.length; i++) walk(children[i]);
+    }
+    walk(node);
+    return parts.join(" ");
+  }
+
+  var textRoot = root === document ? document.body : root;
+  var rawText = textRoot ? collectText(textRoot) : "";
+  var collapsed = rawText.replace(/\\s+/g, " ").trim();
+  var truncated = collapsed.length > maxChars;
+  var text = truncated ? collapsed.slice(0, maxChars) : collapsed;
+
+  var scopeForQuery = root === document ? document : root;
+
+  var headingEls = queryIncludingSelf(scopeForQuery, "h1, h2, h3");
+  var allHeadings = [];
+  for (var h = 0; h < headingEls.length; h++) {
+    var hEl = headingEls[h];
+    if (isChrome(hEl) || !isVisible(hEl)) continue;
+    var hText = (hEl.textContent || "").replace(/\\s+/g, " ").trim();
+    if (hText) allHeadings.push(hText);
+  }
+  var headingsTruncated = allHeadings.length > 40;
+  var headings = allHeadings.slice(0, 40);
+
+  var linkEls = queryIncludingSelf(scopeForQuery, "a[href]");
+  var allLinks = [];
+  var seenHrefs = Object.create(null);
+  for (var l = 0; l < linkEls.length; l++) {
+    var a = linkEls[l];
+    var hrefAttr = a.getAttribute("href");
+    var href;
+    try {
+      href = new URL(hrefAttr, document.baseURI).href;
+    } catch (err) {
+      continue;
+    }
+    if (href.indexOf("http:") !== 0 && href.indexOf("https:") !== 0) continue;
+    if (seenHrefs[href]) continue;
+    seenHrefs[href] = true;
+    var label = (a.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 120);
+    allLinks.push({ label: label, href: href });
+  }
+  var linksTruncated = allLinks.length > 60;
+  var links = allLinks.slice(0, 60);
+
+  return {
+    url: location.href,
+    title: document.title,
+    headings: headings,
+    text: text,
+    links: links,
+    truncated: truncated,
+    headingsTruncated: headingsTruncated,
+    linksTruncated: linksTruncated,
+  };
 })()`;
