@@ -381,3 +381,101 @@ Only after all of those should the `tag #index` fallback apply.
 Both were found by a throwaway Playwright script driving the packaged shell
 against the live site; the cheapest way to check a fix is to re-run that
 same shape against the same query and compare.
+
+---
+
+## Addendum 2, 2026-09-19: what the live Amazon run exposed
+
+Four stages against the real site (search → 4-star facet → open product →
+click UI), verified against screenshots of the browser tab rather than the
+agent's own account of itself. Navigation held up: the facet really applied,
+the product page really opened, a click really expanded a section. The
+*reporting* did not — the agent claimed it had switched the image gallery
+(pixel-identical before and after) and that it had expanded "About this
+item" (it expanded a block in the buy box). It also claimed a Connectivity
+filter it never applied, and never noticed a shipping modal that sat over
+the page for all four stages.
+
+None of that is the loop misfiring. It is the agent narrating from a tool
+transcript that cannot tell it what happened, because `browse_act` reports
+`{url, title, matched}` and `browse_task` reports "Done" whenever a click
+landed on *something*. Four changes, in this order.
+
+### 1. Act results must carry evidence of effect
+
+`browse_act` and every `browse_task` step gain:
+
+```ts
+{ changed: boolean, changes: string[] }   // e.g. ["url", "title", "text", "main-image"]
+```
+
+Computed in the page: take a cheap signature before the action and again
+after the existing settle, and diff it. The signature is
+`{ url, title, nodeCount, textLength, textHash, mainImageSrc }`, where
+`mainImageSrc` is the `currentSrc` of the largest visible `<img>` — the one
+thing that moves when a gallery switches and nothing else does.
+
+`changed: false` is a first-class, useful answer: it is what "I clicked a
+wrapper" looks like from the outside, and the whole point is that the agent
+can no longer describe an effect that did not occur. Do NOT turn
+`changed: false` into an error — the click may have been a no-op the goal
+didn't need.
+
+### 2. `browse_read` — a readable digest of the page
+
+The gap behind the Google and Amazon runs both falling back to `web_search`:
+`browse_find_images` is the only thing that reads a page, so a text task has
+nothing. New command and tool:
+
+```
+browse_read({ maxChars?: number, selector?: string })
+```
+
+Returns `{ url, title, headings: string[], text: string, links: [{label, href}], truncated: boolean }`.
+
+- `text` is visible text, scripts/styles/nav-chrome stripped, whitespace
+  collapsed, capped at `maxChars` (default 6000, hard cap 20000).
+- `headings` are `h1`-`h3` in document order, capped at 40.
+- `links` are capped at 60, http(s) only, deduped by href, label trimmed to
+  120 chars.
+- `selector` narrows to one subtree; an unmatched selector is an error, not
+  a silent whole-page read.
+
+This is a chat tool: backend schema (client-executed, gated by the same
+`clientCapabilities.desktopBrowser` flag) plus a frontend handler, exactly
+like the other four.
+
+### 3. BROWSE-01 — return the real image, not the thumbnail
+
+Live runs returned only `/236x/` Pinterest thumbnails, and the agent took to
+rewriting the URLs to `/736x/` on its own. Those guesses happened to resolve,
+but guessing a CDN's path scheme will produce confident 404s elsewhere.
+
+`FIND_IMAGES_JS` must prefer what the page itself declares:
+
+- parse `srcset` and pick the largest candidate by declared width, falling
+  back to `currentSrc || src`;
+- report `naturalWidth`/`naturalHeight` alongside the rendered `width`/
+  `height`, so a small *rendering* of a large asset is distinguishable from
+  a small asset. Keep `width`/`height` meaning rendered size — the e2e
+  suite pins them.
+
+Still no per-host URL rewriting: that is the part that rots.
+
+### 4. BROWSE-02 — labels for elements that have none
+
+The product page degraded to `div #6`, `input #7`, `input #8`. `labelOf`
+should try, in order, before the `tag #index` fallback:
+
+`aria-label` → `aria-labelledby` (resolved) → own text → `placeholder` →
+`alt` → `title` → a descendant's `aria-label`/`title`/`alt` (an icon button
+is usually `<div role=button><svg aria-label="Save">`) → the accessible name
+of the nearest enclosing `<a>`/`<button>` → `name`/`id` attribute.
+
+Keep the 120-char cap and keep the positional fallback as the last resort:
+dropping unlabelled elements entirely is worse, since cookie banners are
+made of them.
+
+### Merge order
+
+Desktop → backend → frontend, as before.
