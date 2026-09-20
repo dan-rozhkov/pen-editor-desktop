@@ -389,6 +389,48 @@ export const FIND_IMAGES_JS = `(() => {
  * internal field controller.ts reads and strips before the result ever
  * reaches a caller.
  */
+/**
+ * Shared "is this control mid-flight?" predicate — a control that disables
+ * itself while its own handler runs (a submit button during a slow request,
+ * a filter that greys out while it refetches). Upstream jev-ultrafast's PR
+ * #58 describes the failure it causes: the input lands, the handler starts,
+ * and the next observation ~50ms later sees the acted control `:disabled`
+ * (so SNAPSHOT_JS skips it) while the controls the handler will enable are
+ * not actionable yet — the model is offered neither what it just used nor
+ * what it is waiting for, and answers BLOCKED. WAIT cannot rescue it: one
+ * WAIT is 400ms, so sitting out a 3s handler costs ~8 paid decision round
+ * trips.
+ *
+ * `aria-busy` is checked on ancestors too (`closest`), because the common
+ * React pattern marks the *form* or a wrapper busy rather than the button.
+ * A native `disabled` is only checked on the element itself: a disabled
+ * <fieldset> already disables its controls, which shows up as `el.disabled`.
+ */
+const TARGET_BUSY_HELPER_JS = `
+  function penTargetIsBusy(el) {
+    if (!el) return false;
+    if (el.disabled === true) return true;
+    if (el.getAttribute("aria-disabled") === "true") return true;
+    if (el.getAttribute("aria-busy") === "true") return true;
+    return !!(el.closest && el.closest('[aria-busy="true"]'));
+  }
+`;
+
+/**
+ * Re-reads the busy state of the element the last action stamped
+ * `data-pen-sig-target` (CLICK_JS/TYPE_JS/PERFORM_JS all stamp it). Polled
+ * by controller.ts's settleWhileTargetBusy *only* when the acting script
+ * reported `__targetSelfDisabled: true`, i.e. the action itself is what
+ * made the control busy. `present: false` (the element is gone — the page
+ * re-rendered or navigated) ends the wait just like `busy: false` does.
+ */
+export const TARGET_BUSY_JS = `(() => {
+  ${TARGET_BUSY_HELPER_JS}
+  var el = document.querySelector("[data-pen-sig-target]");
+  if (!el) return { present: false, busy: false };
+  return { present: true, busy: penTargetIsBusy(el) };
+})()`;
+
 export const CLICK_JS = `(() => {
   var args = ${ARGS_MARKER};
   var target = args.target;
@@ -403,6 +445,7 @@ export const CLICK_JS = `(() => {
 
   ${FIND_BY_TEXT_JS}
   ${SCOPED_SIGNATURE_JS}
+  ${TARGET_BUSY_HELPER_JS}
 
   // Text first, selector as fallback (not the reverse): a bare word like
   // "Search", "Map", "Details", "Select", "Menu", "Address" or "Video" is
@@ -421,10 +464,17 @@ export const CLICK_JS = `(() => {
   for (var st = 0; st < staleTargets.length; st++) staleTargets[st].removeAttribute("data-pen-sig-target");
   el.setAttribute("data-pen-sig-target", "1");
   var scopedBefore = scopedSignatureOf(el);
+  var busyBefore = penTargetIsBusy(el);
 
   el.scrollIntoView({ block: "center" });
   el.click();
-  return { url: location.href, title: document.title, matched: target, __scopedBefore: scopedBefore };
+  return {
+    url: location.href,
+    title: document.title,
+    matched: target,
+    __scopedBefore: scopedBefore,
+    __targetSelfDisabled: !busyBefore && penTargetIsBusy(el),
+  };
 })()`;
 
 /**
@@ -449,6 +499,7 @@ export const TYPE_JS = `(() => {
 
   ${FIND_BY_TEXT_JS}
   ${SCOPED_SIGNATURE_JS}
+  ${TARGET_BUSY_HELPER_JS}
 
   // Text first, selector as fallback — see CLICK_JS's comment for why.
   var el = findByText(target) || findBySelector(target);
@@ -458,6 +509,7 @@ export const TYPE_JS = `(() => {
   for (var st = 0; st < staleTargets.length; st++) staleTargets[st].removeAttribute("data-pen-sig-target");
   el.setAttribute("data-pen-sig-target", "1");
   var scopedBefore = scopedSignatureOf(el);
+  var busyBefore = penTargetIsBusy(el);
 
   el.scrollIntoView({ block: "center" });
   el.focus();
@@ -473,7 +525,13 @@ export const TYPE_JS = `(() => {
   }
   el.dispatchEvent(new Event("input", { bubbles: true }));
   el.dispatchEvent(new Event("change", { bubbles: true }));
-  return { url: location.href, title: document.title, matched: target, __scopedBefore: scopedBefore };
+  return {
+    url: location.href,
+    title: document.title,
+    matched: target,
+    __scopedBefore: scopedBefore,
+    __targetSelfDisabled: !busyBefore && penTargetIsBusy(el),
+  };
 })()`;
 
 /** Scrolls the page vertically by `amount` viewport heights (default 1). */
@@ -776,6 +834,7 @@ export const PERFORM_JS = `(() => {
   var text = args.text;
 
   ${SCOPED_SIGNATURE_JS}
+  ${TARGET_BUSY_HELPER_JS}
 
   if (operation === "SCROLL_UP" || operation === "SCROLL_DOWN") {
     var amount = operation === "SCROLL_UP" ? -1 : 1;
@@ -792,11 +851,20 @@ export const PERFORM_JS = `(() => {
   for (var st = 0; st < staleTargets.length; st++) staleTargets[st].removeAttribute("data-pen-sig-target");
   el.setAttribute("data-pen-sig-target", "1");
   var scopedBefore = scopedSignatureOf(el);
+  var busyBefore = penTargetIsBusy(el);
+  function penResult() {
+    return {
+      url: location.href,
+      title: document.title,
+      __scopedBefore: scopedBefore,
+      __targetSelfDisabled: !busyBefore && penTargetIsBusy(el),
+    };
+  }
 
   if (operation === "CLICK") {
     el.scrollIntoView({ block: "center" });
     el.click();
-    return { url: location.href, title: document.title, __scopedBefore: scopedBefore };
+    return penResult();
   }
 
   if (operation === "TYPE_TEXT") {
@@ -814,7 +882,7 @@ export const PERFORM_JS = `(() => {
     }
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
-    return { url: location.href, title: document.title, __scopedBefore: scopedBefore };
+    return penResult();
   }
 
   if (operation === "SELECT") {
@@ -834,7 +902,7 @@ export const PERFORM_JS = `(() => {
       return { error: "No option matching " + JSON.stringify(text) + " in element at index " + index + "." };
     }
     el.dispatchEvent(new Event("change", { bubbles: true }));
-    return { url: location.href, title: document.title, __scopedBefore: scopedBefore };
+    return penResult();
   }
 
   return { error: "Unsupported operation: " + operation };

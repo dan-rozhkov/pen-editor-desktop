@@ -1554,3 +1554,139 @@ describe("open's own timeout budget", () => {
     }
   });
 });
+
+// Upstream jev-ultrafast PR #58, ported: a control that disables itself
+// while its handler runs used to defeat the very next observation — the
+// acted control is `:disabled` (so SNAPSHOT_JS skips it), the controls the
+// handler will enable are not there yet, and the model is offered neither.
+// The acting script now reports `__targetSelfDisabled` and the action waits
+// (bounded) for the control to come back before capturing "after".
+describe("self-disabling control", () => {
+  /** TARGET_BUSY_JS is the only script whose body contains this literal. */
+  function isBusyCall(code: unknown): boolean {
+    return typeof code === "string" && code.includes("present: false");
+  }
+
+  function makeBusyPage(busyAnswers: boolean[], selfDisabled = true) {
+    const order: string[] = [];
+    let busyCalls = 0;
+    const page = makeFakePage({
+      executeJavaScript: vi.fn((code: string) => {
+        if (isSignatureCall(code)) {
+          order.push("signature");
+          return Promise.resolve({
+            url: "https://example.com/",
+            title: "Example",
+            nodeCount: 1,
+            textLength: 0,
+            textHash: 0,
+            mainImageSrc: "",
+            scrollY: 0,
+            focusedValueLength: 0,
+          });
+        }
+        if (isBusyCall(code)) {
+          const busy = busyAnswers[Math.min(busyCalls, busyAnswers.length - 1)];
+          busyCalls++;
+          order.push(`busy:${busy}`);
+          return Promise.resolve({ present: true, busy });
+        }
+        order.push("action");
+        return Promise.resolve({
+          url: "https://example.com/",
+          title: "Example",
+          __targetSelfDisabled: selfDisabled,
+        });
+      }),
+    });
+    return { page, order, busyCalls: () => busyCalls };
+  }
+
+  it("waits for the acted control to stop being busy before capturing the after state", async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, order } = makeBusyPage([true, true, false]);
+      const controller = new BrowserController(makeFakeTarget(page));
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      const promise = controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const result = await promise;
+
+      // The busy polls sit between the action and the after-capture, and the
+      // after-capture only runs once the control reported itself free.
+      expect(order.slice(order.lastIndexOf("action"))).toEqual([
+        "action",
+        "busy:true",
+        "busy:true",
+        "busy:false",
+        "signature",
+      ]);
+      // The internal flag never reaches the caller (same rule as
+      // __scopedBefore).
+      expect(result).not.toHaveProperty("__targetSelfDisabled");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not poll at all when the action did not make the control busy", async () => {
+    const { page, order } = makeBusyPage([false], false);
+    const controller = new BrowserController(makeFakeTarget(page));
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "TYPE_TEXT", text: "hi" });
+
+    expect(order.filter((o) => o.startsWith("busy:"))).toEqual([]);
+  });
+
+  it("gives up after the 3s bound when the control never comes back, rather than hanging the command", async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, order } = makeBusyPage([true]);
+      const controller = new BrowserController(makeFakeTarget(page));
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      const promise = controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+      await vi.advanceTimersByTimeAsync(BROWSER_COMMAND_TIMEOUT_MS);
+      const result = await promise;
+
+      expect(result).not.toHaveProperty("error");
+      expect(order[order.length - 1]).toBe("signature");
+      // 3s bound at a 50ms poll interval — bounded, and well under the 20s
+      // command timeout that would otherwise turn this into an error.
+      expect(order.filter((o) => o === "busy:true").length).toBeLessThanOrEqual(61);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ends the wait when the element disappears (re-render or navigation)", async () => {
+    vi.useFakeTimers();
+    try {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) => {
+          if (isSignatureCall(code)) {
+            return Promise.resolve({
+              url: "https://example.com/",
+              title: "Example",
+              nodeCount: 1,
+              textLength: 0,
+              textHash: 0,
+              mainImageSrc: "",
+              scrollY: 0,
+              focusedValueLength: 0,
+            });
+          }
+          if (isBusyCall(code)) return Promise.resolve({ present: false, busy: false });
+          return Promise.resolve({ url: "https://example.com/", title: "Example", __targetSelfDisabled: true });
+        }),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      const promise = controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(await promise).not.toHaveProperty("error");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

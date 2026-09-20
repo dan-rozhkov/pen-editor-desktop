@@ -18,6 +18,7 @@ let snapshotUrl: string;
 let snapshotManyUrl: string;
 let clickTargetUrl: string;
 let evidenceUrl: string;
+let selfDisableUrl: string;
 let readUrl: string;
 let imagesMetaUrl: string;
 let slowLoadUrl: string;
@@ -64,6 +65,11 @@ function sizedPixelUrl(w: number, h: number, color: string): string {
 // than every http(s) image on the page — if FIND_IMAGES_JS's http(s)-only
 // filter (finding 8) ever regresses, this would sort to the very front of
 // defaultImages.images instead of being excluded outright.
+/** How long the /self-disable fixture's handler holds its button disabled —
+ * inside BUSY_SETTLE_TIMEOUT_MS (3s), well outside the ~350ms a
+ * non-navigating click settled in before addendum 3 §2. */
+const SELF_DISABLE_HANDLER_MS = 1_200;
+
 const DATA_URI_IMAGE = `data:image/svg+xml,${encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="orange"/></svg>`,
 )}`;
@@ -225,6 +231,30 @@ a plain search box (eligible, must still report its value). -->
 </script>`);
       return;
     }
+    if (req.url && req.url.startsWith("/self-disable")) {
+      // Addendum 3 §2 (upstream PR #58): a submit button that disables
+      // itself while its handler runs, then re-enables and reveals what
+      // the agent is actually after. SELF_DISABLE_HANDLER_MS is well inside
+      // the 3s busy bound but far outside the ~350ms a non-navigating click
+      // used to settle in — so an observation taken right after `perform`
+      // returns sees "Continue" only if the command waited.
+      res.end(`<!doctype html>
+<title>Self Disable</title>
+<h1 id="ready">self-disable-ready</h1>
+<button id="start-btn">Start</button>
+<div id="after"></div>
+<script>
+  document.getElementById('start-btn').addEventListener('click', function () {
+    var btn = this;
+    btn.disabled = true;
+    setTimeout(function () {
+      btn.disabled = false;
+      document.getElementById('after').innerHTML = '<button id="continue-btn">Continue</button>';
+    }, ${SELF_DISABLE_HANDLER_MS});
+  });
+</script>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/images-meta")) {
       // BROWSE-01 (jev-loop design doc "Addendum 2, 2026-09-19" §3):
       // img-natural is rendered small by CSS but its served SVG declares a
@@ -355,6 +385,7 @@ a plain search box (eligible, must still report its value). -->
   snapshotManyUrl = `${baseUrl}/snapshot-many`;
   clickTargetUrl = `${baseUrl}/click-target`;
   evidenceUrl = `${baseUrl}/evidence`;
+  selfDisableUrl = `${baseUrl}/self-disable`;
   readUrl = `${baseUrl}/read`;
   imagesMetaUrl = `${baseUrl}/images-meta`;
   slowLoadUrl = `${baseUrl}/slow-load`;
@@ -1401,6 +1432,54 @@ test("browse_open: DOM-ready fix — returns well within the command timeout wit
     expect(read.error).toBeUndefined();
     expect(read.url).toBe(slowLoadUrl);
     expect(read.headings).toEqual(["slow-load-ready"]);
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("addendum 3 §2 (upstream PR #58): a click on a control that disables itself is observed only after the handler finishes", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === selfDisableUrl }),
+      callBrowser(editorPage, "open", { url: selfDisableUrl }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("self-disable-ready");
+
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const startIndex = snap.elements.find((e) => e.label === "Start")?.index;
+    expect(startIndex).not.toBeUndefined();
+
+    const started = Date.now();
+    const result = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: startIndex,
+      operation: "CLICK",
+    })) as { error?: string; __targetSelfDisabled?: unknown };
+    expect(result.error).toBeUndefined();
+    // The internal flag is stripped before the result leaves the controller.
+    expect(result.__targetSelfDisabled).toBeUndefined();
+    // The command waited for the handler rather than returning on the
+    // ~350ms non-navigating click settle.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(SELF_DISABLE_HANDLER_MS);
+
+    // The very next observation — the one the loop would feed to Jev — sees
+    // both the re-enabled control and what the handler revealed. Before the
+    // fix it saw neither, and the model answered BLOCKED.
+    const after = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(after.elements.map((e) => e.label)).toContain("Continue");
+    expect(after.elements.map((e) => e.label)).toContain("Start");
 
     await app.close();
   } finally {

@@ -24,6 +24,7 @@ import {
   PERFORM_JS,
   SIGNATURE_JS,
   READ_JS,
+  TARGET_BUSY_JS,
 } from "./pageScripts";
 
 const SCRIPT_TEMPLATES = {
@@ -34,6 +35,7 @@ const SCRIPT_TEMPLATES = {
   SNAPSHOT_JS,
   PERFORM_JS,
   READ_JS,
+  TARGET_BUSY_JS,
 } as const;
 
 /** jev-loop design doc "Addendum 2, 2026-09-19" §2: default/hard-cap for
@@ -165,6 +167,18 @@ const CLICK_SETTLE_TIMEOUT_MS = 300;
  * CLICK_SETTLE_TIMEOUT_MS because a real page load is routinely slower than
  * the time it takes just to observe that a navigation started at all. */
 const CLICK_LOAD_SETTLE_TIMEOUT_MS = 8_000;
+
+/** How long an action may wait for a control that disabled *itself* while
+ * its handler runs (see pageScripts.ts's TARGET_BUSY_HELPER_JS for the
+ * case, from upstream jev-ultrafast PR #58). Paid only when the acting
+ * script reports `__targetSelfDisabled` — a control that was already
+ * disabled before the action, or one that never goes busy, waits zero. The
+ * bound is what keeps a control that never re-enables (a button disabled
+ * for good after submit) from burning the whole command timeout: after it,
+ * the observation proceeds anyway, exactly as it did before this wait
+ * existed. */
+const BUSY_SETTLE_TIMEOUT_MS = 3_000;
+const BUSY_POLL_INTERVAL_MS = 50;
 
 /** `open`'s DOM-ready-not-full-load fix: `webContents.loadURL()` resolves
  * only at `did-finish-load` — every subresource, including ads/trackers on a
@@ -556,7 +570,15 @@ export class BrowserController {
     const result = await this.executeScript(page, "CLICK_JS", { target });
     if ("error" in result) return result;
     const scopedBefore = extractScopedBefore(result);
+    const selfDisabled = extractTargetSelfDisabled(result);
     await this.settleAfterClick(page, previousUrl);
+    if (selfDisabled) {
+      await this.settleWhileTargetBusy(page);
+      // A handler that disables its button and *then* navigates finishes
+      // after the busy wait, not before it — so the load wait is redone
+      // here. It returns immediately when nothing is loading.
+      await this.waitForLoadStop(page, CLICK_LOAD_SETTLE_TIMEOUT_MS);
+    }
     const after = await this.captureSignature(page, "after");
     const currentUrl = page.getURL();
     return {
@@ -650,7 +672,13 @@ export class BrowserController {
         const result = await this.executeScript(page, "PERFORM_JS", { snapshotId, index, operation, text });
         if ("error" in result) return result;
         const scopedBefore = extractScopedBefore(result);
+        const selfDisabled = extractTargetSelfDisabled(result);
         await this.settleAfterClick(page, previousUrl);
+        if (selfDisabled) {
+          await this.settleWhileTargetBusy(page);
+          // See runClick: the navigation can start after the busy wait.
+          await this.waitForLoadStop(page, CLICK_LOAD_SETTLE_TIMEOUT_MS);
+        }
         const after = await this.captureSignature(page, "after");
         const currentUrl = page.getURL();
         return {
@@ -667,7 +695,9 @@ export class BrowserController {
       const result = await this.executeScript(page, "PERFORM_JS", { snapshotId, index, operation, text });
       if ("error" in result) return result;
       const scopedBefore = extractScopedBefore(result);
+      const selfDisabled = extractTargetSelfDisabled(result);
       await this.settleShort();
+      if (selfDisabled) await this.settleWhileTargetBusy(page);
       const after = await this.captureSignature(page, "after");
       return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
     });
@@ -701,14 +731,24 @@ export class BrowserController {
     const result = await this.executeScript(page, script, scriptArgs);
     if ("error" in result) return result;
     const scopedBefore = extractScopedBefore(result);
+    const selfDisabled = extractTargetSelfDisabled(result);
     await this.settleShort();
+    if (selfDisabled) await this.settleWhileTargetBusy(page);
     const after = await this.captureSignature(page, "after");
     return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
   }
 
   private async executeScript(
     page: BrowserPageHandle,
-    script: "FIND_IMAGES_JS" | "CLICK_JS" | "TYPE_JS" | "SCROLL_JS" | "SNAPSHOT_JS" | "PERFORM_JS" | "READ_JS",
+    script:
+      | "FIND_IMAGES_JS"
+      | "CLICK_JS"
+      | "TYPE_JS"
+      | "SCROLL_JS"
+      | "SNAPSHOT_JS"
+      | "PERFORM_JS"
+      | "READ_JS"
+      | "TARGET_BUSY_JS",
     scriptArgs: Record<string, unknown>,
   ): Promise<BrowserCommandResult> {
     // A function replacer, not a plain string — String.prototype.replace's
@@ -827,6 +867,31 @@ export class BrowserController {
     await new Promise((resolve) => setTimeout(resolve, NON_CLICK_SETTLE_MS));
   }
 
+  /** Waits (bounded by BUSY_SETTLE_TIMEOUT_MS) for the element the acting
+   * script stamped `data-pen-sig-target` to stop being busy — i.e. for the
+   * handler that disabled it to finish. Called only when that script
+   * reported `__targetSelfDisabled`, so the common action pays nothing.
+   *
+   * Every failure mode ends the wait rather than extending it: the element
+   * disappearing (`present: false` — a re-render or a navigation), a page
+   * script `{ error }`, a rejecting executeJavaScript, or a malformed
+   * answer. Observing a moment early is the old behaviour; hanging here is
+   * not. */
+  private async settleWhileTargetBusy(page: BrowserPageHandle): Promise<void> {
+    const deadline = Date.now() + Math.min(this.timeoutMs, BUSY_SETTLE_TIMEOUT_MS);
+    while (Date.now() < deadline) {
+      let busy = false;
+      try {
+        const result = await this.executeScript(page, "TARGET_BUSY_JS", {});
+        busy = result.present === true && result.busy === true;
+      } catch {
+        return;
+      }
+      if (!busy) return;
+      await new Promise((resolve) => setTimeout(resolve, BUSY_POLL_INTERVAL_MS));
+    }
+  }
+
   /** Polls briefly for `page.getURL()` to move away from `previousUrl` —
    * bounded well under the overall command timeout so a page whose URL
    * never actually changes (e.g. a fake in tests, or a click that doesn't
@@ -913,6 +978,16 @@ function normalizeNonNegativeNumber(
  * internal `__scopedBefore` field. This pulls it out for diffSignatures and
  * deletes it from `result` in place, so it never leaks into the value a
  * caller (the chat tool, ultimately) ends up seeing. */
+/** Upstream PR #58: CLICK_JS/TYPE_JS/PERFORM_JS report whether the action
+ * itself made the acted-on control busy. Like `__scopedBefore`, it is an
+ * internal field — pulled out here and deleted in place so it never reaches
+ * the chat tool's result. */
+function extractTargetSelfDisabled(result: BrowserCommandResult): boolean {
+  const raw = result.__targetSelfDisabled;
+  delete result.__targetSelfDisabled;
+  return raw === true;
+}
+
 function extractScopedBefore(result: BrowserCommandResult): ScopedSignature | null {
   const raw = result.__scopedBefore;
   delete result.__scopedBefore;

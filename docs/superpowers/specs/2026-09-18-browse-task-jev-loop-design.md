@@ -479,3 +479,61 @@ made of them.
 ### Merge order
 
 Desktop → backend → frontend, as before.
+
+## Addendum 3, 2026-09-20: two fixes ported from upstream
+
+`browser-use/jev-ultrafast` itself has not moved since 17.09 (only a README
+commit after that); its open PRs are where the findings live. Two of them
+describe failures this loop has too, adapted below. Deliberately *not*
+taken: their CDP round-trip work (#43/#48/#56 — we drive Electron's
+`executeJavaScript`, not CDP) and #34's single-question op+target choice,
+which would collapse the two confidence heads addendum C deliberately
+checks separately.
+
+### 1. A rejected act is a no-op, and three in a row end the task (PR #40)
+
+Upstream: an act rejected before any input (target gone, occluded, page
+changed) is consumed but never recorded, so history is unchanged and the
+no-progress check can never fire; a target that is persistently stale
+between predict and act loops until the budget is gone.
+
+Ours was worse in one respect and better in another. The desktop bridge
+**never rejects** — `perform` resolves `{ error }` for exactly these cases
+(the stale-snapshotId guard in §1) — and the loop only recorded a failure
+from a `catch`, so a rejected act was recorded as `ok: true`: a landed
+action, both in the transcript the design model reads and in the `history`
+Jev sees. Better: our history already carries `ok` per step, so once the
+no-op is recorded correctly, Jev does see it.
+
+- `browseTask.ts` treats a resolved `{ error: string }` from `perform` (and
+  from `snapshot`) as a failed step, with the controller's own message as
+  the label.
+- Three **consecutive** steps that land nothing end the task with the new
+  `status: "stalled"` (distinct from `budget`: the page stopped us, not the
+  budget). Any step that lands — including `WAIT`, a deliberate decision —
+  resets the count. The backend tool description documents the new status.
+
+### 2. Wait for a control that disables itself after input (PR #58)
+
+A control that disables itself while its handler runs — a submit button
+during a slow request — defeats the next observation: the acted control is
+`:disabled` and `SNAPSHOT_JS` skips it, while the controls the handler will
+enable are not actionable yet, so the model is offered neither and answers
+BLOCKED. `WAIT` cannot rescue it: one WAIT is 400 ms, so sitting out a 3 s
+handler costs ~8 paid decision round trips.
+
+This is the same "wait for useful state, capped" rule addendum F already
+applies to a click's navigation ("load, not commit").
+
+- `CLICK_JS`/`TYPE_JS`/`PERFORM_JS` compute the target's busy state before
+  and after the action and report `__targetSelfDisabled` — true only when
+  *the action itself* made it busy. Busy = native `disabled`,
+  `aria-disabled="true"`, or `aria-busy="true"` on the element or an
+  ancestor (React marks the form, not the button).
+- Only then does the command poll `TARGET_BUSY_JS` (50 ms) until the
+  control is free or gone, bounded by `BUSY_SETTLE_TIMEOUT_MS` (3 s) and by
+  the command timeout. A control that never re-enables costs 3 s once, then
+  the observation proceeds exactly as before. In the click paths the load
+  wait is redone afterwards, since a handler can disable its button and
+  *then* navigate.
+- `__targetSelfDisabled` is stripped from the result like `__scopedBefore`.
