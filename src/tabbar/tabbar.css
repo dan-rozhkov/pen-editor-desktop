@@ -56,24 +56,37 @@ body {
 .tab-row {
   height: 38px;
   box-sizing: border-box;
-  border-bottom: 1px solid var(--border);
+  background: linear-gradient(
+    to bottom,
+    transparent calc(100% - 1px),
+    var(--border) calc(100% - 1px)
+  );
   display: flex;
   align-items: stretch;
   overflow: hidden;
   app-region: drag;
   -webkit-app-region: drag;
 }
-:root[data-macos] .tab-row { padding-left: 78px; }
+:root[data-macos] .tab-row { padding-left: 88px; }
 #tabs { display: flex; align-items: stretch; overflow: hidden; flex: 1; }
 .tab {
+  position: relative;
   display: flex; align-items: center; gap: 6px;
-  padding: 0 10px 0 14px; max-width: 200px; min-width: 60px;
-  border-right: 1px solid var(--border); cursor: default; white-space: nowrap;
+  padding: 0 10px 2px 14px; max-width: 200px; min-width: 60px;
+  margin-top: 4px;
+  border: 1px solid transparent; border-bottom: 0;
+  border-radius: 7px 7px 0 0;
+  cursor: default; white-space: nowrap;
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
 .tab .title { overflow: hidden; text-overflow: ellipsis; flex: 1; }
-.tab.active { background: var(--tab-active-bg); color: var(--text-active); }
+.tab.active {
+  border-color: var(--border);
+  border-bottom: 0;
+  background: var(--tab-active-bg);
+  color: var(--text-active);
+}
 .tab .close {
   position: relative; flex: 0 0 20px; width: 20px; height: 20px;
   border: 0; background: none; color: inherit;
@@ -97,13 +110,15 @@ body {
 .mcp-status--error { background: #ff3b30; }
 #new-tab {
   position: relative; flex: 0 0 38px; width: 38px;
+  margin-top: 4px;
   border: 0; background: none; color: var(--text); cursor: pointer;
+  border-radius: 7px 7px 0 0;
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
 #new-tab:hover { color: var(--text-active); background: var(--control-hover-bg); }
 #new-tab::before, #new-tab::after {
-  content: ""; position: absolute; left: 13px; top: 18.5px;
+  content: ""; position: absolute; left: 13px; top: 14.5px;
   width: 12px; height: 1px; border-radius: 1px; background: currentColor;
 }
 #new-tab::after { transform: rotate(90deg); }

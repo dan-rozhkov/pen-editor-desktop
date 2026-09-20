@@ -79,7 +79,12 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
     // Put the tab strip in the native title-bar row on macOS while keeping
     // the standard traffic-light controls. Other platforms retain their
     // normal system frame.
-    ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" as const } : {}),
+    ...(process.platform === "darwin"
+      ? {
+          titleBarStyle: "hiddenInset" as const,
+          trafficLightPosition: { x: 14, y: 12 },
+        }
+      : {}),
   });
 
   // --- tab bar view ---
