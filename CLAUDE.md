@@ -639,9 +639,14 @@ and invisibly — nothing on screen showed the user what the agent was doing.
 `CURSOR_JS` (`pageScripts.ts`), before every action that touches the page:
 `act`'s `click`/`type`/`scroll` and `perform`'s `CLICK`/`TYPE_TEXT`/`SELECT`/
 `SCROLL_UP`/`SCROLL_DOWN`. It installs (idempotently, under
-`window.__penCursor`) a fixed-position SVG arrow overlay, animates it along a
-bowed, eased path to the resolved target's center, and gives it a small
-press/ripple pulse on arrival before resolving.
+`window.__penCursor`) a fixed-position SVG arrow overlay — a wide, heavily
+rounded arrow in pen-editor's own UI accent (`#0d99ff`, written out as a
+literal since a third-party page has no access to the editor's custom
+properties) over a white rim that keeps it readable on dark pages — animates
+it along a bowed, eased path to the resolved target's center, and gives it a
+small press/ripple pulse on arrival before resolving. Its corners are rounded
+by stroking each polygon in its own fill colour with `stroke-linejoin:round`,
+so the stroke widths, not a radius, are what "more rounded" means here.
 
 **Ordering invariant: `moveCursor` always runs *before* the action's
 before-signature capture (`captureSignature(page, "before")`), never

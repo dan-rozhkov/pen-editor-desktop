@@ -1110,7 +1110,7 @@ export const SIGNATURE_JS = `(() => {
  */
 export const CURSOR_JS = `(() => {
   var args = ${ARGS_MARKER};
-  var CURSOR_VERSION = "2";
+  var CURSOR_VERSION = "3";
 
   ${FIND_BY_TEXT_JS}
 
@@ -1160,11 +1160,21 @@ export const CURSOR_JS = `(() => {
     // rounds every corner — a plain fill would give hard corners.
     //
     // Two stacked copies: a wider white one underneath is the rim that
-    // keeps the cursor readable on dark pages, the black one on top is the
-    // arrow itself. The tip is pinned at the SVG's own (0,0) origin (which
-    // is also its transform-origin), so the point lands exactly on the
-    // target coordinate.
-    var ARROW_POINTS = "0,0 19.1,8.6 10.7,13.4 5,20";
+    // keeps the cursor readable on dark pages, the accent-blue one on top
+    // is the arrow itself. The colour is pen-editor's own UI accent
+    // (--color-accent-primary in its src/index.css) written out as a
+    // literal —
+    // the overlay lives in an arbitrary third-party page, which has no
+    // access to the editor's custom properties.
+    //
+    // The stroke widths below are also what sets how round the corners
+    // read, so the points are pulled in from the reference's own geometry
+    // to keep the silhouette the same size as the stroke fattens it, and
+    // offset from (0,0) by half the stroke along the tip's bisector — the
+    // rounded tip bulges outward past the corner it rounds, so an
+    // unoffset polygon would land its visible point a few px beyond the
+    // target rather than on it.
+    var ARROW_POINTS = "2.2,1.6 17.6,8.5 10.8,12.4 6.2,17.7";
     function arrowPolygon(colour, strokeWidth) {
       var poly = document.createElementNS(svgNS, "polygon");
       poly.setAttribute("points", ARROW_POINTS);
@@ -1176,8 +1186,8 @@ export const CURSOR_JS = `(() => {
       poly.style.pointerEvents = "none";
       return poly;
     }
-    svg.appendChild(arrowPolygon("#fff", 5));
-    svg.appendChild(arrowPolygon("#000", 3));
+    svg.appendChild(arrowPolygon("#fff", 7.8));
+    svg.appendChild(arrowPolygon("#0d99ff", 5.4));
     root.appendChild(svg);
 
     var ring = document.createElement("div");
