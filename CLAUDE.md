@@ -630,3 +630,90 @@ that call `window.penDesktop.browser` are a separate change in
 `pen-editor-backend`/`pen-editor`, gated behind a `clientCapabilities.desktopBrowser`
 flag the frontend derives from `Boolean(window.penDesktop?.browser)` — see
 the design doc's §6–§8 for that half and its merge order.
+
+### The human cursor overlay
+
+While the agent drives a browser tab, clicks/typing used to land instantly
+and invisibly — nothing on screen showed the user what the agent was doing.
+`BrowserController.moveCursor` (`controller.ts`) runs a new page script,
+`CURSOR_JS` (`pageScripts.ts`), before every action that touches the page:
+`act`'s `click`/`type`/`scroll` and `perform`'s `CLICK`/`TYPE_TEXT`/`SELECT`/
+`SCROLL_UP`/`SCROLL_DOWN`. It installs (idempotently, under
+`window.__penCursor`) a fixed-position SVG arrow overlay, animates it along a
+bowed, eased path to the resolved target's center, and gives it a small
+press/ripple pulse on arrival before resolving.
+
+**Ordering invariant: `moveCursor` always runs *before* the action's
+before-signature capture (`captureSignature(page, "before")`), never
+between the two captures.** The overlay's own DOM insertion and the
+`scrollIntoView` it performs while locating the target are both real page
+mutations, and "Addendum 2"'s evidence-of-effect diff (`SIGNATURE_JS`,
+`diffSignatures`) exists specifically to tell the agent whether *its* action
+changed the page — running the cursor between the two captures would fold
+the cursor's own footprint into that diff and manufacture false
+`changed: true` evidence for actions that didn't actually do anything.
+
+**`pointer-events:none` and `z-index:2147483647` on the overlay root — and
+every element inside it — is a hard invariant.** The overlay sits on top of
+real page content in a browser tab with no preload to route around it; if it
+ever became click-through-blocking, it would silently break every
+subsequent click/type this bridge performs. `SNAPSHOT_JS`/`FIND_IMAGES_JS`
+both skip any node inside `[data-pen-cursor]` for the same reason: the
+overlay must never itself show up as an actionable element or a "found
+image".
+
+`CURSOR_JS`'s own value is a Promise, unlike every other script in this
+file — `executeJavaScript` awaits it, and the animation spans several
+`requestAnimationFrame` ticks. It never throws (every path resolves,
+including a `{ error }` shape) and always settles within ~1.15s via its own
+internal backstop timer, since `requestAnimationFrame` can simply stop
+firing in a backgrounded tab. Every settle path — `finish()` — is what
+clears the backstop, never a caller of `finish()`: an earlier version
+cleared it in `arrive()` *before* scheduling the final `setTimeout(finish,
+120)`, which meant that last, unguarded 120ms timer had nothing bounding it
+if a throttled/hidden renderer delayed it past 1s (Chromium clamps
+backgrounded timers to a ≥1s floor) — the backstop is now only ever
+disarmed once something has actually settled, so it genuinely bounds every
+path, including that one. `moveCursor` wraps the call in its own timeout
+(`CURSOR_TIMEOUT_MS`, bounded further by the controller's own `timeoutMs`)
+and swallows every failure — a rejecting/throwing/timed-out cursor call must
+never turn a working browser command into an error or a timeout of its own.
+The controller tracks the overlay's last known position
+(`this.cursorPosition`) and feeds it back as `from` on the next call, so
+consecutive moves chain from wherever the cursor actually is.
+
+**The cursor step's own budget is added to, not carved out of, the command's
+timeout.** `moveCursor` runs *inside* the same closure `withCommandTimeout`
+bounds for every action that does a cursor step (`act`'s click/type/scroll,
+`perform`) — early versions passed the controller's plain `timeoutMs` as that
+closure's budget, so the cursor's up-to-`CURSOR_TIMEOUT_MS` (1.5s) came out of
+the same 20s the action itself needs, and a slow-but-successful click already
+close to that budget could time out purely because of a cosmetic overlay.
+Those four call sites now pass `this.timeoutMs + this.cursorBudgetMs` instead
+(`cursorBudgetMs` is `Math.min(this.timeoutMs, CURSOR_TIMEOUT_MS)` when the
+cursor is enabled, `0` when it isn't) — `open`, `findImages`, `read`,
+`snapshot`, and `back`/`forward` never run a cursor step, so they keep the
+plain `timeoutMs` budget.
+
+**`moveCursor` also skips itself entirely when the driven tab isn't
+visible.** `TabManager.browserHandle()` (and therefore
+`BrowserController.currentPage()`) can return a browser tab that isn't the
+*active* one, and a hidden `WebContentsView` never fires
+`requestAnimationFrame` — so the animation would only ever settle via its own
+backstop, paying the full ~1.15s per click/type/select for an overlay nobody
+can see (the same rAF-in-a-hidden-tab failure this repo already hit with
+`get_screenshot`). `BrowserPageHandle` (`controller.ts`) and `TabViewHandle`
+(`tabManager.ts`) both carry an **optional** `isVisible?(): boolean`; the real
+implementation in `window.ts` is `view.getVisible()` (Electron's own
+`View#getVisible()`, shipped on `WebContentsView` in this repo's pinned
+Electron version), which already tracks exactly what
+`TabManager.setActive`'s `view.setVisible(...)` calls set — no separate
+visibility bookkeeping needed. `moveCursor` returns immediately when
+`page.isVisible?.() === false`; a handle that doesn't implement the method
+(every fake page in the unit suite) behaves as before — the cursor always
+runs.
+
+Disabled with `PEN_DESKTOP_BROWSER_CURSOR=off` (also `0`/`false`,
+case-insensitive — `config.ts`'s `resolveBrowserCursorEnabled`), wired into
+`window.ts`'s `new BrowserController(...)` call as the `cursor` option
+(default on).

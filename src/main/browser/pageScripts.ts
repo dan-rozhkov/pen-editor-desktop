@@ -310,6 +310,9 @@ export const FIND_IMAGES_JS = `(() => {
   var imgs = document.images;
   for (var i = 0; i < imgs.length; i++) {
     var img = imgs[i];
+    // Skip the cursor overlay (pageScripts.ts's CURSOR_JS) — it's not page
+    // content, just pointer-events:none chrome this bridge draws itself.
+    if (img.closest && img.closest("[data-pen-cursor]")) continue;
     var rect = img.getBoundingClientRect();
     var srcsetPick = pickLargestSrcsetCandidate(img.getAttribute("srcset"));
     var chosenUrl = (srcsetPick && srcsetPick.url) || img.currentSrc || img.src;
@@ -352,6 +355,7 @@ export const FIND_IMAGES_JS = `(() => {
   var all = document.querySelectorAll("*");
   for (var j = 0; j < all.length; j++) {
     var el = all[j];
+    if (el.closest && el.closest("[data-pen-cursor]")) continue;
     var bg = getComputedStyle(el).backgroundImage;
     var bgUrl = extractBackgroundUrl(bg);
     if (!bgUrl) continue;
@@ -571,6 +575,10 @@ export const SNAPSHOT_JS = `(() => {
     "[role='combobox'], [onclick], [contenteditable='true']";
 
   function isVisible(el) {
+    // The cursor overlay (pageScripts.ts's CURSOR_JS) is pointer-events:none
+    // and never a real interactive control — skip anything inside it so it
+    // can never show up as a snapshot element to act on.
+    if (el.closest && el.closest("[data-pen-cursor]")) return false;
     var rect = el.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return false;
     var style = getComputedStyle(el);
@@ -1056,6 +1064,324 @@ export const SIGNATURE_JS = `(() => {
  * report each collection's own truncation alongside the existing
  * (text-only) `truncated` field.
  */
+/**
+ * Drives the visible, human-like cursor overlay for the built-in browser tab
+ * (design: a human-watched agent that clicks/types instantly and invisibly
+ * looks broken even when it's working correctly). Unlike every other script
+ * in this file, its value is a **Promise** — Electron's `executeJavaScript`
+ * awaits whatever the injected expression evaluates to, and the whole point
+ * here is an animation that spans several `requestAnimationFrame` ticks, not
+ * a synchronous computation.
+ *
+ * `controller.ts`'s `moveCursor` runs this **before** the before-action
+ * `captureSignature` call in every call site that acts on the page (click,
+ * type, scroll, perform's CLICK/TYPE_TEXT/SELECT/SCROLL_UP/SCROLL_DOWN) —
+ * deliberately, not incidentally: the overlay's own DOM insertion and the
+ * `scrollIntoView` this script performs while locating the target are both
+ * observable page mutations, and "Addendum 2"'s evidence-of-effect feature
+ * (SIGNATURE_JS, `diffSignatures`) exists specifically to tell the agent
+ * whether *its* action changed the page. Running the cursor between the two
+ * signature captures would fold the cursor's own DOM/scroll footprint into
+ * that diff and manufacture false "changed: true" evidence for actions that
+ * didn't actually do anything. Running it before "before" keeps it invisible
+ * to that mechanism.
+ *
+ * `pointer-events:none` on the overlay root — and every element inside it —
+ * is a hard invariant, not a style choice: this overlay sits on top of the
+ * real page content at `z-index:2147483647`, and if it ever became
+ * click-through-blocking it would silently break every subsequent
+ * click/type this bridge performs (its own and the user's, since a browser
+ * tab has no preload to route around it).
+ *
+ * Never throws and always settles quickly: every code path is wrapped so a
+ * failure resolves `{ error }` rather than rejecting, and a `finish()` guard
+ * plus a hard backstop timer (~1.15s, comfortably under this repo's other
+ * short page-script budgets) mean the promise always settles even if
+ * `requestAnimationFrame` never fires again — which upstream findings in
+ * this same repo (see get_screenshot's rAF-in-a-background-tab gotcha) show
+ * does happen. The backstop is disarmed *only* inside `finish()` itself,
+ * never by a caller ahead of time — including on the final "arrived, ripple
+ * playing" leg, whose own settle is an unguarded `setTimeout` that a
+ * throttled/hidden renderer can stretch past 1s — so the backstop stays live
+ * and able to win that race for every settle path, not just the early-return
+ * ones. `moveCursor` on the controller side wraps this in its own,
+ * slightly longer timeout and swallows every failure besides — the cursor
+ * must never turn a working browser command into an error or a timeout.
+ */
+export const CURSOR_JS = `(() => {
+  var args = ${ARGS_MARKER};
+  var CURSOR_VERSION = "2";
+
+  ${FIND_BY_TEXT_JS}
+
+  function clamp(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  // Idempotent install, guarded by a version string so a reload of this
+  // script (a code change while the tab stays open) replaces a stale
+  // overlay instead of leaving two stacked on top of each other.
+  function ensureOverlay() {
+    var existing = window.__penCursor;
+    if (existing && existing.version === CURSOR_VERSION && existing.root && existing.root.isConnected) {
+      return existing;
+    }
+    var priorPos = existing && existing.pos ? existing.pos : null;
+    if (existing && existing.root && existing.root.parentNode) {
+      existing.root.parentNode.removeChild(existing.root);
+    }
+
+    var root = document.createElement("div");
+    root.setAttribute("data-pen-cursor", "1");
+    root.style.cssText =
+      "position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647;" +
+      "pointer-events:none;will-change:transform;";
+
+    var svgNS = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(svgNS, "svg");
+    svg.setAttribute("width", "22");
+    svg.setAttribute("height", "26");
+    svg.setAttribute("viewBox", "0 0 22 26");
+    svg.setAttribute("data-pen-cursor-arrow", "1");
+    svg.style.cssText =
+      "position:absolute;left:0;top:0;overflow:visible;pointer-events:none;" +
+      "transform-origin:0 0;transition:transform 140ms ease-out;" +
+      "filter:drop-shadow(0 1px 2px rgba(0,0,0,.45));";
+    // The visual reference is NOT the thin-tailed macOS pointer: it is a
+    // wide, heavily rounded arrow — tip up-left, a long edge out to the
+    // right, and a concave notch pulling back in before the bottom point.
+    // Four points describe it (tip, right, notch, bottom) and the rounding
+    // comes entirely from stroking each polygon in its own fill colour with
+    // stroke-linejoin:round, which fattens the silhouette outward and
+    // rounds every corner — a plain fill would give hard corners.
+    //
+    // Two stacked copies: a wider white one underneath is the rim that
+    // keeps the cursor readable on dark pages, the black one on top is the
+    // arrow itself. The tip is pinned at the SVG's own (0,0) origin (which
+    // is also its transform-origin), so the point lands exactly on the
+    // target coordinate.
+    var ARROW_POINTS = "0,0 19.1,8.6 10.7,13.4 5,20";
+    function arrowPolygon(colour, strokeWidth) {
+      var poly = document.createElementNS(svgNS, "polygon");
+      poly.setAttribute("points", ARROW_POINTS);
+      poly.setAttribute("fill", colour);
+      poly.setAttribute("stroke", colour);
+      poly.setAttribute("stroke-width", String(strokeWidth));
+      poly.setAttribute("stroke-linejoin", "round");
+      poly.setAttribute("stroke-linecap", "round");
+      poly.style.pointerEvents = "none";
+      return poly;
+    }
+    svg.appendChild(arrowPolygon("#fff", 5));
+    svg.appendChild(arrowPolygon("#000", 3));
+    root.appendChild(svg);
+
+    var ring = document.createElement("div");
+    ring.setAttribute("data-pen-cursor-ring", "1");
+    ring.style.cssText =
+      "position:absolute;left:0;top:0;width:24px;height:24px;margin-left:-12px;margin-top:-12px;" +
+      "border-radius:50%;border:2px solid rgba(255,255,255,.9);box-shadow:0 0 0 1px rgba(0,0,0,.35);" +
+      "pointer-events:none;opacity:0;transform:scale(0.4);";
+    root.appendChild(ring);
+
+    (document.documentElement || document.body).appendChild(root);
+
+    var state = { version: CURSOR_VERSION, root: root, svg: svg, ring: ring, pos: priorPos, hideTimer: null };
+    window.__penCursor = state;
+    return state;
+  }
+
+  // Idle auto-hide: every call re-shows the overlay and (re)arms an 8s
+  // fade-out, so it reads as "visible while the agent is working" rather
+  // than a permanent fixture.
+  function show(state) {
+    state.root.style.transition = "opacity 400ms";
+    state.root.style.opacity = "1";
+    if (state.hideTimer) clearTimeout(state.hideTimer);
+    state.hideTimer = setTimeout(function () {
+      state.root.style.opacity = "0";
+    }, 8000);
+  }
+
+  function place(state, x, y) {
+    state.root.style.transform = "translate3d(" + x + "px," + y + "px,0)";
+    state.pos = { x: x, y: y };
+  }
+
+  function resolveTarget() {
+    if (args.snapshotId !== undefined && args.snapshotId !== null && args.index !== undefined && args.index !== null) {
+      return document.querySelector('[data-pen-snap="' + args.snapshotId + ":" + args.index + '"]');
+    }
+    if (typeof args.target === "string" && args.target.trim() !== "") {
+      function findBySelector(sel) {
+        try {
+          return document.querySelector(sel);
+        } catch (err) {
+          return null;
+        }
+      }
+      return findByText(args.target) || findBySelector(args.target);
+    }
+    return null;
+  }
+
+  return new Promise(function (resolve) {
+    var settled = false;
+    // finish() is the ONLY place the backstop is cleared (idempotent via
+    // \`settled\`) — every settle path, including the final unguarded
+    // setTimeout in arrive() below, must go through here rather than
+    // clearing the backstop itself ahead of time. An earlier version
+    // cleared it inside arrive() before scheduling that last 120ms timer,
+    // leaving that final leg unbounded: a hidden/throttled renderer clamps
+    // background timers to a ≥1s floor, so that "120ms" step could actually
+    // take well over a second with nothing left to catch it, breaking the
+    // "always settles within ~1.15s" invariant this script promises (and
+    // that moveCursor's own outer timeout then had to silently absorb
+    // instead). Routing every settle path through finish() keeps the
+    // backstop armed — and therefore able to win the race — right up until
+    // something has genuinely settled.
+    function finish(value) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(backstop);
+      resolve(value);
+    }
+    // Hard backstop: requestAnimationFrame can simply stop firing (a
+    // backgrounded tab, per this repo's get_screenshot rAF findings), and
+    // this script must settle regardless — "at most ~1.2s" from the design,
+    // kept a little under that so moveCursor's own (longer) timeout on the
+    // controller side is never the thing that actually fires.
+    var backstop = setTimeout(function () {
+      var state = window.__penCursor;
+      var pos = state && state.pos ? state.pos : { x: 0, y: 0 };
+      finish({ moved: false, x: pos.x, y: pos.y });
+    }, 1150);
+
+    try {
+      var state = ensureOverlay();
+      show(state);
+
+      var reduceMotion = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+      var startX, startY;
+      if (state.pos) {
+        startX = state.pos.x;
+        startY = state.pos.y;
+      } else if (args.from && typeof args.from.x === "number" && typeof args.from.y === "number") {
+        startX = args.from.x;
+        startY = args.from.y;
+      } else {
+        startX = window.innerWidth * 0.12;
+        startY = window.innerHeight * 0.85;
+      }
+      place(state, startX, startY);
+
+      if (args.action === "scroll") {
+        finish({ moved: false, x: startX, y: startY });
+        return;
+      }
+
+      var el = resolveTarget();
+      if (!el) {
+        finish({ moved: false, x: startX, y: startY });
+        return;
+      }
+
+      function clickFeedback() {
+        if (args.action === "click" || args.action === "select") {
+          state.svg.style.transform = "scale(0.85)";
+          setTimeout(function () {
+            state.svg.style.transform = "scale(1)";
+          }, 140);
+          state.ring.style.transition = "none";
+          state.ring.style.opacity = "0.9";
+          state.ring.style.transform = "scale(0.4)";
+          void state.ring.offsetWidth; // force reflow so the transition below actually animates
+          state.ring.style.transition = "transform 380ms ease-out, opacity 380ms ease-out";
+          state.ring.style.transform = "scale(1.6)";
+          state.ring.style.opacity = "0";
+        } else if (args.action === "type") {
+          state.svg.style.transform = "scale(0.92)";
+          setTimeout(function () {
+            state.svg.style.transform = "scale(1)";
+          }, 100);
+        }
+      }
+
+      function arrive(targetX, targetY) {
+        place(state, targetX, targetY);
+        clickFeedback();
+        // Not awaited on purpose — the ripple/press feedback keeps
+        // animating after this resolves, so the real action follows
+        // promptly instead of waiting out the full 380ms ripple.
+        setTimeout(function () {
+          finish({ moved: true, x: targetX, y: targetY });
+        }, 120);
+      }
+
+      function animateTo(targetX, targetY) {
+        if (reduceMotion) {
+          arrive(targetX, targetY);
+          return;
+        }
+        var dx = targetX - startX;
+        var dy = targetY - startY;
+        var distance = Math.sqrt(dx * dx + dy * dy) || 0.0001;
+        var duration = args.durationMs || Math.min(900, Math.max(260, 90 + distance * 0.7));
+        // Alternate the perpendicular bow's sign per call so consecutive
+        // moves don't all curve the same way.
+        window.__penCursorBowSign = -(window.__penCursorBowSign || -1);
+        var bow = distance * (0.08 + Math.random() * 0.04) * window.__penCursorBowSign;
+        var midX = (startX + targetX) / 2 - (dy / distance) * bow;
+        var midY = (startY + targetY) / 2 + (dx / distance) * bow;
+        var overshoot = Math.min(6, distance * 0.03);
+
+        var startTime = null;
+        function step(ts) {
+          if (startTime === null) startTime = ts;
+          var t = Math.min(1, (ts - startTime) / duration);
+          var e = easeInOutCubic(t);
+          var m = 1 - e;
+          var x = m * m * startX + 2 * m * e * midX + e * e * targetX;
+          var y = m * m * startY + 2 * m * e * midY + e * e * targetY;
+          if (t >= 1) {
+            // Small settle: a tiny overshoot past the target, corrected on
+            // the next frame, so the stop doesn't read as dead-on-arrival.
+            place(state, targetX + (dx / distance) * overshoot, targetY + (dy / distance) * overshoot);
+            requestAnimationFrame(function () {
+              arrive(targetX, targetY);
+            });
+            return;
+          }
+          place(state, x, y);
+          requestAnimationFrame(step);
+        }
+        requestAnimationFrame(step);
+      }
+
+      try {
+        el.scrollIntoView({ block: "center" });
+      } catch (err) {
+        // ignore — animate to wherever the element already is
+      }
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          var rect = el.getBoundingClientRect();
+          var targetX = clamp(rect.left + rect.width / 2, 0, window.innerWidth);
+          var targetY = clamp(rect.top + rect.height / 2, 0, window.innerHeight);
+          animateTo(targetX, targetY);
+        });
+      });
+    } catch (err) {
+      finish({ error: String((err && err.message) || err) });
+    }
+  });
+})()`;
+
 export const READ_JS = `(() => {
   var args = ${ARGS_MARKER};
   var selector = args.selector;

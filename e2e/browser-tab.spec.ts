@@ -655,6 +655,235 @@ test("built-in browser tab: open, findImages, act (click/type/scroll/back/forwar
   }
 });
 
+// The human cursor overlay (CLAUDE.md's "The human cursor overlay",
+// pageScripts.ts's CURSOR_JS, controller.ts's moveCursor): an injected page
+// script is not unit-testable — executeJavaScript is stubbed in the unit
+// suites — so this is the only place a regression in CURSOR_JS itself would
+// ever be caught. Reuses the gallery fixture and callBrowser machinery from
+// the flow test above rather than adding new fixtures.
+test("human cursor overlay: real, non-blocking, and follows the acted-on element", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery") });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+    const tabbarPage =
+      app.windows().find((page) => page.url().endsWith("/tabbar/tabbar.html")) ??
+      (await app.waitForEvent("window", { predicate: (page) => page.url().endsWith("/tabbar/tabbar.html") }));
+
+    const [galleryPage] = await Promise.all([
+      app.waitForEvent("window", {
+        predicate: (p) => p !== editorPage && p !== tabbarPage && !p.url().endsWith("/tabbar/tabbar.html"),
+      }),
+      callBrowser(editorPage, "open", { url: galleryUrl }),
+    ]);
+    await expect(galleryPage.locator("#ready")).toHaveText("gallery-ready");
+
+    // --- act click on "Load More": moveCursor always runs before the
+    // click's own before-signature capture (controller.ts's ordering
+    // invariant), so by the time this resolves the overlay must already
+    // exist and be parked on the clicked element. Both moveCursor and
+    // CLICK_JS itself call scrollIntoView({block:"center"}) on the target,
+    // so the element's rect must be read *after* the action settles, not
+    // before — the page is 900px+ tall above #load-more (the datauri
+    // fixture image), so scrollIntoView moves it substantially. ---
+    const clickResult = (await callBrowser(editorPage, "act", { action: "click", target: "Load More" })) as {
+      matched: string;
+    };
+    expect(clickResult.matched).toBe("Load More");
+    const loadMoreRectAfter = await galleryPage
+      .locator("#load-more")
+      .evaluate((el) => el.getBoundingClientRect().toJSON());
+    // --- assertion 4: the action itself still really works with the cursor in play ---
+    await expect(galleryPage).toHaveTitle("Loaded");
+
+    // --- assertion 1: the overlay exists and is real ---
+    const overlayInfo = await galleryPage.evaluate(() => {
+      const overlays = document.querySelectorAll("[data-pen-cursor]");
+      const overlay = overlays[0] as HTMLElement | undefined;
+      return {
+        count: overlays.length,
+        insideDocumentElement: !!overlay && document.documentElement.contains(overlay),
+        hasSvg: !!overlay && overlay.querySelector("svg") !== null,
+      };
+    });
+    expect(overlayInfo.count).toBe(1);
+    expect(overlayInfo.insideDocumentElement).toBe(true);
+    expect(overlayInfo.hasSvg).toBe(true);
+
+    // --- assertion 2: it does not intercept clicks ---
+    const nonBlocking = await galleryPage.evaluate(() => {
+      const overlay = document.querySelector("[data-pen-cursor]") as HTMLElement;
+      const svg = overlay.querySelector("svg") as SVGElement;
+      const overlayStyle = getComputedStyle(overlay);
+      const svgStyle = getComputedStyle(svg);
+      const state = (window as unknown as { __penCursor: { pos: { x: number; y: number } } }).__penCursor;
+      const atCursor = state.pos ? document.elementFromPoint(state.pos.x, state.pos.y) : null;
+      return {
+        overlayPointerEvents: overlayStyle.pointerEvents,
+        svgPointerEvents: svgStyle.pointerEvents,
+        overlayPosition: overlayStyle.position,
+        overlayZIndex: overlayStyle.zIndex,
+        // elementFromPoint at the cursor's own reported position must land
+        // on real page content, never on the (click-through) overlay itself.
+        elementAtCursorIsOutsideOverlay: !!atCursor && !overlay.contains(atCursor),
+      };
+    });
+    expect(nonBlocking.overlayPointerEvents).toBe("none");
+    expect(nonBlocking.svgPointerEvents).toBe("none");
+    expect(nonBlocking.overlayPosition).toBe("fixed");
+    // The max signed 32-bit int — CURSOR_JS's own sentinel, so the overlay
+    // always wins the stacking context against real page content.
+    expect(nonBlocking.overlayZIndex).toBe("2147483647");
+    expect(nonBlocking.elementAtCursorIsOutsideOverlay).toBe(true);
+
+    // --- assertion 3a: it actually moved to the first clicked element ---
+    const posAfterClick = await galleryPage.evaluate(
+      () => (window as unknown as { __penCursor: { pos: { x: number; y: number } } }).__penCursor.pos,
+    );
+    const loadMoreCenter = {
+      x: loadMoreRectAfter.x + loadMoreRectAfter.width / 2,
+      y: loadMoreRectAfter.y + loadMoreRectAfter.height / 2,
+    };
+    expect(Math.abs(posAfterClick.x - loadMoreCenter.x)).toBeLessThanOrEqual(3);
+    expect(Math.abs(posAfterClick.y - loadMoreCenter.y)).toBeLessThanOrEqual(3);
+
+    // --- assertion 3b: a second action, on a target far from the first,
+    // moves the overlay again rather than leaving it parked. #query sits
+    // near the top of the page, well away from #load-more further down —
+    // its rect (like #load-more's above) is read after the action, once
+    // scrollIntoView has settled on its own final position. ---
+    const typeResult = (await callBrowser(editorPage, "act", {
+      action: "type",
+      target: "#query",
+      text: "sunset skyline",
+    })) as { matched: string };
+    expect(typeResult.matched).toBe("#query");
+    // --- assertion 4 again, different action: typing still really lands ---
+    await expect(galleryPage.locator("#query")).toHaveValue("sunset skyline");
+    const queryRectAfter = await galleryPage.locator("#query").evaluate((el) => el.getBoundingClientRect().toJSON());
+
+    // moveCursor is awaited inside act() before the click/type itself runs,
+    // so by the time callBrowser's promise resolves the position should
+    // already have settled — expect.poll here is a defensive margin against
+    // any remaining cross-process timing, per this repo's convention that
+    // expect.poll's callback must return a value rather than assert inline.
+    await expect
+      .poll(() =>
+        galleryPage.evaluate(
+          () => (window as unknown as { __penCursor: { pos: { x: number; y: number } } }).__penCursor.pos.x,
+        ),
+      )
+      .not.toBe(posAfterClick.x);
+
+    const posAfterType = await galleryPage.evaluate(
+      () => (window as unknown as { __penCursor: { pos: { x: number; y: number } } }).__penCursor.pos,
+    );
+    const queryCenter = {
+      x: queryRectAfter.x + queryRectAfter.width / 2,
+      y: queryRectAfter.y + queryRectAfter.height / 2,
+    };
+    expect(Math.abs(posAfterType.x - queryCenter.x)).toBeLessThanOrEqual(3);
+    expect(Math.abs(posAfterType.y - queryCenter.y)).toBeLessThanOrEqual(3);
+
+    // --- assertion 5: SNAPSHOT_JS and FIND_IMAGES_JS both guard against the
+    // overlay ever showing up as an actionable element or a found image ---
+    await callBrowser(editorPage, "snapshot");
+    const overlayStampedBySnapshot = await galleryPage.evaluate(
+      () => document.querySelectorAll("[data-pen-cursor] [data-pen-snap]").length,
+    );
+    expect(overlayStampedBySnapshot).toBe(0);
+
+    const images = (await callBrowser(editorPage, "findImages", { minWidth: 0, minHeight: 0 })) as {
+      images: { width: number; height: number; url: string }[];
+    };
+    // The overlay's own arrow SVG is 22x26 — a permissive filter (min 0x0)
+    // would otherwise happily include it if the [data-pen-cursor] guard in
+    // FIND_IMAGES_JS ever regressed.
+    expect(images.images.some((img) => img.width === 22 && img.height === 26)).toBe(false);
+
+    // --- assertion 6 (code review finding 4): the assertion above cannot
+    // actually fail if the `closest("[data-pen-cursor]")` guards in
+    // FIND_IMAGES_JS are ever deleted — the overlay's own bare <svg>/
+    // <polygon> children are in neither document.images nor a
+    // background-image selector, so nothing about them would ever be
+    // *found* in the first place, guard or no guard. Give the overlay root
+    // a genuine CSS background-image (a real box, served over http(s) by
+    // this suite's own stub server, exactly like every other fixture image
+    // here) so there is something for FIND_IMAGES_JS to actually find, then
+    // prove the guard is what excludes it — restored immediately after so
+    // later assertions in this file see the overlay exactly as before. ---
+    const overlayBgUrl = pixelUrl("overlay-bg-guard-check");
+    await galleryPage.evaluate((bgUrl) => {
+      const overlay = document.querySelector("[data-pen-cursor]") as HTMLElement;
+      overlay.style.width = "300px";
+      overlay.style.height = "300px";
+      overlay.style.backgroundImage = `url(${bgUrl})`;
+    }, overlayBgUrl);
+    try {
+      const permissiveImages = (await callBrowser(editorPage, "findImages", { minWidth: 0, minHeight: 0 })) as {
+        images: { width: number; height: number; url: string }[];
+      };
+      expect(permissiveImages.images.some((img) => img.url === overlayBgUrl)).toBe(false);
+    } finally {
+      await galleryPage.evaluate(() => {
+        const overlay = document.querySelector("[data-pen-cursor]") as HTMLElement;
+        overlay.style.backgroundImage = "";
+        // CURSOR_JS's own overlay is always 0x0 (position:fixed, the arrow
+        // is drawn by its absolutely-positioned children) — restore that,
+        // not an empty string, which would instead fall back to the
+        // browser's default `auto` sizing for a fixed-position element.
+        overlay.style.width = "0px";
+        overlay.style.height = "0px";
+      });
+    }
+
+    // --- assertion 7 (code review finding 5): SNAPSHOT_JS's guard is
+    // likewise unexercised by anything above — none of the overlay's
+    // div/svg/polygon match INTERACTIVE_SELECTOR at all, so the
+    // [data-pen-cursor] check in SNAPSHOT_JS's isVisible() never actually
+    // runs against it. Make the overlay root genuinely snapshot-eligible
+    // (a real role, a real size, a real label) for the duration of this
+    // check, then prove it's still excluded by label and by the absence of
+    // any data-pen-snap stamp inside it — restored immediately after. ---
+    const guardLabel = "pen-cursor-guard-check-label";
+    await galleryPage.evaluate((label) => {
+      const overlay = document.querySelector("[data-pen-cursor]") as HTMLElement;
+      overlay.setAttribute("role", "button");
+      overlay.setAttribute("aria-label", label);
+      overlay.style.width = "40px";
+      overlay.style.height = "40px";
+    }, guardLabel);
+    try {
+      const guardSnap = (await callBrowser(editorPage, "snapshot")) as { elements: { label: string; tag: string }[] };
+      expect(guardSnap.elements.some((el) => el.label === guardLabel)).toBe(false);
+      const guardStamped = await galleryPage.evaluate(
+        () => document.querySelectorAll("[data-pen-cursor] [data-pen-snap]").length,
+      );
+      expect(guardStamped).toBe(0);
+      const overlaySelfStamped = await galleryPage.evaluate(
+        () => document.querySelector("[data-pen-cursor]")?.hasAttribute("data-pen-snap") ?? false,
+      );
+      expect(overlaySelfStamped).toBe(false);
+    } finally {
+      await galleryPage.evaluate(() => {
+        const overlay = document.querySelector("[data-pen-cursor]") as HTMLElement;
+        overlay.removeAttribute("role");
+        overlay.removeAttribute("aria-label");
+        overlay.style.width = "0px";
+        overlay.style.height = "0px";
+      });
+    }
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
 // The new-tab focus fix: before this, File ▸ New Browser Tab produced a
 // tab titled "New Tab" with a visible, empty, *unfocused* address row and a
 // blank content area — no cue at all where to type. Drives the real

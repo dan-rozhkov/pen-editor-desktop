@@ -21,13 +21,35 @@ function isSignatureCall(code: unknown): boolean {
   return typeof code === "string" && code.includes("data-pen-sig-mainimg");
 }
 
-/** Finds the one non-signature executeJavaScript call whose code contains
- * `needle` — the action script's call, not one of the SIGNATURE_JS calls
- * bracketing it. */
+/** The human-cursor overlay (CURSOR_JS, controller.ts's moveCursor) runs
+ * before every click/type/scroll/perform action's before-signature capture
+ * — see CURSOR_JS's doc comment (pageScripts.ts). Its code references
+ * `window.__penCursor` (the overlay's own state global), which no other
+ * script does — SNAPSHOT_JS/FIND_IMAGES_JS both now reference the overlay's
+ * *marker attribute* `data-pen-cursor` too (to skip it), so that string
+ * alone is no longer unique to this script, unlike `__penCursor`. Every
+ * existing assertion below that counts or indexes executeJavaScript calls
+ * excludes cursor calls, exactly like signature calls, so this addition
+ * doesn't change what those tests were already asserting about the action
+ * scripts themselves. */
+function isCursorCall(code: unknown): boolean {
+  return typeof code === "string" && code.includes("__penCursor");
+}
+
+/** Finds the one non-signature, non-cursor executeJavaScript call whose code
+ * contains `needle` — the action script's call, not one of the SIGNATURE_JS
+ * calls bracketing it or the CURSOR_JS call preceding all of them. */
 function findScriptCall(mock: ReturnType<typeof vi.fn>, needle: string): string {
-  const call = mock.mock.calls.find((c) => !isSignatureCall(c[0]) && (c[0] as string).includes(needle));
+  const call = mock.mock.calls.find((c) => !isSignatureCall(c[0]) && !isCursorCall(c[0]) && (c[0] as string).includes(needle));
   expect(call, `no executeJavaScript call contained ${JSON.stringify(needle)}`).toBeTruthy();
   return call![0] as string;
+}
+
+/** Count of executeJavaScript calls, excluding the cursor call — for
+ * assertions written before the cursor overlay existed that count the
+ * action-script-plus-signature-capture calls only. */
+function nonCursorCallCount(mock: ReturnType<typeof vi.fn>): number {
+  return mock.mock.calls.filter((c) => !isCursorCall(c[0])).length;
 }
 
 // A real goBack()/goForward() is fire-and-forget but the URL does change —
@@ -332,7 +354,9 @@ describe("BrowserController", () => {
         // signature, so evidence capture degrades to changed: false rather
         // than throwing — covered on its own in the "evidence of effect"
         // block below.
-        expect(page.executeJavaScript).toHaveBeenCalledTimes(3);
+        // 3 non-cursor calls (a 4th, the cursor overlay's CURSOR_JS, runs
+        // before all of them — see isCursorCall's doc comment).
+        expect(nonCursorCallCount(page.executeJavaScript as ReturnType<typeof vi.fn>)).toBe(3);
         const code = findScriptCall(page.executeJavaScript as ReturnType<typeof vi.fn>, JSON.stringify("Buy now"));
         expect(code).not.toContain("PEN_BROWSER_ARGS");
         expect(result).toEqual({ url: "https://x/", title: "X", matched: "Buy now", changed: false, changes: [] });
@@ -676,7 +700,10 @@ describe("BrowserController", () => {
       vi.useFakeTimers();
       try {
         const page = makeFakePage({ executeJavaScript: vi.fn(() => new Promise(() => {})) });
-        const controller = new BrowserController(makeFakeTarget(page), { timeoutMs: 50 });
+        // cursor: false — this test is about the plain command timeout, not
+        // the cursor's budget extension (see the "cursor budget extension
+        // (finding 1)" describe block below for that).
+        const controller = new BrowserController(makeFakeTarget(page), { timeoutMs: 50, cursor: false });
         const promise = controller.act({ action: "click", target: "x" });
         await vi.advanceTimersByTimeAsync(60);
         const result = await promise;
@@ -1401,10 +1428,11 @@ describe("BrowserController", () => {
     });
 
     it("surfaces a page-reported error (element not found) as the result", async () => {
-      // Three executeJavaScript calls before PERFORM_JS's error is reached:
-      // snapshot()'s SNAPSHOT_JS, perform()'s before-signature capture, then
-      // PERFORM_JS itself — an error result short-circuits before the
-      // after-signature capture, so no fourth call/entry is needed.
+      // Four executeJavaScript calls before PERFORM_JS's error is reached:
+      // snapshot()'s SNAPSHOT_JS, perform()'s cursor call, its
+      // before-signature capture, then PERFORM_JS itself — an error result
+      // short-circuits before the after-signature capture, so no fifth
+      // call/entry is needed.
       const executeJavaScript = vi
         .fn()
         .mockResolvedValueOnce({
@@ -1413,6 +1441,7 @@ describe("BrowserController", () => {
           elements: [],
           scroll: { y: 0, height: 0, atBottom: true },
         })
+        .mockResolvedValueOnce({ moved: false }) // cursor call (no valid x/y; harmless)
         .mockResolvedValueOnce({ url: "https://example.com/", title: "Example" }) // before-signature (not a valid one; harmless)
         .mockResolvedValueOnce({ error: "No element at index 0 for this snapshot." });
       const page = makeFakePage({ executeJavaScript });
@@ -1488,7 +1517,8 @@ describe("BrowserController", () => {
       vi.useFakeTimers();
       try {
         const page = makeFakePage({ executeJavaScript: vi.fn(() => Promise.resolve({ ok: true })) });
-        const controller = new BrowserController(makeFakeTarget(page), { timeoutMs: 50 });
+        // cursor: false — see the sibling "act" timeout test's comment above.
+        const controller = new BrowserController(makeFakeTarget(page), { timeoutMs: 50, cursor: false });
         const snapshot = (await controller.snapshot()) as { snapshotId: string };
         (page.executeJavaScript as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise(() => {}));
         const promise = controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "SCROLL_DOWN" });
@@ -1688,5 +1718,256 @@ describe("self-disabling control", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// The visible cursor overlay (design: a human watching the browser tab must
+// see the agent's clicks/typing land somewhere, not appear instantly and
+// invisibly). CURSOR_JS runs before every click/type/scroll/perform action's
+// before-signature capture — see its doc comment in pageScripts.ts.
+describe("human cursor", () => {
+  it("runs a cursor script carrying the target before CLICK_JS", async () => {
+    const order: string[] = [];
+    const page = makeFakePage({
+      executeJavaScript: vi.fn((code: string) => {
+        if (isCursorCall(code)) order.push("cursor");
+        else if (isSignatureCall(code)) order.push("signature");
+        else order.push("action");
+        return Promise.resolve({ url: "https://example.com/", title: "Example", matched: "Buy now" });
+      }),
+    });
+    const controller = new BrowserController(makeFakeTarget(page));
+    await controller.act({ action: "click", target: "Buy now" });
+
+    expect(order[0]).toBe("cursor");
+    expect(order.indexOf("cursor")).toBeLessThan(order.indexOf("signature"));
+
+    const cursorCall = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+      isCursorCall(c[0] as string),
+    );
+    expect(cursorCall, "no cursor call was made").toBeTruthy();
+    const code = cursorCall![0] as string;
+    expect(code).toContain(JSON.stringify("Buy now"));
+    expect(code).toContain(JSON.stringify({ action: "click", target: "Buy now", from: null }));
+  });
+
+  it("perform with CLICK passes the snapshotId/index to the cursor call", async () => {
+    const page = makeFakePage();
+    const controller = new BrowserController(makeFakeTarget(page));
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    await controller.perform({ snapshotId: snapshot.snapshotId, index: 3, operation: "CLICK" });
+
+    const cursorCall = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+      isCursorCall(c[0] as string),
+    );
+    expect(cursorCall, "no cursor call was made").toBeTruthy();
+    const code = cursorCall![0] as string;
+    expect(code).toContain(JSON.stringify({ action: "click", snapshotId: snapshot.snapshotId, index: 3, from: null }));
+  });
+
+  it("feeds the position a cursor call returns back as 'from' on the next cursor call", async () => {
+    const page = makeFakePage({
+      executeJavaScript: vi.fn((code: string) => {
+        if (isCursorCall(code)) return Promise.resolve({ moved: true, x: 111, y: 222 });
+        if (isSignatureCall(code)) return Promise.resolve({ ok: true });
+        return Promise.resolve({ url: "https://example.com/", title: "Example", matched: "Go" });
+      }),
+    });
+    const controller = new BrowserController(makeFakeTarget(page));
+    await controller.act({ action: "click", target: "Go" });
+    await controller.act({ action: "click", target: "Go again" });
+
+    const cursorCalls = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
+      isCursorCall(c[0] as string),
+    );
+    expect(cursorCalls.length).toBe(2);
+    expect(cursorCalls[0][0] as string).toContain(JSON.stringify({ action: "click", target: "Go", from: null }));
+    expect(cursorCalls[1][0] as string).toContain(
+      JSON.stringify({ action: "click", target: "Go again", from: { x: 111, y: 222 } }),
+    );
+  });
+
+  it("a cursor script that rejects leaves the command's result unchanged and successful", async () => {
+    const page = makeFakePage({
+      executeJavaScript: vi.fn((code: string) => {
+        if (isCursorCall(code)) return Promise.reject(new Error("cursor boom"));
+        if (isSignatureCall(code)) return Promise.resolve({ ok: true });
+        return Promise.resolve({ url: "https://x/", title: "X", matched: "Buy now" });
+      }),
+      getURL: vi.fn(() => "https://x/"),
+      getTitle: vi.fn(() => "X"),
+    });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "click", target: "Buy now" });
+    expect(result).not.toHaveProperty("error");
+    expect(result).toMatchObject({ url: "https://x/", title: "X", matched: "Buy now" });
+  });
+
+  it("a cursor script that times out leaves the command's result unchanged and successful", async () => {
+    vi.useFakeTimers();
+    try {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) => {
+          if (isCursorCall(code)) return new Promise(() => {}); // never settles
+          if (isSignatureCall(code)) return Promise.resolve({ ok: true });
+          return Promise.resolve({ url: "https://x/", title: "X", matched: "Buy now" });
+        }),
+        getURL: vi.fn(() => "https://x/"),
+        getTitle: vi.fn(() => "X"),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const promise = controller.act({ action: "click", target: "Buy now" });
+      await vi.advanceTimersByTimeAsync(2_000);
+      const result = await promise;
+      expect(result).not.toHaveProperty("error");
+      expect(result).toMatchObject({ url: "https://x/", title: "X", matched: "Buy now" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("issues no cursor call at all when constructed with cursor: false", async () => {
+    const page = makeFakePage();
+    const controller = new BrowserController(makeFakeTarget(page), { cursor: false });
+    await controller.act({ action: "click", target: "Go" });
+    await controller.act({ action: "type", target: "Search", text: "hi" });
+    await controller.act({ action: "scroll" });
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+
+    const calls = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.some((c) => isCursorCall(c[0] as string))).toBe(false);
+  });
+
+  // Finding 1: the cursor's own bound must be ADDED to a command's budget,
+  // not spent out of it — moveCursor runs inside the same withCommandTimeout
+  // closure the action itself needs, so a short caller-supplied timeoutMs
+  // used to leave less than timeoutMs available for the actual action.
+  describe("cursor budget extension (finding 1)", () => {
+    it("extends the command budget by the cursor's own bound, so a slow action script still gets its full timeoutMs", async () => {
+      vi.useFakeTimers();
+      try {
+        const page = makeFakePage({
+          executeJavaScript: vi.fn((code: string) => {
+            if (isCursorCall(code)) return Promise.resolve({ moved: false, x: 0, y: 0 });
+            if (isSignatureCall(code)) return Promise.resolve({ ok: true });
+            // The action script itself never resolves — models a slow page.
+            return new Promise(() => {});
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page), { timeoutMs: 1_000 });
+        const promise = controller.act({ action: "click", target: "Buy now" });
+
+        // Just under timeoutMs alone: if the cursor's bound were carved out
+        // of the budget instead of added to it, the command would already
+        // have timed out by here.
+        await vi.advanceTimersByTimeAsync(900);
+        let settled = false;
+        void promise.then(() => {
+          settled = true;
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(settled).toBe(false);
+
+        // Push well past timeoutMs alone but still under timeoutMs +
+        // cursorBudgetMs (1000 + min(1000, 1500) = 2000) — still not timed out.
+        await vi.advanceTimersByTimeAsync(900);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(settled).toBe(false);
+
+        // Now past the full extended budget — the command must time out,
+        // and the reported budget in the error message is the extended one.
+        await vi.advanceTimersByTimeAsync(300);
+        const result = await promise;
+        expect(result).toMatchObject({ error: expect.stringContaining("2000ms") });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("perform also extends its budget by the cursor's own bound", async () => {
+      vi.useFakeTimers();
+      try {
+        const page = makeFakePage({
+          executeJavaScript: vi.fn((code: string) => {
+            if (isCursorCall(code)) return Promise.resolve({ moved: false, x: 0, y: 0 });
+            if (isSignatureCall(code)) return Promise.resolve({ ok: true });
+            // SNAPSHOT_JS itself must resolve normally (its own budget carries
+            // no cursor step) — only the subsequent PERFORM_JS call hangs.
+            if (code.includes("INTERACTIVE_SELECTOR")) return Promise.resolve({ elements: [] });
+            return new Promise(() => {}); // PERFORM_JS hangs
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page), { timeoutMs: 1_000 });
+        const snapshot = (await controller.snapshot()) as { snapshotId: string };
+        const promise = controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+
+        await vi.advanceTimersByTimeAsync(1_500);
+        let settled = false;
+        void promise.then(() => {
+          settled = true;
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(settled).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(600);
+        const result = await promise;
+        expect(result).toMatchObject({ error: expect.stringContaining("2000ms") });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("back/forward, which never run a cursor step, keep the plain timeoutMs budget", async () => {
+      vi.useFakeTimers();
+      try {
+        const page = makeFakePage({
+          canGoBack: vi.fn(() => true),
+          getURL: vi.fn(() => "https://example.com/"), // never changes -> waitForUrlChange never resolves early
+          executeJavaScript: vi.fn(() => new Promise(() => {})), // signature capture hangs too
+        });
+        const controller = new BrowserController(makeFakeTarget(page), { timeoutMs: 1_000 });
+        const promise = controller.act({ action: "back" });
+        await vi.advanceTimersByTimeAsync(1_000);
+        const result = await promise;
+        expect(result).toMatchObject({ error: expect.stringContaining("1000ms") });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  // Finding 2: a browser tab that exists but isn't the visible one (e.g. a
+  // popup opened in the background) never fires requestAnimationFrame, so
+  // the cursor step should be skipped outright rather than burning its full
+  // backstop for an overlay nobody can see.
+  describe("visibility gate (finding 2)", () => {
+    it("skips the cursor call when the page reports isVisible() === false", async () => {
+      const page = makeFakePage({ isVisible: vi.fn(() => false) });
+      const controller = new BrowserController(makeFakeTarget(page));
+      await controller.act({ action: "click", target: "Buy now" });
+
+      const calls = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls.some((c) => isCursorCall(c[0] as string))).toBe(false);
+    });
+
+    it("still runs the cursor call when the page reports isVisible() === true", async () => {
+      const page = makeFakePage({ isVisible: vi.fn(() => true) });
+      const controller = new BrowserController(makeFakeTarget(page));
+      await controller.act({ action: "click", target: "Buy now" });
+
+      const calls = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls.some((c) => isCursorCall(c[0] as string))).toBe(true);
+    });
+
+    it("still runs the cursor call when the page doesn't implement isVisible at all", async () => {
+      const page = makeFakePage();
+      expect(page.isVisible).toBeUndefined();
+      const controller = new BrowserController(makeFakeTarget(page));
+      await controller.act({ action: "click", target: "Buy now" });
+
+      const calls = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls.some((c) => isCursorCall(c[0] as string))).toBe(true);
+    });
   });
 });

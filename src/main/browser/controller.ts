@@ -25,6 +25,7 @@ import {
   SIGNATURE_JS,
   READ_JS,
   TARGET_BUSY_JS,
+  CURSOR_JS,
 } from "./pageScripts";
 
 const SCRIPT_TEMPLATES = {
@@ -36,6 +37,7 @@ const SCRIPT_TEMPLATES = {
   PERFORM_JS,
   READ_JS,
   TARGET_BUSY_JS,
+  CURSOR_JS,
 } as const;
 
 /** jev-loop design doc "Addendum 2, 2026-09-19" §2: default/hard-cap for
@@ -180,6 +182,21 @@ const CLICK_LOAD_SETTLE_TIMEOUT_MS = 8_000;
 const BUSY_SETTLE_TIMEOUT_MS = 3_000;
 const BUSY_POLL_INTERVAL_MS = 50;
 
+/** Bounds `moveCursor`'s own CURSOR_JS call — a little above CURSOR_JS's own
+ * internal ~1.15s backstop, so that backstop (which always resolves with a
+ * best-effort position rather than hanging) is what normally fires, not
+ * this outer timeout.
+ *
+ * The cursor step runs *inside* the same closure `withCommandTimeout` bounds
+ * (see `moveCursor`'s own call sites in `act`/`perform`), so its own bound
+ * is added to that command's budget rather than carved out of it (see
+ * `BrowserController.cursorBudgetMs`) — a cosmetic overlay must never be
+ * what pushes a slow-but-working command over its timeout. `moveCursor`'s
+ * own call to `withTimeout` is still independently bounded by
+ * `Math.min(this.timeoutMs, CURSOR_TIMEOUT_MS)`, so a short caller-supplied
+ * `timeoutMs` still gets a correspondingly short-bounded cursor call. */
+const CURSOR_TIMEOUT_MS = 1_500;
+
 /** `open`'s DOM-ready-not-full-load fix: `webContents.loadURL()` resolves
  * only at `did-finish-load` — every subresource, including ads/trackers on a
  * heavy commercial page, which routinely blows past
@@ -218,6 +235,18 @@ export interface BrowserPageHandle {
    * subresources don't have to finish before the command returns.
    */
   onceDomReady(): Promise<void>;
+  /**
+   * Optional: true while this page's view is actually being drawn (Electron's
+   * `View#getVisible()`). A hidden `WebContentsView` stops firing
+   * `requestAnimationFrame`, so CURSOR_JS's animation never starts and the
+   * script only settles via its internal backstop — burning ~1.15s per
+   * click/type/select for an overlay nobody is looking at (this repo has
+   * been bitten by rAF-in-a-hidden-tab before — get_screenshot). `moveCursor`
+   * skips the cursor step entirely when this returns false. A handle that
+   * doesn't implement it (every fake page in the test suite, notably) behaves
+   * as before — the cursor always runs.
+   */
+  isVisible?(): boolean;
 }
 
 export interface BrowserTarget {
@@ -400,9 +429,26 @@ export class BrowserController {
   // on every call, and a different object for a different tab.
   private lastSnapshot: { id: string; page: BrowserPageHandle } | null = null;
 
+  // The last known viewport position CURSOR_JS's overlay landed at — fed
+  // back as `from` on the next moveCursor call so consecutive moves chain
+  // from where the cursor actually is rather than resetting to a default
+  // start point every command. Updated only when a cursor call reports
+  // finite numeric x/y; a failed or no-op cursor call leaves it as-is.
+  private cursorPosition: { x: number; y: number } | null = null;
+  private readonly cursorEnabled: boolean;
+
+  /** The cursor step runs inside the command closure `withCommandTimeout`
+   * bounds, so its own bound is added to that command's budget rather than
+   * taken out of it — a cosmetic overlay must never be what pushes a
+   * slow-but-working command over its timeout. Zero when the cursor is
+   * disabled, since no cursor step runs at all. */
+  private get cursorBudgetMs(): number {
+    return this.cursorEnabled ? Math.min(this.timeoutMs, CURSOR_TIMEOUT_MS) : 0;
+  }
+
   constructor(
     private readonly target: BrowserTarget,
-    opts?: { timeoutMs?: number; openTimeoutMs?: number },
+    opts?: { timeoutMs?: number; openTimeoutMs?: number; cursor?: boolean },
   ) {
     this.timeoutMs = opts?.timeoutMs ?? BROWSER_COMMAND_TIMEOUT_MS;
     // An explicitly supplied timeoutMs bounds EVERY command including
@@ -410,6 +456,57 @@ export class BrowserController {
     // open only gets its own longer default when nothing was specified.
     this.openTimeoutMs =
       opts?.openTimeoutMs ?? opts?.timeoutMs ?? BROWSER_OPEN_TIMEOUT_MS;
+    this.cursorEnabled = opts?.cursor ?? true;
+  }
+
+  /** Runs CURSOR_JS to move the built-in browser's visible cursor overlay
+   * toward the target of an upcoming action, before that action's own
+   * before-signature capture — see CURSOR_JS's doc comment (pageScripts.ts)
+   * for why the ordering matters. A no-op when `cursorEnabled` is false
+   * (PEN_DESKTOP_BROWSER_CURSOR=off — config.ts's
+   * `resolveBrowserCursorEnabled`), and also a no-op when the driven page
+   * reports itself not visible (`page.isVisible?.() === false`) — a hidden
+   * `WebContentsView` never fires `requestAnimationFrame`, so the animation
+   * would only ever settle via its internal backstop, paying ~1.15s for an
+   * overlay nobody can see. Every failure — a rejecting/throwing
+   * executeJavaScript, a timeout, a malformed response — is swallowed: the
+   * cursor is cosmetic, and must never turn a working browser command into
+   * an error or a timeout of its own.
+   *
+   * Runs inside the same command closure `withCommandTimeout` bounds — see
+   * `cursorBudgetMs`'s doc comment for why callers extend that budget by the
+   * cursor's own bound rather than letting this eat into it. */
+  private async moveCursor(
+    page: BrowserPageHandle,
+    spec: { action: "click" | "type" | "select" | "scroll"; target?: string; snapshotId?: string; index?: number },
+  ): Promise<void> {
+    if (!this.cursorEnabled) return;
+    if (page.isVisible?.() === false) return;
+    try {
+      const scriptArgs = { ...spec, from: this.cursorPosition };
+      // Bounded by the smaller of CURSOR_TIMEOUT_MS and this controller's
+      // own configured timeoutMs — same convention as
+      // settleWhileTargetBusy/waitForUrlChange/waitForLoadStop above, so a
+      // caller (or a test) that asks for a short overall budget also gets a
+      // short-bounded cursor call rather than one that can outlive the
+      // command it's decorating.
+      const result = await withTimeout(
+        this.executeScript(page, "CURSOR_JS", scriptArgs),
+        Math.min(this.timeoutMs, CURSOR_TIMEOUT_MS),
+        "Cursor animation timed out.",
+      );
+      if (
+        isRecord(result) &&
+        typeof result.x === "number" &&
+        Number.isFinite(result.x) &&
+        typeof result.y === "number" &&
+        Number.isFinite(result.y)
+      ) {
+        this.cursorPosition = { x: result.x, y: result.y };
+      }
+    } catch {
+      // Cosmetic only — see this method's doc comment.
+    }
   }
 
   /** Resolves once the DOM is ready, not once every subresource has
@@ -520,7 +617,10 @@ export class BrowserController {
         return errorResult('browse_act "scroll" requires "amount" to be a number when provided.');
       }
       const amount = typeof args.amount === "number" ? args.amount : 1;
-      return this.withCommandTimeout(() => this.runOnPageWithEvidence("SCROLL_JS", { amount }));
+      return this.withCommandTimeout(
+        () => this.runOnPageWithEvidence("SCROLL_JS", { amount }),
+        this.timeoutMs + this.cursorBudgetMs,
+      );
     }
 
     // click / type
@@ -537,9 +637,12 @@ export class BrowserController {
         return errorResult('browse_act "type" requires a string "text".');
       }
       const text = args.text;
-      return this.withCommandTimeout(() => this.runOnPageWithEvidence("TYPE_JS", { target, text }));
+      return this.withCommandTimeout(
+        () => this.runOnPageWithEvidence("TYPE_JS", { target, text }),
+        this.timeoutMs + this.cursorBudgetMs,
+      );
     }
-    return this.withCommandTimeout(() => this.runClick(target));
+    return this.withCommandTimeout(() => this.runClick(target), this.timeoutMs + this.cursorBudgetMs);
   }
 
   /** Runs CLICK_JS and, if the click actually started a navigation, waits
@@ -566,6 +669,10 @@ export class BrowserController {
     const page = this.target.currentPage();
     if (!page) return errorResult("No browser tab is open — call browse_open first.");
     const previousUrl = page.getURL();
+    // Before the before-signature capture, deliberately — see CURSOR_JS's
+    // doc comment (pageScripts.ts) for why the overlay's own DOM/scroll
+    // footprint must never land between the two evidence-of-effect captures.
+    await this.moveCursor(page, { action: "click", target });
     const before = await this.captureSignature(page, "before");
     const result = await this.executeScript(page, "CLICK_JS", { target });
     if ("error" in result) return result;
@@ -668,6 +775,8 @@ export class BrowserController {
     return this.withCommandTimeout(async () => {
       if (operation === "CLICK") {
         const previousUrl = page.getURL();
+        // Before the before-signature capture — see runClick's comment.
+        await this.moveCursor(page, { action: "click", snapshotId, index });
         const before = await this.captureSignature(page, "before");
         const result = await this.executeScript(page, "PERFORM_JS", { snapshotId, index, operation, text });
         if ("error" in result) return result;
@@ -691,6 +800,10 @@ export class BrowserController {
 
       // Review finding 3: TYPE_TEXT/SELECT/SCROLL_UP/SCROLL_DOWN get a short
       // settle before the after-capture too — see NON_CLICK_SETTLE_MS.
+      // Before the before-signature capture — see runClick's comment.
+      const cursorAction: "type" | "select" | "scroll" =
+        operation === "TYPE_TEXT" ? "type" : operation === "SELECT" ? "select" : "scroll";
+      await this.moveCursor(page, { action: cursorAction, snapshotId, index });
       const before = await this.captureSignature(page, "before");
       const result = await this.executeScript(page, "PERFORM_JS", { snapshotId, index, operation, text });
       if ("error" in result) return result;
@@ -700,7 +813,7 @@ export class BrowserController {
       if (selfDisabled) await this.settleWhileTargetBusy(page);
       const after = await this.captureSignature(page, "after");
       return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
-    });
+    }, this.timeoutMs + this.cursorBudgetMs);
   }
 
   private async runOnPage(
@@ -727,6 +840,16 @@ export class BrowserController {
   ): Promise<BrowserCommandResult> {
     const page = this.target.currentPage();
     if (!page) return errorResult("No browser tab is open — call browse_open first.");
+    // Before the before-signature capture — see runClick's comment / CURSOR_JS's
+    // doc comment for why. TYPE_JS carries a target to aim at; SCROLL_JS has
+    // none, so the cursor just stays put and visible (see CURSOR_JS's
+    // "action === scroll" branch).
+    if (script === "TYPE_JS") {
+      const target = typeof scriptArgs.target === "string" ? scriptArgs.target : undefined;
+      await this.moveCursor(page, { action: "type", target });
+    } else {
+      await this.moveCursor(page, { action: "scroll" });
+    }
     const before = await this.captureSignature(page, "before");
     const result = await this.executeScript(page, script, scriptArgs);
     if ("error" in result) return result;
@@ -748,7 +871,8 @@ export class BrowserController {
       | "SNAPSHOT_JS"
       | "PERFORM_JS"
       | "READ_JS"
-      | "TARGET_BUSY_JS",
+      | "TARGET_BUSY_JS"
+      | "CURSOR_JS",
     scriptArgs: Record<string, unknown>,
   ): Promise<BrowserCommandResult> {
     // A function replacer, not a plain string — String.prototype.replace's

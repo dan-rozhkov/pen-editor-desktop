@@ -18,6 +18,7 @@ import {
   shouldDropMcpRegistration,
 } from "./navigation";
 import { BrowserController, type BrowserTarget, type BrowserPageHandle } from "./browser/controller";
+import { resolveBrowserCursorEnabled } from "./config";
 import type { McpService, IpcListenerGateway } from "./mcp/service";
 
 export const TABBAR_HEIGHT = 38;
@@ -278,6 +279,13 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         canGoForward: () => view.webContents.navigationHistory.canGoForward(),
         executeJavaScript: (code) => view.webContents.executeJavaScript(code),
         isLoading: () => view.webContents.isLoading(),
+        // View#getVisible() — "whether the view should be drawn", per
+        // Electron's own doc comment for it (electron.d.ts) — is a real,
+        // shipped API on the WebContentsView/View base class in this repo's
+        // pinned Electron version (43.1.1), tracking exactly what
+        // TabManager.setActive's `view.setVisible(...)` calls above set, so
+        // this needs no separate visibility bookkeeping of its own.
+        isVisible: () => view.getVisible(),
         onceDomReady: () =>
           new Promise<void>((resolve) => {
             view.webContents.once("dom-ready", () => resolve());
@@ -298,7 +306,9 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
     },
     currentPage: (): BrowserPageHandle | null => tabs.browserHandle(),
   };
-  const browserController = new BrowserController(browserTarget);
+  const browserController = new BrowserController(browserTarget, {
+    cursor: resolveBrowserCursorEnabled(process.env),
+  });
 
   const onBrowserCommand = (event: Electron.IpcMainInvokeEvent, payload: unknown) => {
     // Single source of truth for "which webContents id is an editor tab" —

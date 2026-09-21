@@ -17,3 +17,15 @@ export function resolveEditorUrl(env: NodeJS.ProcessEnv): string {
   }
   return DEFAULT_EDITOR_URL;
 }
+
+/** The built-in browser's human-like cursor overlay (see BrowserController's
+ * `moveCursor`) is on by default — it's what makes the agent driving the
+ * browser tab visible to the user watching it. `PEN_DESKTOP_BROWSER_CURSOR`
+ * is the kill switch, matched case-insensitively against "off"/"0"/"false";
+ * anything else (including unset) leaves it on. */
+export function resolveBrowserCursorEnabled(env: NodeJS.ProcessEnv): boolean {
+  const raw = env.PEN_DESKTOP_BROWSER_CURSOR;
+  if (raw === undefined) return true;
+  const normalized = raw.trim().toLowerCase();
+  return normalized !== "off" && normalized !== "0" && normalized !== "false";
+}

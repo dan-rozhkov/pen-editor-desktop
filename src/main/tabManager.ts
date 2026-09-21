@@ -91,6 +91,15 @@ export interface TabViewHandle {
    * not a cached "has this page's DOM ever been ready" flag.
    */
   onceDomReady(): Promise<void>;
+  /**
+   * Optional: true while this tab's view is actually being drawn
+   * (`View#getVisible()`). Fed to `browser/controller.ts`'s `BrowserPageHandle`
+   * so `moveCursor` can skip the cursor overlay step entirely on a hidden
+   * browser tab, where `requestAnimationFrame` never fires and the overlay
+   * animation would only ever settle via its own backstop timer — see
+   * `BrowserPageHandle.isVisible`'s doc comment for the full rationale.
+   */
+  isVisible?(): boolean;
 }
 
 /** What TabManager.browserHandle() hands to the browser controller (see window.ts). */
