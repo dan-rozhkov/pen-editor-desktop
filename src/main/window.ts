@@ -149,6 +149,48 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
   // the existing tabbar:state channel rather than adding a fourth one (see
   // CLAUDE.md's IPC section and mcp/service.ts's McpService.getStatus()).
 
+  // Review finding 3: JS dialogs (`alert`/`confirm`/`prompt`/`beforeunload`)
+  // are auto-handled (see createView's debugger "message" listener below)
+  // only while an agent browser command is actually running against that
+  // tab — never on a dialog the user's own browsing raised. Before this, any
+  // dialog on a browser tab's CDP session was auto-handled unconditionally,
+  // so a dialog the *user* triggered themselves (typing a URL, clicking a
+  // link) got silently accepted/dismissed on their behalf, with no way to
+  // ever see or answer it — the opposite of the point of a JS dialog.
+  // `browserCommandsInFlight` is a plain counter (not per-tab) incremented
+  // and decremented around every `browser:command` dispatch in
+  // `onBrowserCommand` below; a command against tab A leaves auto-handling
+  // enabled for the whole window for its duration, which is deliberately
+  // coarse — the agent only ever drives one tab at a time in practice, and a
+  // per-tab flag would need to be threaded through every command's target
+  // resolution for no real benefit.
+  //
+  // Second-pass review finding 1: gating on `isAgentCommandInFlight()` alone
+  // left a real gap — a dialog that opens *between* commands (a page's
+  // `load` handler `alert()`, or a `setTimeout`-delayed one) was never
+  // handled at all, since nothing was in flight at the moment it opened, and
+  // it then sat open indefinitely: every subsequent `executeJavaScript`
+  // against that tab hangs until the dialog is dismissed, so every later
+  // command on it silently ran out the full 20s command timeout with no
+  // indication why. The policy ("the user answers dialogs raised while the
+  // agent is idle") is unchanged — a dialog opening with no command in
+  // flight is still left alone in the moment — but each tab's *currently
+  // open* dialog (if any) is now tracked (`Page.javascriptDialogOpening`
+  // sets it, `Page.javascriptDialogClosed` clears it — see createView
+  // below), and `onBrowserCommand` sweeps every browser tab's tracked-open
+  // dialog and applies the policy to it before dispatching the next command
+  // at all — so a dialog that opened while the agent was idle gets resolved
+  // (and queued for reporting) the moment the agent's next command starts,
+  // rather than hanging that command's own `executeJavaScript` call.
+  let browserCommandsInFlight = 0;
+  const isAgentCommandInFlight = () => browserCommandsInFlight > 0;
+  // Review finding 3: each tab's own dialog queue is capped — an agent loop
+  // that never drains it (a crashed/stuck agent, or a page that spams
+  // dialogs) must not grow this without bound; the oldest entries are
+  // dropped first since the newest ones are the most likely to still be
+  // relevant to whatever the agent is doing next.
+  const DIALOG_QUEUE_CAP = 10;
+
   const themeCallbacks = new Map<number, (theme: UITheme) => void>();
   const titleCallbacks = new Map<number, (title: string) => void>();
   const onEditorTheme = (event: Electron.IpcMainEvent, theme: unknown) => {
@@ -200,6 +242,73 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       win.contentView.addChildView(view);
       const viewId = view.webContents.id;
 
+      // Full browser use (design doc `2026-09-23-full-browser-use-design.md`):
+      // a CDP session attached once per browser tab, backing `act`'s
+      // press/hover (trusted Input.* events a page script can't produce) and
+      // the JS-dialog auto-handle policy (CLAUDE.md's "Dialog policy").
+      // Attach failure (e.g. real DevTools already attached to this tab)
+      // degrades gracefully: `sendCdp`/`drainDialogs` below are left
+      // undefined, so browser/controller.ts's own `if (!page.sendCdp)`
+      // checks report a clear error for press/hover, and dialogs simply
+      // aren't auto-handled — nothing else in this bridge depends on it.
+      let debuggerAttached = false;
+      const dialogQueue: { type: string; message: string }[] = [];
+      // Second-pass review finding 1: the dialog currently open on this tab,
+      // if any — set by `Page.javascriptDialogOpening`, cleared by
+      // `Page.javascriptDialogClosed` (which fires however the dialog ends
+      // up closed: our own `Page.handleJavaScriptDialog` call below, or a
+      // real DevTools window if one is attached instead). `applyDialogPolicy`
+      // (exposed on the returned handle) is what `onBrowserCommand` calls,
+      // for every browser tab, right before dispatching each new command.
+      let openDialog: { type: string; message: string } | null = null;
+      const applyDialogPolicy = () => {
+        if (!openDialog) return;
+        const { type, message } = openDialog;
+        openDialog = null;
+        // Never agree to something on the user's behalf: alert/
+        // beforeunload have no meaningful "no", so they're accepted;
+        // confirm/prompt are dismissed.
+        const accept = type === "alert" || type === "beforeunload";
+        // Only a dialog the agent actually auto-handled is queued — never
+        // one left for the user, since nothing here handled it.
+        dialogQueue.push({ type, message });
+        if (dialogQueue.length > DIALOG_QUEUE_CAP) dialogQueue.shift();
+        view.webContents.debugger
+          .sendCommand("Page.handleJavaScriptDialog", { accept, promptText: "" })
+          .catch((err) => console.error("browser tab: failed to auto-handle JS dialog", err));
+      };
+      if (kind === "browser") {
+        try {
+          view.webContents.debugger.attach("1.3");
+          debuggerAttached = true;
+          view.webContents.debugger.on("message", (_event, method, params) => {
+            if (method === "Page.javascriptDialogClosed") {
+              openDialog = null;
+              return;
+            }
+            if (method !== "Page.javascriptDialogOpening") return;
+            const p = params as { type?: string; message?: string };
+            openDialog = { type: p.type ?? "alert", message: (p.message ?? "").slice(0, 200) };
+            // Review finding 3: only auto-handle immediately while an agent
+            // command is actually in flight — outside of one, the dialog is
+            // left open (but tracked in `openDialog`) for the user to see
+            // and answer themselves, the same as in any other browser.
+            // Second-pass review finding 1: if it's still open by the time
+            // the agent's *next* command starts, `onBrowserCommand`'s
+            // pre-dispatch sweep (via `applyDialogPolicy`) resolves it then
+            // instead — see this tab's own `applyDialogPolicy` above.
+            if (!isAgentCommandInFlight()) return;
+            applyDialogPolicy();
+          });
+          view.webContents.debugger
+            .sendCommand("Page.enable")
+            .catch((err) => console.error("browser tab: Page.enable failed", err));
+        } catch (err) {
+          debuggerAttached = false;
+          console.error("browser tab: debugger attach failed — press/hover/dialogs unavailable for this tab", err);
+        }
+      }
+
       if (kind === "editor") {
         attachNavigationPolicy(view.webContents, editorOrigin, (url) => void shell.openExternal(url));
         attachOfflineFallback(view.webContents, offlineFile);
@@ -228,7 +337,43 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         // anyway). Popups open as a new browser tab instead of escaping to
         // the system browser.
         attachBrowserTabPolicy(view.webContents, (url) => {
-          tabs.newTab("browser");
+          // Review finding 7: only repoint the agent when *this* tab (the
+          // one whose popup policy just fired) is the tab the agent is
+          // currently driving. Before this check, a popup from *any* browser
+          // tab repointed the agent — so a tab the user had open on the side,
+          // unrelated to whatever the agent was doing, could silently steal
+          // it. `browserHandle()` already embodies "agentBrowserTabId, or
+          // today's fallback rule if unset", so comparing against it (rather
+          // than agentBrowserTabId directly) covers both cases the same way
+          // the rest of this bridge does.
+          const openedByAgentTab = tabs.browserHandle()?.getWebContentsId() === viewId;
+          if (!openedByAgentTab) {
+            // Second-pass review finding 2: pin the agent's CURRENT tab id
+            // before `newTab` below runs its own `setActive` — which would
+            // otherwise make the popup the *active* tab in the strip.
+            // `agentBrowserTabId` was commonly left `null` up to this point
+            // (see finding 2's other half, in `ensurePage` below), which let
+            // `browserHandle()`'s "active tab if it's a browser tab" fallback
+            // silently follow this popup even though its opener has nothing
+            // to do with the agent at all.
+            const currentAgentTabId = tabs.currentBrowserTabId();
+            if (currentAgentTabId !== null) tabs.setAgentBrowserTabId(currentAgentTabId);
+          }
+          const popupId = tabs.newTab("browser");
+          if (openedByAgentTab) {
+            // Fixes upstream jev-ultrafast #61: a popup opened from the tab
+            // the agent is driving becomes the agent's new current tab, so
+            // the very next browser command targets it instead of the tab
+            // that spawned it.
+            tabs.setAgentBrowserTabId(popupId);
+          }
+          // The popup still becomes the *active* tab in the strip either
+          // way (newTab's own setActive call) — only whether the agent
+          // follows it is conditional. newTab's internal setActive (not the
+          // public activate()) deliberately does not itself touch
+          // agentBrowserTabId — see activate()'s doc comment (finding 4) —
+          // so a non-agent popup opens without stealing the agent even
+          // though it's now the visibly active tab.
           tabs
             .activeHandle()
             ?.loadURL(url)
@@ -259,6 +404,15 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
           themeCallbacks.delete(viewId);
           titleCallbacks.delete(viewId);
           if (kind === "editor") mcpService.unregisterTab(viewId);
+          if (debuggerAttached) {
+            try {
+              view.webContents.debugger.detach();
+            } catch (err) {
+              // Already detached (e.g. Electron itself detaches on
+              // webContents destruction in some paths) — not an error.
+              console.error("browser tab: debugger detach failed", err);
+            }
+          }
           win.contentView.removeChildView(view);
           view.webContents.close();
         },
@@ -290,27 +444,131 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
           new Promise<void>((resolve) => {
             view.webContents.once("dom-ready", () => resolve());
           }),
+        // Full browser use's `screenshot` command (browser/controller.ts).
+        // Shared by both tab kinds — capturePage() needs no preload and
+        // works regardless — even though only a browser tab is ever
+        // screenshotted through this bridge (the editor tab has its own
+        // separate `get_screenshot` tool).
+        capture: async () => {
+          try {
+            const image = await view.webContents.capturePage();
+            if (image.isEmpty()) return null;
+            const size = image.getSize();
+            const SCREENSHOT_MAX_WIDTH = 1280;
+            const resized =
+              size.width > SCREENSHOT_MAX_WIDTH
+                ? image.resize({
+                    width: SCREENSHOT_MAX_WIDTH,
+                    height: Math.round(size.height * (SCREENSHOT_MAX_WIDTH / size.width)),
+                  })
+                : image;
+            const outSize = resized.getSize();
+            const jpeg = resized.toJPEG(70);
+            return {
+              imageData: `data:image/jpeg;base64,${jpeg.toString("base64")}`,
+              width: outSize.width,
+              height: outSize.height,
+            };
+          } catch (err) {
+            console.error("browser tab: screenshot capture failed", err);
+            return null;
+          }
+        },
+        // Only meaningful for kind "browser" (debuggerAttached is always
+        // false for kind "editor", since the attach attempt above is
+        // itself gated on kind === "browser") — see this method's own doc
+        // comment above for the attach-failure degrade path.
+        sendCdp: debuggerAttached
+          ? (method, params) => view.webContents.debugger.sendCommand(method, params)
+          : undefined,
+        drainDialogs: () => dialogQueue.splice(0, dialogQueue.length),
+        // Second-pass review finding 1: only meaningful for kind "browser"
+        // (openDialog can only ever be set there) — harmless no-op call for
+        // kind "editor" either way (`applyDialogPolicy` itself is a no-op
+        // when `openDialog` is null, which it always is for an editor tab).
+        applyDialogPolicy,
       };
     },
   });
 
-  // --- built-in browser (design doc §3/§4) ---
+  // --- built-in browser (design doc §3/§4, full browser use §"tabs") ---
   const browserTarget: BrowserTarget = {
     ensurePage: async (): Promise<BrowserPageHandle> => {
-      const existing = tabs.browserHandle();
-      if (existing) return existing;
-      tabs.newTab("browser");
+      // Second-pass review finding 2: pin agentBrowserTabId even when
+      // returning an *existing* tab, not only when creating one — before
+      // this, agentBrowserTabId stayed null in the common case of a second
+      // (or later) call to ensurePage() against an already-open browser
+      // tab, and a null agentBrowserTabId is exactly what let a non-agent
+      // popup's fallback-tab rule silently steal the agent (see the popup
+      // callback above).
+      const existingId = tabs.currentBrowserTabId();
+      if (existingId !== null) {
+        tabs.setAgentBrowserTabId(existingId);
+        const existing = tabs.browserHandle();
+        if (existing) return existing;
+      }
+      const id = tabs.newTab("browser");
+      // A freshly created tab becomes the agent's tab outright — there is
+      // no other candidate for browserHandle()'s fallback rule to prefer
+      // anyway, but this keeps agentBrowserTabId meaningful from the start
+      // rather than only ever being set by a popup or an explicit
+      // tabs({action:"switch"|"new"}) call.
+      tabs.setAgentBrowserTabId(id);
       const created = tabs.browserHandle();
       if (!created) throw new Error("Failed to create a browser tab.");
       return created;
     },
     currentPage: (): BrowserPageHandle | null => tabs.browserHandle(),
+    listPages: async () => tabs.listBrowserTabs(),
+    selectPage: async (tabId: number) => {
+      const found = tabs.listBrowserTabs().some((t) => t.tabId === tabId);
+      if (!found) return false;
+      // Second-pass review finding 10: `activate()` already sets
+      // agentBrowserTabId for a browser tab (see its own doc comment) — the
+      // explicit `setAgentBrowserTabId` call that used to follow it here was
+      // redundant (tabId is already confirmed to be a browser tab's id, via
+      // the `found` check above).
+      tabs.activate(tabId);
+      return true;
+    },
+    closePage: async (tabId: number) => {
+      // "close only closes browser tabs" — an editor tab id, or any id not
+      // currently open, is rejected rather than silently closing the wrong
+      // kind of tab.
+      const found = tabs.listBrowserTabs().some((t) => t.tabId === tabId);
+      if (!found) return false;
+      tabs.closeTab(tabId);
+      return true;
+    },
+    // Review finding 9: no longer loads a url itself — `browser/controller.ts`'s
+    // `tabs({action:"new", url})` now does that through `open()` (the same
+    // DOM-ready-plus-grace-period wait every other navigation gets), so this
+    // only ever has to create the tab and make it current. The `url`
+    // parameter stays on the `BrowserTarget` interface for shape parity with
+    // the other three tab-management methods, but is unused here now.
+    newPage: async () => {
+      const id = tabs.newTab("browser");
+      tabs.setAgentBrowserTabId(id);
+      const created = tabs.listBrowserTabs().find((t) => t.tabId === id);
+      return created ?? { tabId: id, url: "", title: "New Tab", current: true };
+    },
+    // Review finding 6: every open browser tab's own handle, tagged with
+    // its id — lets BrowserController.mergeDialogs drain dialogs from every
+    // tab, not just whichever one browserHandle() currently prefers.
+    pageHandles: async () => {
+      const entries: { tabId: number; page: BrowserPageHandle }[] = [];
+      for (const t of tabs.listBrowserTabs()) {
+        const page = tabs.browserTabHandleById(t.tabId);
+        if (page) entries.push({ tabId: t.tabId, page });
+      }
+      return entries;
+    },
   };
   const browserController = new BrowserController(browserTarget, {
     cursor: resolveBrowserCursorEnabled(process.env),
   });
 
-  const onBrowserCommand = (event: Electron.IpcMainInvokeEvent, payload: unknown) => {
+  const onBrowserCommand = async (event: Electron.IpcMainInvokeEvent, payload: unknown) => {
     // Single source of truth for "which webContents id is an editor tab" —
     // TabManager.isEditorTab (finding 10). Deliberately not a second,
     // window.ts-local registry: two independent lists of the same fact can
@@ -319,21 +577,49 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
     if (!isRecord(payload) || typeof payload.command !== "string") {
       return { error: "Malformed browser command." };
     }
-    switch (payload.command) {
-      case "open":
-        return browserController.open(payload.args);
-      case "act":
-        return browserController.act(payload.args);
-      case "findImages":
-        return browserController.findImages(payload.args);
-      case "snapshot":
-        return browserController.snapshot();
-      case "perform":
-        return browserController.perform(payload.args);
-      case "read":
-        return browserController.read(payload.args);
-      default:
-        return { error: `Unknown browser command: ${payload.command}` };
+    // Second-pass review finding 1: resolve every browser tab's currently
+    // open dialog (if any) before dispatching this command — see
+    // `applyDialogPolicy`'s doc comment (tabManager.ts) for why this can't
+    // just be "handled unconditionally while a command is in flight" (a
+    // dialog that opened *between* commands would otherwise sit open
+    // forever, hanging every later `executeJavaScript` call against that
+    // tab). Only the agent's current browser tab is swept — never the
+    // user's own tabs: a "Leave site?" or confirm() the user is still reading
+    // in a tab the agent isn't driving is theirs to answer, and auto-
+    // accepting it would lose their form input (third-pass review). A
+    // dialog left open on a tab the agent later switches back to is swept
+    // then, by that command.
+    const agentTabId = tabs.currentBrowserTabId();
+    if (agentTabId !== null) tabs.browserTabHandleById(agentTabId)?.applyDialogPolicy?.();
+    // Review finding 3: brackets the whole dispatch, not just the
+    // BrowserController call, so a dialog raised anywhere during this
+    // command's async work (including its own settle waits) is auto-handled
+    // — decremented in `finally` so a rejected/throwing command never leaves
+    // this counter stuck above zero.
+    browserCommandsInFlight++;
+    try {
+      switch (payload.command) {
+        case "open":
+          return await browserController.open(payload.args);
+        case "act":
+          return await browserController.act(payload.args);
+        case "findImages":
+          return await browserController.findImages(payload.args);
+        case "snapshot":
+          return await browserController.snapshot();
+        case "perform":
+          return await browserController.perform(payload.args);
+        case "read":
+          return await browserController.read(payload.args);
+        case "screenshot":
+          return await browserController.screenshot(payload.args);
+        case "tabs":
+          return await browserController.tabs(payload.args);
+        default:
+          return { error: `Unknown browser command: ${payload.command}` };
+      }
+    } finally {
+      browserCommandsInFlight--;
     }
   };
   ipcMain.handle("browser:command", onBrowserCommand);
@@ -361,7 +647,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
     if (!fromOurTabbar(e)) return;
     if (!isRecord(payload)) return;
     const action = payload.action;
-    const handle = tabs.browserHandle();
+    const handle = tabs.activeBrowserHandle();
     if (!handle) return;
     if (action === "back") handle.goBack();
     else if (action === "forward") handle.goForward();
@@ -414,7 +700,14 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       buildMenuTemplate(
         {
           newTab: () => tabs.newTab("editor"),
-          newBrowserTab: () => tabs.newTab("browser"),
+          // Second-pass review finding 3: a user-driven "New Browser Tab"
+          // pins the agent to it, the same as any other explicit user
+          // action that lands on a browser tab (activate()'s tab-strip
+          // click, nextTab/prevTab's cycle) — plain `tabs.newTab("browser")`
+          // alone (used elsewhere for a *popup's* automatic tab creation,
+          // which must NOT repoint the agent) leaves agentBrowserTabId
+          // untouched.
+          newBrowserTab: () => tabs.setAgentBrowserTabId(tabs.newTab("browser")),
           closeTab: () => {
             const active = tabs.getSnapshot().activeId;
             if (active !== null) tabs.closeTab(active);

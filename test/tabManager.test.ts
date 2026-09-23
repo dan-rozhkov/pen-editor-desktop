@@ -301,6 +301,62 @@ describe("TabManager", () => {
       expect(tm.browserHandle()).toBe(views[1]);
     });
 
+    // Full browser use (design doc `2026-09-23-full-browser-use-design.md`):
+    // agentBrowserTabId — fixes upstream jev-ultrafast #61.
+    it("browserHandle prefers agentBrowserTabId over the active-tab rule", () => {
+      const b1 = tm.newTab("browser"); // views[0]
+      tm.newTab("browser"); // views[1], becomes active
+      expect(tm.getSnapshot().activeId).not.toBe(b1);
+      tm.setAgentBrowserTabId(b1);
+      // Without agentBrowserTabId this would fall back to the active tab
+      // (views[1]) — the whole point of the override.
+      expect(tm.browserHandle()).toBe(views[0]);
+    });
+
+    it("browserHandle falls back to the default rule when agentBrowserTabId points at an editor tab or a closed tab", () => {
+      const e = tm.newTab("editor");
+      const b = tm.newTab("browser");
+      tm.setAgentBrowserTabId(e); // not a browser tab at all
+      expect(tm.browserHandle()).toBe(views[1]); // falls back to active-if-browser
+
+      tm.setAgentBrowserTabId(999); // never existed
+      expect(tm.browserHandle()).toBe(views[1]);
+
+      tm.setAgentBrowserTabId(b);
+      tm.closeTab(b);
+      // The tab agentBrowserTabId pointed at is gone, and it was the only
+      // browser tab — browserHandle must not keep resolving to a
+      // stale/destroyed view; it has nothing left to fall back to either.
+      expect(tm.browserHandle()).toBeNull();
+    });
+
+    it("closing the agent's browser tab clears agentBrowserTabId rather than leaving it dangling", () => {
+      tm.newTab("editor"); // views[0]
+      const b1 = tm.newTab("browser"); // views[1]
+      tm.newTab("browser"); // views[2], becomes active
+      tm.setAgentBrowserTabId(b1);
+      tm.closeTab(b1);
+      // The active tab (views[2], a browser tab) is untouched by the close
+      // — browserHandle's default rule (active-if-browser) must be free to
+      // pick it, which it couldn't if agentBrowserTabId still pointed at
+      // the closed b1's id.
+      expect(tm.browserHandle()).toBe(views[2]);
+    });
+
+    it("listBrowserTabs reports every browser tab and marks browserHandle()'s pick current", () => {
+      tm.newTab("editor");
+      const b1 = tm.newTab("browser");
+      const b2 = tm.newTab("browser");
+      views[1].emitNavState({ url: "https://a.example/", title: "A", canGoBack: false, canGoForward: false });
+      views[2].emitNavState({ url: "https://b.example/", title: "B", canGoBack: false, canGoForward: false });
+      tm.setAgentBrowserTabId(b1);
+      const list = tm.listBrowserTabs();
+      expect(list).toEqual([
+        { tabId: b1, url: "https://a.example/", title: "A", current: true },
+        { tabId: b2, url: "https://b.example/", title: "B", current: false },
+      ]);
+    });
+
     it("isEditorTab is true only for editor tabs' webContents ids", () => {
       tm.newTab("editor");
       tm.newTab("browser");
@@ -319,6 +375,148 @@ describe("TabManager", () => {
       expect(tm.getSnapshot().activeKind).toBe("editor");
       tm.activate(b);
       expect(tm.getSnapshot().activeKind).toBe("browser");
+    });
+
+    // Review finding 4: browserHandle() used to keep preferring a stale
+    // agentBrowserTabId even after the user activated a *different* browser
+    // tab (a tab-strip click) — the very next browser command would then
+    // silently act on the tab the user had left, not the one they were
+    // looking at.
+    it("activate() on a browser tab repoints agentBrowserTabId — the agent follows the user's focus", () => {
+      const b1 = tm.newTab("browser"); // views[0]
+      const b2 = tm.newTab("browser"); // views[1], becomes active
+      tm.setAgentBrowserTabId(b1);
+      expect(tm.browserHandle()).toBe(views[0]);
+
+      tm.activate(b2);
+      expect(tm.browserHandle()).toBe(views[1]);
+    });
+
+    it("activate() on an editor tab does not touch agentBrowserTabId", () => {
+      const b1 = tm.newTab("browser"); // views[0]
+      const e = tm.newTab("editor"); // views[1]
+      tm.setAgentBrowserTabId(b1);
+      tm.activate(e);
+      // Falls back to the default rule (no active browser tab, most recent
+      // one) rather than losing the explicit agent tab — activating an
+      // editor tab is not "the user looked at a different browser tab".
+      expect(tm.browserHandle()).toBe(views[0]);
+    });
+
+    it("activate() with an unknown id is a no-op (mirrors the existing leniency, doesn't touch agentBrowserTabId)", () => {
+      const b1 = tm.newTab("browser");
+      tm.setAgentBrowserTabId(b1);
+      tm.activate(999);
+      expect(tm.browserHandle()).toBe(views[0]);
+    });
+
+    // Second-pass review finding 3: a user-driven tab cycle (nextTab/
+    // prevTab — Ctrl+Tab/Ctrl+Shift+Tab) landing on a browser tab repoints
+    // the agent to it, the same way activate() (a tab-strip click) already
+    // does.
+    describe("nextTab/prevTab repoint the agent on a browser tab (finding 3)", () => {
+      it("nextTab landing on a browser tab repoints agentBrowserTabId", () => {
+        const b1 = tm.newTab("browser"); // views[0]
+        const e = tm.newTab("editor"); // views[1]
+        const b2 = tm.newTab("browser"); // views[2], active
+        tm.setAgentBrowserTabId(b1);
+        expect(tm.browserHandle()).toBe(views[0]);
+
+        tm.activate(e); // land on the editor tab first, agentBrowserTabId untouched by that
+        expect(tm.getSnapshot().activeId).toBe(e);
+
+        tm.nextTab(); // e -> b2 (wraps around the 3-tab order: b1, e, b2)
+        expect(tm.getSnapshot().activeId).toBe(b2);
+        expect(tm.browserHandle()).toBe(views[2]);
+      });
+
+      it("prevTab landing on a browser tab repoints agentBrowserTabId", () => {
+        const b1 = tm.newTab("browser"); // views[0]
+        const b2 = tm.newTab("browser"); // views[1]
+        tm.newTab("editor"); // views[2], active
+        // Point the agent at b1 — b2, not b1, is the one prevTab is about
+        // to land on (order: b1, b2, editor), so the fallback rule
+        // ("active if browser, else most recent") could never independently
+        // produce b2 here; only an actual repoint by prevTab can.
+        tm.setAgentBrowserTabId(b1);
+        expect(tm.browserHandle()).toBe(views[0]);
+
+        tm.prevTab(); // editor -> b2
+        expect(tm.getSnapshot().activeId).toBe(b2);
+        expect(tm.browserHandle()).toBe(views[1]);
+      });
+
+      it("cycling to an editor tab does not touch agentBrowserTabId", () => {
+        const b1 = tm.newTab("browser"); // views[0]
+        tm.newTab("editor"); // views[1], active
+        tm.setAgentBrowserTabId(b1);
+        tm.nextTab(); // editor -> b1 (wraps)
+        tm.nextTab(); // b1 -> editor
+        expect(tm.getSnapshot().activeKind).toBe("editor");
+        // agentBrowserTabId is still b1 — cycling onto the editor tab must
+        // not have cleared or changed it.
+        expect(tm.browserHandle()).toBe(views[0]);
+      });
+    });
+
+    // Second-pass review finding 2: window.ts's ensurePage/popup callback
+    // need the *id* of whichever browser tab browserHandle() would return,
+    // to pin agentBrowserTabId even when handing back an existing tab.
+    describe("currentBrowserTabId", () => {
+      it("returns null when there is no browser tab", () => {
+        tm.newTab("editor");
+        expect(tm.currentBrowserTabId()).toBeNull();
+      });
+
+      it("matches whichever tab browserHandle() resolves to", () => {
+        const b1 = tm.newTab("browser");
+        tm.newTab("browser");
+        tm.setAgentBrowserTabId(b1);
+        expect(tm.currentBrowserTabId()).toBe(b1);
+        expect(tm.browserHandle()).toBe(views[0]);
+      });
+    });
+
+    // Third-pass review: the address row must drive the tab it is SHOWING,
+    // even when the agent is pinned to a different (hidden) browser tab.
+    describe("activeBrowserHandle", () => {
+      it("is the visible browser tab, not the agent's pinned one", () => {
+        const b1 = tm.newTab("browser");
+        tm.newTab("browser"); // becomes active
+        tm.setAgentBrowserTabId(b1);
+        expect(tm.browserHandle()).toBe(views[0]);
+        expect(tm.activeBrowserHandle()).toBe(views[1]);
+      });
+
+      it("is null while an editor tab is active", () => {
+        tm.newTab("browser");
+        tm.newTab("editor");
+        expect(tm.activeBrowserHandle()).toBeNull();
+      });
+    });
+
+    // Review finding 6: dialog draining needs every open browser tab's own
+    // handle, not just browserHandle()'s single pick.
+    describe("browserTabHandleById", () => {
+      it("returns the view for a live browser tab by id", () => {
+        const b1 = tm.newTab("browser");
+        const b2 = tm.newTab("browser");
+        expect(tm.browserTabHandleById(b1)).toBe(views[0]);
+        expect(tm.browserTabHandleById(b2)).toBe(views[1]);
+      });
+
+      it("returns null for an editor tab id, and for an id that doesn't exist", () => {
+        const e = tm.newTab("editor");
+        expect(tm.browserTabHandleById(e)).toBeNull();
+        expect(tm.browserTabHandleById(999)).toBeNull();
+      });
+
+      it("returns null once the tab has been closed", () => {
+        const b = tm.newTab("browser");
+        tm.newTab("browser"); // keep at least one browser tab open after closing b
+        tm.closeTab(b);
+        expect(tm.browserTabHandleById(b)).toBeNull();
+      });
     });
   });
 });

@@ -1971,3 +1971,1143 @@ describe("human cursor", () => {
     });
   });
 });
+
+// --- Full browser use (design doc `2026-09-23-full-browser-use-design.md`) ---
+
+describe("screenshot", () => {
+  it("errors when no browser tab is open", async () => {
+    const controller = new BrowserController(makeFakeTarget(null));
+    const result = await controller.screenshot(undefined);
+    expect(result).toHaveProperty("error");
+  });
+
+  it("errors when the page doesn't implement capture()", async () => {
+    const page = makeFakePage();
+    expect(page.capture).toBeUndefined();
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.screenshot(undefined);
+    expect(String((result as { error: string }).error)).toMatch(/not supported/i);
+  });
+
+  it("returns imageData/width/height/url/title on a successful capture", async () => {
+    const page = makeFakePage({
+      capture: vi.fn(() => Promise.resolve({ imageData: "data:image/jpeg;base64,AAAA", width: 400, height: 800 })),
+    });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.screenshot(undefined);
+    expect(result).toEqual({
+      imageData: "data:image/jpeg;base64,AAAA",
+      width: 400,
+      height: 800,
+      url: page.getURL(),
+      title: page.getTitle(),
+    });
+  });
+
+  it("reports an error (not a blank image) when capture() resolves null", async () => {
+    const page = makeFakePage({ capture: vi.fn(() => Promise.resolve(null)) });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.screenshot(undefined);
+    expect(result).toHaveProperty("error");
+    expect(String((result as { error: string }).error)).toMatch(/empty image/i);
+  });
+
+  it("validates 'annotate' is a boolean when provided", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage({ capture: vi.fn(() => Promise.resolve(null)) })));
+    const result = await controller.screenshot({ annotate: "yes" });
+    expect(result).toHaveProperty("error");
+  });
+
+  it("annotate: true takes a fresh snapshot first, marks it, captures, and always removes the marks overlay", async () => {
+    const executeJavaScript = vi.fn((code: string) => {
+      if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+      if (code.includes("data-pen-snap")) {
+        // SNAPSHOT_JS's own body — return one element.
+        return Promise.resolve({
+          url: "https://example.com/",
+          title: "Example",
+          elements: [{ index: 0, tag: "button", label: "Go", ops: ["CLICK"] }],
+          scroll: { y: 0, height: 100, atBottom: true },
+        });
+      }
+      return Promise.resolve({ marked: 1 });
+    });
+    const page = makeFakePage({
+      executeJavaScript,
+      capture: vi.fn(() => Promise.resolve({ imageData: "data:image/jpeg;base64,BBBB", width: 100, height: 200 })),
+    });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = (await controller.screenshot({ annotate: true })) as {
+      imageData: string;
+      snapshotId: string;
+      elements: unknown[];
+    };
+    expect(result.imageData).toBe("data:image/jpeg;base64,BBBB");
+    expect(typeof result.snapshotId).toBe("string");
+    expect(result.elements).toHaveLength(1);
+
+    const calls = executeJavaScript.mock.calls.map((c) => c[0] as string);
+    // The overlay must both have been installed (data-pen-marks-carrying
+    // call after the snapshot) and removed afterward (finally) — checked via
+    // call count of scripts referencing "data-pen-marks", which both
+    // MARKS_JS and REMOVE_MARKS_JS contain.
+    const marksRelatedCalls = calls.filter((c) => c.includes("data-pen-marks"));
+    expect(marksRelatedCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("removes the marks overlay even when capture() throws", async () => {
+    const executeJavaScript = vi.fn((code: string) => {
+      if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+      if (code.includes("data-pen-snap")) {
+        return Promise.resolve({
+          url: "https://example.com/",
+          title: "Example",
+          elements: [],
+          scroll: { y: 0, height: 0, atBottom: true },
+        });
+      }
+      return Promise.resolve({ marked: 0 });
+    });
+    const page = makeFakePage({
+      executeJavaScript,
+      capture: vi.fn(() => Promise.reject(new Error("capture blew up"))),
+    });
+    const controller = new BrowserController(makeFakeTarget(page));
+    // withCommandTimeout catches the rejection and reports it as {error}.
+    const result = await controller.screenshot({ annotate: true });
+    expect(result).toHaveProperty("error");
+    const marksCalls = executeJavaScript.mock.calls.map((c) => c[0] as string).filter((c) => c.includes("data-pen-marks"));
+    expect(marksCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  // Second-pass review finding 7: MARKS_JS's own result is now checked
+  // before capturing — a failure there is reported as the command's error
+  // (with the overlay cleaned up), instead of silently proceeding to a
+  // capture with no marks and no explanation.
+  it("finding 7: reports MARKS_JS's own error and removes any partial marks, without capturing", async () => {
+    const executeJavaScript = vi.fn((code: string) => {
+      if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+      // SNAPSHOT_JS is matched by its own unique "maxElements" arg, not by
+      // "data-pen-snap" — MARKS_JS's body also contains "data-pen-snap"
+      // (it reads back the snapshot's own stamped elements), so matching on
+      // that string alone would misidentify the MARKS_JS call below as a
+      // second snapshot call.
+      if (code.includes("maxElements")) {
+        return Promise.resolve({
+          url: "https://example.com/",
+          title: "Example",
+          elements: [{ index: 0, tag: "button", label: "Go", ops: ["CLICK"] }],
+          scroll: { y: 0, height: 100, atBottom: true },
+        });
+      }
+      if (code.includes("data-pen-marks")) {
+        return Promise.resolve({ error: "MARKS_JS blew up" });
+      }
+      return Promise.resolve({ ok: true });
+    });
+    const capture = vi.fn(() => Promise.resolve({ imageData: "data:image/jpeg;base64,X", width: 1, height: 1 }));
+    const page = makeFakePage({ executeJavaScript, capture });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.screenshot({ annotate: true });
+    expect(result).toEqual({ error: "MARKS_JS blew up" });
+    expect(capture).not.toHaveBeenCalled();
+    const marksCalls = executeJavaScript.mock.calls.map((c) => c[0] as string).filter((c) => c.includes("data-pen-marks"));
+    // MARKS_JS's own call, plus the cleanup REMOVE_MARKS_JS call.
+    expect(marksCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  // Second-pass review finding 7: capture is preceded by an in-page
+  // double-requestAnimationFrame wait so a just-applied overlay has actually
+  // painted before capturePage() runs.
+  it("finding 7: waits for a paint (double requestAnimationFrame) after marking, before capturing", async () => {
+    const executeJavaScript = vi.fn((code: string) => {
+      if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+      // See the previous test's comment: SNAPSHOT_JS is matched by its
+      // unique "maxElements" arg, since "data-pen-snap" also appears in
+      // MARKS_JS's body.
+      if (code.includes("maxElements")) {
+        return Promise.resolve({
+          url: "https://example.com/",
+          title: "Example",
+          elements: [],
+          scroll: { y: 0, height: 0, atBottom: true },
+        });
+      }
+      if (code.includes("requestAnimationFrame")) return Promise.resolve(true);
+      return Promise.resolve({ marked: 1 });
+    });
+    const capture = vi.fn(() => Promise.resolve({ imageData: "data:image/jpeg;base64,Y", width: 1, height: 1 }));
+    const page = makeFakePage({ executeJavaScript, capture });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.screenshot({ annotate: true });
+    expect(result).toHaveProperty("imageData", "data:image/jpeg;base64,Y");
+    const calls = executeJavaScript.mock.calls.map((c) => c[0] as string);
+    const paintCallIndex = calls.findIndex((c) => c.includes("requestAnimationFrame"));
+    const marksCallIndex = calls.findIndex((c) => c.includes("data-pen-marks") && !c.includes("removeChild"));
+    const captureCallOrder = capture.mock.invocationCallOrder[0];
+    expect(paintCallIndex).toBeGreaterThan(-1);
+    // The paint wait runs after marking and before capture.
+    expect(executeJavaScript.mock.invocationCallOrder[paintCallIndex]).toBeGreaterThan(
+      executeJavaScript.mock.invocationCallOrder[marksCallIndex],
+    );
+    expect(executeJavaScript.mock.invocationCallOrder[paintCallIndex]).toBeLessThan(captureCallOrder);
+  });
+
+  // Second-pass review finding 7: a hidden tab whose requestAnimationFrame
+  // never ticks (executeJavaScript's promise never settles) must not hang
+  // the whole command — the paint wait times out and the capture proceeds.
+  it("finding 7: proceeds to capture even if the paint wait itself never settles", async () => {
+    const executeJavaScript = vi.fn((code: string) => {
+      if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+      if (code.includes("maxElements")) {
+        return Promise.resolve({
+          url: "https://example.com/",
+          title: "Example",
+          elements: [],
+          scroll: { y: 0, height: 0, atBottom: true },
+        });
+      }
+      if (code.includes("requestAnimationFrame")) return new Promise(() => {}); // never resolves
+      return Promise.resolve({ marked: 1 });
+    });
+    const capture = vi.fn(() => Promise.resolve({ imageData: "data:image/jpeg;base64,Z", width: 1, height: 1 }));
+    const page = makeFakePage({ executeJavaScript, capture });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.screenshot({ annotate: true });
+    expect(result).toHaveProperty("imageData", "data:image/jpeg;base64,Z");
+  });
+});
+
+describe("tabs", () => {
+  function makeTabsTarget(page: BrowserPageHandle | null, tabs: { tabId: number; url: string; title: string; current: boolean }[]) {
+    const target = makeFakeTarget(page);
+    return {
+      ...target,
+      listPages: vi.fn(() => Promise.resolve(tabs)),
+      selectPage: vi.fn((id: number) => Promise.resolve(tabs.some((t) => t.tabId === id))),
+      closePage: vi.fn((id: number) => Promise.resolve(tabs.some((t) => t.tabId === id))),
+      newPage: vi.fn((url?: string) => Promise.resolve({ tabId: 99, url: url ?? "", title: "New Tab", current: true })),
+    };
+  }
+
+  it("rejects an unknown action", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage()));
+    const result = await controller.tabs({ action: "teleport" });
+    expect(result).toHaveProperty("error");
+  });
+
+  it("reports 'not supported' when the target doesn't implement tab management", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage()));
+    const result = await controller.tabs({ action: "list" });
+    expect(String((result as { error: string }).error)).toMatch(/not supported/i);
+  });
+
+  it("list reports every tab and the current one", async () => {
+    const tabsData = [
+      { tabId: 1, url: "https://a.example/", title: "A", current: false },
+      { tabId: 2, url: "https://b.example/", title: "B", current: true },
+    ];
+    const target = makeTabsTarget(makeFakePage(), tabsData);
+    const controller = new BrowserController(target);
+    const result = await controller.tabs({ action: "list" });
+    expect(result).toEqual({ tabs: tabsData, current: 2 });
+  });
+
+  it("switch requires a tabId, calls selectPage, and errors on an unknown tabId", async () => {
+    const tabsData = [{ tabId: 1, url: "https://a.example/", title: "A", current: true }];
+    const target = makeTabsTarget(makeFakePage(), tabsData);
+    const controller = new BrowserController(target);
+
+    const missingTabId = await controller.tabs({ action: "switch" });
+    expect(missingTabId).toHaveProperty("error");
+
+    const unknown = await controller.tabs({ action: "switch", tabId: 999 });
+    expect(unknown).toHaveProperty("error");
+    expect(target.selectPage).toHaveBeenCalledWith(999);
+
+    const ok = await controller.tabs({ action: "switch", tabId: 1 });
+    expect(ok).not.toHaveProperty("error");
+    expect(target.selectPage).toHaveBeenCalledWith(1);
+  });
+
+  it("close requires a tabId, calls closePage, and errors when it reports false (editor tab / unknown id)", async () => {
+    const tabsData = [{ tabId: 1, url: "https://a.example/", title: "A", current: true }];
+    const target = makeTabsTarget(makeFakePage(), tabsData);
+    const controller = new BrowserController(target);
+
+    expect(await controller.tabs({ action: "close" })).toHaveProperty("error");
+
+    const failure = await controller.tabs({ action: "close", tabId: 42 });
+    expect(failure).toHaveProperty("error");
+
+    const ok = await controller.tabs({ action: "close", tabId: 1 });
+    expect(ok).not.toHaveProperty("error");
+    expect(target.closePage).toHaveBeenCalledWith(1);
+  });
+
+  // Review finding 9: newPage() itself never takes a url anymore — it used
+  // to await a full loadURL() (did-finish-load), so "new" with a url blocked
+  // for as long as the whole page took to load. Loading a url now reuses
+  // open()'s own DOM-ready-plus-grace-period wait.
+  it("new calls newPage() with no url, and loads a given url via open()'s semantics", async () => {
+    const tabsData: { tabId: number; url: string; title: string; current: boolean }[] = [];
+    const page = makeFakePage();
+    const target = makeTabsTarget(page, tabsData);
+    const controller = new BrowserController(target);
+
+    await controller.tabs({ action: "new" });
+    expect(target.newPage).toHaveBeenCalledWith();
+    expect(page.loadURL).not.toHaveBeenCalled();
+
+    await controller.tabs({ action: "new", url: "https://example.com" });
+    expect(target.newPage).toHaveBeenCalledTimes(2);
+    expect(target.newPage).toHaveBeenLastCalledWith();
+    expect(page.loadURL).toHaveBeenCalledWith("https://example.com");
+  });
+
+  it("finding 9: on open() failure, reports the error alongside the tab listing (the tab already exists — no reason to retry into a duplicate)", async () => {
+    const tabsData = [{ tabId: 99, url: "", title: "New Tab", current: true }];
+    const page = makeFakePage({
+      loadURL: vi.fn(() => Promise.reject(new Error("net::ERR_FAILED"))),
+      // Never resolves — forces open()'s race to settle via the (rejecting)
+      // full-load path, not the DOM-ready one.
+      onceDomReady: vi.fn(() => new Promise<void>(() => {})),
+    });
+    const target = makeTabsTarget(page, tabsData);
+    const controller = new BrowserController(target);
+    const result = (await controller.tabs({ action: "new", url: "https://broken.example" })) as {
+      error?: string;
+      tabs?: unknown[];
+    };
+    expect(result.error).toMatch(/ERR_FAILED/);
+    expect(result.tabs).toEqual(tabsData);
+  });
+
+  it("rejects a non-http(s) url for new", async () => {
+    const target = makeTabsTarget(makeFakePage(), []);
+    const controller = new BrowserController(target);
+    const result = await controller.tabs({ action: "new", url: "javascript:alert(1)" });
+    expect(result).toHaveProperty("error");
+    expect(target.newPage).not.toHaveBeenCalled();
+  });
+
+  // Second-pass review finding 6: the outer `tabs({action:"new", url})`
+  // command used to budget itself the same `openTimeoutMs` as the nested
+  // `open()` call, but started its own clock strictly earlier (before
+  // `newPage()` even runs) — so its timeout always fired first, reporting a
+  // bare "Browser command timed out" with no tab listing at all, instead of
+  // the nested `open()` call's own (equally-budgeted, but later-starting)
+  // timeout, which at least still runs `listTabsResult()` afterward and
+  // reports a tab listing alongside the error.
+  it("finding 6: the nested open() call's own timeout fires first, still reporting the tab listing", async () => {
+    vi.useFakeTimers();
+    try {
+      const page = makeFakePage({
+        // Neither ever settles — forces open()'s own BROWSER_OPEN_TIMEOUT_MS
+        // (here, the controller's configured openTimeoutMs) to be what ends
+        // the command.
+        loadURL: vi.fn(() => new Promise<void>(() => {})),
+        onceDomReady: vi.fn(() => new Promise<void>(() => {})),
+      });
+      const tabsData = [{ tabId: 99, url: "", title: "New Tab", current: true }];
+      const target = makeTabsTarget(page, tabsData);
+      const controller = new BrowserController(target, { openTimeoutMs: 100 });
+      const promise = controller.tabs({ action: "new", url: "https://example.com" });
+      await vi.advanceTimersByTimeAsync(100);
+      const result = (await promise) as { error?: string; tabs?: unknown[] };
+      // The nested open() call's own 100ms timeout produced this error, not
+      // a bare timeout from the outer command (which would report no `tabs`
+      // field at all).
+      expect(result.error).toMatch(/Browser command timed out after 100ms/);
+      expect(result.tabs).toEqual(tabsData);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Second-pass review finding 6: mergeDialogs used to overwrite
+  // `result.dialogs` outright whenever it found anything of its own to
+  // drain, discarding whatever the nested open() call had already merged in.
+  it("finding 6: dialogs merged by the nested open() call survive the outer tabs() command's own dialog merge", async () => {
+    const tabA = makeFakePage({ drainDialogs: vi.fn(() => [{ type: "alert", message: "from tabA (outer only)" }]) });
+    const tabB = makeFakePage({ drainDialogs: vi.fn(() => [{ type: "confirm", message: "from tabB (inner only)" }]) });
+    let pageHandlesCall = 0;
+    const tabsData = [{ tabId: 99, url: "https://example.com/", title: "Example", current: true }];
+    const target = {
+      ...makeTabsTarget(tabB, tabsData),
+      currentPage: () => tabB,
+      // Outer's own capture (before newPage() runs) sees only tabA; the
+      // nested open() call's own capture (after newPage() runs) sees only
+      // tabB — two genuinely different snapshots of "every open browser
+      // tab", taken at two different moments, each with its own dialog to
+      // report.
+      pageHandles: vi.fn(async () => {
+        pageHandlesCall += 1;
+        return pageHandlesCall === 1 ? [{ tabId: 1, page: tabA }] : [{ tabId: 2, page: tabB }];
+      }),
+    };
+    const controller = new BrowserController(target);
+    const result = (await controller.tabs({ action: "new", url: "https://example.com" })) as {
+      dialogs?: unknown[];
+    };
+    expect(result.dialogs).toEqual(
+      expect.arrayContaining([
+        { tabId: 1, type: "alert", message: "from tabA (outer only)" },
+        { tabId: 2, type: "confirm", message: "from tabB (inner only)" },
+      ]),
+    );
+    expect(result.dialogs).toHaveLength(2);
+  });
+});
+
+describe("act: press", () => {
+  it("errors on a missing/empty key", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage({ sendCdp: vi.fn() })));
+    expect(await controller.act({ action: "press" })).toHaveProperty("error");
+    expect(await controller.act({ action: "press", key: "" })).toHaveProperty("error");
+  });
+
+  it("errors on an unrecognized key spec", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage({ sendCdp: vi.fn() })));
+    const result = await controller.act({ action: "press", key: "Fn+Whatever" });
+    expect(result).toHaveProperty("error");
+  });
+
+  it("errors clearly when the page has no CDP session (debugger attach failed)", async () => {
+    const page = makeFakePage();
+    expect(page.sendCdp).toBeUndefined();
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "press", key: "Enter" });
+    expect(String((result as { error: string }).error)).toMatch(/CDP/i);
+  });
+
+  it("dispatches a keyDown+keyUp pair via CDP with the resolved key/modifiers", async () => {
+    const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+    const page = makeFakePage({ sendCdp });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "press", key: "Shift+a" });
+    expect(result).not.toHaveProperty("error");
+
+    const calls = sendCdp.mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0][0]).toBe("Input.dispatchKeyEvent");
+    // Review finding 2: Shift+letter reports the uppercase text a real
+    // keyboard would produce, not the lowercase spelling of the spec.
+    expect(calls[0][1]).toMatchObject({ type: "keyDown", key: "A", modifiers: 8, text: "A" });
+    expect(calls[1][0]).toBe("Input.dispatchKeyEvent");
+    expect(calls[1][1]).toMatchObject({ type: "keyUp", key: "A", modifiers: 8 });
+  });
+
+  // Review finding 2: on macOS Chromium a CDP-synthesized Meta/Ctrl-modified
+  // keydown doesn't run the browser's native editing-command table the way
+  // a genuine OS-level shortcut would, so Cmd+A previously did nothing at
+  // all. `commands` (Puppeteer's own fix for the same limitation) plus no
+  // `text` (a modified shortcut must never also insert a literal character)
+  // is the fix.
+  it("Meta/Ctrl combos send no text and pass the matching editing command", async () => {
+    const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+    const page = makeFakePage({ sendCdp });
+    const controller = new BrowserController(makeFakeTarget(page));
+
+    await controller.act({ action: "press", key: "Meta+a" });
+    expect(sendCdp.mock.calls[0][1]).toMatchObject({ key: "a", modifiers: 4, text: undefined, commands: ["selectAll"] });
+
+    sendCdp.mockClear();
+    await controller.act({ action: "press", key: "Ctrl+c" });
+    expect(sendCdp.mock.calls[0][1]).toMatchObject({ text: undefined, commands: ["copy"] });
+
+    sendCdp.mockClear();
+    await controller.act({ action: "press", key: "Ctrl+x" });
+    expect(sendCdp.mock.calls[0][1]).toMatchObject({ text: undefined, commands: ["cut"] });
+
+    sendCdp.mockClear();
+    await controller.act({ action: "press", key: "Ctrl+v" });
+    expect(sendCdp.mock.calls[0][1]).toMatchObject({ text: undefined, commands: ["paste"] });
+
+    sendCdp.mockClear();
+    await controller.act({ action: "press", key: "Meta+z" });
+    expect(sendCdp.mock.calls[0][1]).toMatchObject({ text: undefined, commands: ["undo"] });
+
+    sendCdp.mockClear();
+    await controller.act({ action: "press", key: "Meta+Shift+z" });
+    expect(sendCdp.mock.calls[0][1]).toMatchObject({ text: undefined, commands: ["redo"] });
+
+    sendCdp.mockClear();
+    await controller.act({ action: "press", key: "Meta+y" });
+    expect(sendCdp.mock.calls[0][1]).toMatchObject({ text: undefined, commands: ["redo"] });
+  });
+
+  it("Shift+digit and Shift+punctuation send the shifted US-layout symbol as text", async () => {
+    const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+    const page = makeFakePage({ sendCdp });
+    const controller = new BrowserController(makeFakeTarget(page));
+
+    await controller.act({ action: "press", key: "Shift+1" });
+    expect(sendCdp.mock.calls[0][1]).toMatchObject({ key: "!", text: "!", code: "Digit1" });
+
+    sendCdp.mockClear();
+    await controller.act({ action: "press", key: "Shift+-" });
+    expect(sendCdp.mock.calls[0][1]).toMatchObject({ key: "_", text: "_", code: "Minus" });
+  });
+
+  it("uses rawKeyDown for a non-printable named key (no 'text')", async () => {
+    const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+    const page = makeFakePage({ sendCdp });
+    const controller = new BrowserController(makeFakeTarget(page));
+    await controller.act({ action: "press", key: "Escape" });
+    expect(sendCdp.mock.calls[0][1]).toMatchObject({ type: "rawKeyDown", key: "Escape" });
+  });
+
+  it("surfaces a rejecting sendCdp as a clear error", async () => {
+    const page = makeFakePage({ sendCdp: vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.reject(new Error("debugger detached"))) });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "press", key: "Enter" });
+    expect(result).toHaveProperty("error");
+    expect(String((result as { error: string }).error)).toMatch(/debugger detached/);
+  });
+
+  it("focuses a target first when 'target' is given", async () => {
+    const executeJavaScript = vi.fn((code: string) =>
+      isSignatureCall(code) || isCursorCall(code) ? Promise.resolve({ ok: true }) : Promise.resolve({ focused: true }),
+    );
+    const page = makeFakePage({ sendCdp: vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({})), executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    await controller.act({ action: "press", key: "Enter", target: "Search" });
+    const focusCalls = executeJavaScript.mock.calls.filter(
+      (c) => !isSignatureCall(c[0] as string) && !isCursorCall(c[0] as string),
+    );
+    expect(focusCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // Review finding 5: before this, a failed/no-match focus was best-effort —
+  // the key was still sent to whatever already had focus. Now an explicitly
+  // requested focus target that FOCUS_JS couldn't find is a hard error, and
+  // the key is never dispatched.
+  it("errors (without dispatching the key) when an explicit focus target isn't found", async () => {
+    const executeJavaScript = vi.fn((code: string) =>
+      isSignatureCall(code) || isCursorCall(code) ? Promise.resolve({ ok: true }) : Promise.resolve({ focused: false }),
+    );
+    const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+    const page = makeFakePage({ sendCdp, executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "press", key: "Enter", target: "Nope" });
+    expect(result).toHaveProperty("error");
+    expect(sendCdp).not.toHaveBeenCalled();
+  });
+
+  it("finding 5: an index+snapshotId focus target goes through the same staleness guard perform() uses", async () => {
+    const executeJavaScript = vi.fn((code: string) =>
+      isSignatureCall(code) || isCursorCall(code) ? Promise.resolve({ ok: true }) : Promise.resolve({ focused: true }),
+    );
+    const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+    const page = makeFakePage({ sendCdp, executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+
+    const stale = await controller.act({ action: "press", key: "Enter", index: 0, snapshotId: "never-taken" });
+    expect(stale).toHaveProperty("error");
+    expect(String((stale as { error: string }).error)).toMatch(/stale|unknown/i);
+    expect(sendCdp).not.toHaveBeenCalled();
+
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    const ok = await controller.act({ action: "press", key: "Enter", index: 0, snapshotId: snapshot.snapshotId });
+    expect(ok).not.toHaveProperty("error");
+  });
+
+  it("validates index requires snapshotId and vice versa", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage({ sendCdp: vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({})) })));
+    expect(await controller.act({ action: "press", key: "Enter", index: 0 })).toHaveProperty("error");
+    expect(await controller.act({ action: "press", key: "Enter", snapshotId: "abc" })).toHaveProperty("error");
+  });
+
+  it("carries evidence of effect and reports openedTab when a new tab appears", async () => {
+    let listCalls = 0;
+    const target = {
+      ...makeFakeTarget(makeFakePage({ sendCdp: vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({})) })),
+      listPages: vi.fn(() => {
+        listCalls += 1;
+        return Promise.resolve(
+          listCalls === 1
+            ? [{ tabId: 1, url: "https://a/", title: "A", current: true }]
+            : [
+                { tabId: 1, url: "https://a/", title: "A", current: true },
+                { tabId: 2, url: "https://b/", title: "B", current: false },
+              ],
+        );
+      }),
+    };
+    const controller = new BrowserController(target);
+    const result = (await controller.act({ action: "press", key: "Enter" })) as {
+      changed: boolean;
+      openedTab?: { tabId: number; url: string; title: string };
+    };
+    expect(result).toHaveProperty("changed");
+    expect(result.openedTab).toEqual({ tabId: 2, url: "https://b/", title: "B" });
+  });
+});
+
+describe("act: hover", () => {
+  it("errors when neither target nor index+snapshotId is given", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage({ sendCdp: vi.fn() })));
+    const result = await controller.act({ action: "hover" });
+    expect(result).toHaveProperty("error");
+  });
+
+  it("errors clearly when the page has no CDP session", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage()));
+    const result = await controller.act({ action: "hover", target: "Menu" });
+    expect(String((result as { error: string }).error)).toMatch(/CDP/i);
+  });
+
+  it("errors when the target script reports no match", async () => {
+    const executeJavaScript = vi.fn((code: string) =>
+      isSignatureCall(code) || isCursorCall(code) ? Promise.resolve({ ok: true }) : Promise.resolve({ found: false }),
+    );
+    const page = makeFakePage({ sendCdp: vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({})), executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "hover", target: "Nope" });
+    expect(result).toHaveProperty("error");
+  });
+
+  it("dispatches Input.dispatchMouseEvent mouseMoved at the located element's centre", async () => {
+    const executeJavaScript = vi.fn((code: string) =>
+      isSignatureCall(code) || isCursorCall(code)
+        ? Promise.resolve({ ok: true })
+        : Promise.resolve({ found: true, x: 42, y: 84 }),
+    );
+    const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+    const page = makeFakePage({ sendCdp, executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "hover", target: "Menu" });
+    expect(result).not.toHaveProperty("error");
+    expect(sendCdp).toHaveBeenCalledWith("Input.dispatchMouseEvent", { type: "mouseMoved", x: 42, y: 84, button: "none" });
+  });
+
+  it("accepts index+snapshotId instead of target", async () => {
+    const executeJavaScript = vi.fn((code: string) =>
+      isSignatureCall(code) || isCursorCall(code)
+        ? Promise.resolve({ ok: true })
+        : Promise.resolve({ found: true, x: 1, y: 2 }),
+    );
+    const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+    const page = makeFakePage({ sendCdp, executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    // Review finding 5: an index+snapshotId hover now goes through the same
+    // staleness/cross-tab guard perform() uses, so a real (current)
+    // snapshotId is required — a bare "abc" is correctly rejected as stale.
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    const result = await controller.act({ action: "hover", index: 0, snapshotId: snapshot.snapshotId });
+    expect(result).not.toHaveProperty("error");
+  });
+
+  it("finding 5: rejects a stale/unknown snapshotId with the same error perform() gives, without running HOVER_TARGET_JS", async () => {
+    const executeJavaScript = vi.fn((code: string) =>
+      isSignatureCall(code) || isCursorCall(code)
+        ? Promise.resolve({ ok: true })
+        : Promise.resolve({ found: true, x: 1, y: 2 }),
+    );
+    const page = makeFakePage({ sendCdp: vi.fn(() => Promise.resolve({})), executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "hover", index: 0, snapshotId: "never-taken" });
+    expect(result).toHaveProperty("error");
+    expect(String((result as { error: string }).error)).toMatch(/stale|unknown/i);
+    expect(executeJavaScript.mock.calls.some((c) => (c[0] as string).includes("HOVER_TARGET"))).toBe(false);
+  });
+
+  it("finding 8: scrolls the target into view before the before-signature capture, not after", async () => {
+    const callOrder: string[] = [];
+    const executeJavaScript = vi.fn((code: string) => {
+      if (isCursorCall(code)) return Promise.resolve({ ok: true });
+      if (isSignatureCall(code)) {
+        callOrder.push("signature");
+        return Promise.resolve({
+          url: "https://example.com/",
+          title: "Example",
+          nodeCount: 1,
+          textLength: 0,
+          textHash: 0,
+          mainImageSrc: "",
+          scrollY: 40,
+          focusedValueLength: 0,
+        });
+      }
+      callOrder.push("hover-target");
+      return Promise.resolve({ found: true, x: 1, y: 2 });
+    });
+    const page = makeFakePage({ sendCdp: vi.fn(() => Promise.resolve({})), executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "hover", target: "Menu" });
+    expect(result).not.toHaveProperty("error");
+    // The locate-and-scroll call (HOVER_TARGET_JS) must precede the first
+    // (before) signature capture — reversed, a hover that only needed to
+    // scroll to reach its target would misreport a scrollY change caused by
+    // locating the element, not by the hover itself.
+    expect(callOrder[0]).toBe("hover-target");
+    expect(callOrder.indexOf("signature")).toBeGreaterThan(callOrder.indexOf("hover-target"));
+  });
+
+  it("finding 8 (regression): a hover that needs to scroll to reach its target still reports changed: false when nothing else changed", async () => {
+    // Models HOVER_TARGET_JS's real scrollIntoView side effect: locating
+    // the target scrolls the page. With the fix (locate-and-scroll before
+    // the before-capture), the before-capture already reflects the scrolled
+    // position, so before/after scrollY match and changed stays false. With
+    // the old (broken) ordering — before-capture, then locate+scroll, then
+    // after-capture — this would incorrectly report changed: true, blaming
+    // the hover for a scroll that only happened because the target needed
+    // locating.
+    let scrolled = false;
+    const executeJavaScript = vi.fn((code: string) => {
+      if (isCursorCall(code)) return Promise.resolve({ ok: true });
+      if (isSignatureCall(code)) {
+        return Promise.resolve({
+          url: "https://example.com/",
+          title: "Example",
+          nodeCount: 1,
+          textLength: 0,
+          textHash: 0,
+          mainImageSrc: "",
+          scrollY: scrolled ? 500 : 0,
+          focusedValueLength: 0,
+        });
+      }
+      // HOVER_TARGET_JS: locating the below-the-fold target scrolls to it.
+      scrolled = true;
+      return Promise.resolve({ found: true, x: 1, y: 2 });
+    });
+    const page = makeFakePage({ sendCdp: vi.fn(() => Promise.resolve({})), executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "hover", target: "Below the fold" });
+    expect(result).toMatchObject({ changed: false });
+  });
+
+  it("carries evidence of effect", async () => {
+    let signatureCalls = 0;
+    const executeJavaScript = vi.fn((code: string) => {
+      if (isCursorCall(code)) return Promise.resolve({ ok: true });
+      if (isSignatureCall(code)) {
+        signatureCalls += 1;
+        return Promise.resolve({
+          url: "https://example.com/",
+          title: "Example",
+          nodeCount: 1,
+          textLength: 1,
+          textHash: 1,
+          mainImageSrc: "",
+          scrollY: signatureCalls === 1 ? 0 : 40,
+          focusedValueLength: 0,
+        });
+      }
+      return Promise.resolve({ found: true, x: 1, y: 2 });
+    });
+    const page = makeFakePage({ sendCdp: vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({})), executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "hover", target: "Menu" });
+    expect(result).toMatchObject({ changed: true, changes: ["scroll"] });
+  });
+});
+
+describe("act: select (routes to perform SELECT)", () => {
+  it("requires index+snapshotId and text", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage()));
+    expect(await controller.act({ action: "select", text: "Option" })).toHaveProperty("error");
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    expect(await controller.act({ action: "select", index: 0, snapshotId: snapshot.snapshotId })).toHaveProperty("error");
+  });
+
+  it("dispatches PERFORM_JS with operation SELECT against the caller's snapshot", async () => {
+    const executeJavaScript = vi.fn((code: string) => {
+      if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+      if (code.includes("data-pen-snap")) {
+        return Promise.resolve({
+          url: "https://example.com/",
+          title: "Example",
+          elements: [{ index: 0, tag: "select", label: "Color", ops: ["SELECT"] }],
+          scroll: { y: 0, height: 0, atBottom: true },
+        });
+      }
+      return Promise.resolve({ url: "https://example.com/", title: "Example" });
+    });
+    const page = makeFakePage({ executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    const result = await controller.act({ action: "select", index: 0, snapshotId: snapshot.snapshotId, text: "Blue" });
+    expect(result).not.toHaveProperty("error");
+    const performCall = executeJavaScript.mock.calls.find((c) => (c[0] as string).includes('"operation":"SELECT"'));
+    expect(performCall).toBeTruthy();
+  });
+
+  it("rejects a stale snapshotId, same as perform() itself", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage()));
+    const result = await controller.act({ action: "select", index: 0, snapshotId: "not-a-real-snapshot", text: "Blue" });
+    expect(result).toHaveProperty("error");
+  });
+});
+
+describe("act: click/type by index (routes to perform CLICK/TYPE_TEXT)", () => {
+  it("validates index requires snapshotId and vice versa", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage()));
+    expect(await controller.act({ action: "click", index: 0 })).toHaveProperty("error");
+    expect(await controller.act({ action: "click", snapshotId: "abc" })).toHaveProperty("error");
+  });
+
+  it("type by index requires text", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage()));
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    const result = await controller.act({ action: "type", index: 0, snapshotId: snapshot.snapshotId });
+    expect(result).toHaveProperty("error");
+  });
+
+  it("click by index reuses perform()'s staleness check", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage()));
+    const result = await controller.act({ action: "click", index: 0, snapshotId: "stale" });
+    expect(result).toHaveProperty("error");
+  });
+
+  it("click by index succeeds against the caller's own snapshot and can report openedTab", async () => {
+    let listCalls = 0;
+    const page = makeFakePage();
+    const target = {
+      ...makeFakeTarget(page),
+      listPages: vi.fn(() => {
+        listCalls += 1;
+        return Promise.resolve(
+          listCalls === 1
+            ? [{ tabId: 1, url: "https://a/", title: "A", current: true }]
+            : [
+                { tabId: 1, url: "https://a/", title: "A", current: true },
+                { tabId: 2, url: "https://popup/", title: "Popup", current: false },
+              ],
+        );
+      }),
+    };
+    const controller = new BrowserController(target);
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    const result = (await controller.act({ action: "click", index: 0, snapshotId: snapshot.snapshotId })) as {
+      openedTab?: { tabId: number };
+    };
+    expect(result.openedTab).toEqual({ tabId: 2, url: "https://popup/", title: "Popup" });
+  });
+});
+
+describe("act: reload", () => {
+  it("errors when no browser tab is open", async () => {
+    const controller = new BrowserController(makeFakeTarget(null));
+    const result = await controller.act({ action: "reload" });
+    expect(result).toHaveProperty("error");
+  });
+
+  it("calls page.reload() and returns url/title once loading settles", async () => {
+    const page = makeFakePage();
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "reload" });
+    expect(page.reload).toHaveBeenCalled();
+    expect(result).toEqual({ url: page.getURL(), title: page.getTitle() });
+  });
+});
+
+describe("act: wait", () => {
+  it("validates 'text' and 'ms'", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage()));
+    expect(await controller.act({ action: "wait", text: "" })).toHaveProperty("error");
+    expect(await controller.act({ action: "wait", ms: -1 })).toHaveProperty("error");
+    expect(await controller.act({ action: "wait", ms: "soon" })).toHaveProperty("error");
+  });
+
+  it("without text, sleeps roughly `ms` and returns found: true", async () => {
+    const controller = new BrowserController(makeFakeTarget(makeFakePage()));
+    const start = Date.now();
+    const result = await controller.act({ action: "wait", ms: 20 });
+    expect(Date.now() - start).toBeGreaterThanOrEqual(15);
+    expect(result).toMatchObject({ found: true });
+  });
+
+  it("clamps ms to the 15s hard cap rather than sleeping for whatever a caller asks", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new BrowserController(makeFakeTarget(makeFakePage()));
+      let resolved = false;
+      void controller.act({ action: "wait", ms: 999_999 }).then(() => {
+        resolved = true;
+      });
+      // If the 999,999ms request weren't clamped to WAIT_MAX_MS (15s), this
+      // would not have resolved yet.
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(resolved).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("with text, polls until WAIT_TEXT_JS reports a match", async () => {
+    let calls = 0;
+    const executeJavaScript = vi.fn((code: string) => {
+      if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+      calls += 1;
+      return Promise.resolve({ found: calls >= 2 });
+    });
+    const page = makeFakePage({ executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "wait", text: "Loaded", ms: 2_000 });
+    expect(result).toMatchObject({ found: true });
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  it("with text, reports found: false (not an error) when the deadline passes", async () => {
+    const executeJavaScript = vi.fn((code: string) =>
+      isSignatureCall(code) || isCursorCall(code) ? Promise.resolve({ ok: true }) : Promise.resolve({ found: false }),
+    );
+    const page = makeFakePage({ executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "wait", text: "Never appears", ms: 150 });
+    expect(result).toEqual({ found: false, url: page.getURL(), title: page.getTitle() });
+  });
+
+  // Second-pass review finding 9: with `text` and a `ms` of 0, the previous
+  // `while (Date.now() < deadline)` loop's condition could already be false
+  // before the body ever ran once (the deadline is `Date.now() + 0`, i.e.
+  // "now"), so the page was never actually polled at all — `found` reported
+  // `false` regardless of what was already on the page. The wait must always
+  // check at least once.
+  it("with text and ms: 0, still polls WAIT_TEXT_JS at least once", async () => {
+    const executeJavaScript = vi.fn((code: string) =>
+      isSignatureCall(code) || isCursorCall(code) ? Promise.resolve({ ok: true }) : Promise.resolve({ found: true }),
+    );
+    const page = makeFakePage({ executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "wait", text: "Already here", ms: 0 });
+    expect(result).toEqual({ found: true, url: page.getURL(), title: page.getTitle() });
+    const waitTextCalls = executeJavaScript.mock.calls.filter(
+      (c) => !isSignatureCall(c[0]) && !isCursorCall(c[0]),
+    );
+    expect(waitTextCalls.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("dialogs merging (design doc's dialog policy)", () => {
+  it("merges non-empty dialogs into a successful command's result", async () => {
+    const page = makeFakePage({
+      drainDialogs: vi.fn(() => [{ type: "alert", message: "Hello" }]),
+    });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.open({ url: "https://example.com" });
+    expect(result).toMatchObject({ dialogs: [{ type: "alert", message: "Hello" }] });
+  });
+
+  it("does not add a dialogs field when there are none", async () => {
+    const page = makeFakePage({ drainDialogs: vi.fn(() => []) });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.open({ url: "https://example.com" });
+    expect(result).not.toHaveProperty("dialogs");
+  });
+
+  it("merges dialogs even into an error result", async () => {
+    const page = makeFakePage({ drainDialogs: vi.fn(() => [{ type: "confirm", message: "Sure?" }]) });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.act({ action: "click", target: "" }); // validation error, before withCommandTimeout even runs
+    // Validation errors return before withCommandTimeout — this only proves
+    // such an early error never crashes; the real "error + dialogs" case is
+    // exercised by the next test, whose failure happens inside the timeout
+    // wrapper.
+    expect(result).toHaveProperty("error");
+  });
+
+  it("a throwing drainDialogs degrades to no dialogs rather than breaking the command", async () => {
+    const page = makeFakePage({
+      drainDialogs: vi.fn(() => {
+        throw new Error("boom");
+      }),
+    });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const result = await controller.open({ url: "https://example.com" });
+    expect(result).not.toHaveProperty("error");
+    expect(result).not.toHaveProperty("dialogs");
+  });
+
+  // Review finding 6: dialogs used to be drained only from currentPage(),
+  // so a dialog raised on a tab other than the one a command acts on (a
+  // popup that raised its own dialog while the command ran elsewhere) was
+  // silently dropped. `pageHandles()` (when the target implements it) is now
+  // drained in full, each entry tagged with its tabId.
+  it("drains dialogs from every browser page reported by pageHandles(), tagged with tabId", async () => {
+    const acted = makeFakePage({ drainDialogs: vi.fn(() => [{ type: "alert", message: "on the acted tab" }]) });
+    const other = makeFakePage({ drainDialogs: vi.fn(() => [{ type: "confirm", message: "on another tab" }]) });
+    const target: BrowserTarget = {
+      ensurePage: async () => acted,
+      currentPage: () => acted,
+      pageHandles: async () => [
+        { tabId: 1, page: acted },
+        { tabId: 2, page: other },
+      ],
+    };
+    const controller = new BrowserController(target);
+    const result = await controller.open({ url: "https://example.com" });
+    expect(result).toMatchObject({
+      dialogs: [
+        { tabId: 1, type: "alert", message: "on the acted tab" },
+        { tabId: 2, type: "confirm", message: "on another tab" },
+      ],
+    });
+  });
+
+  it("finding 6: still reports a dialog from the acted-on page's own handle even if that page's tab closes during the command", async () => {
+    // pageHandles is captured *before* fn() runs — its BrowserPageHandle
+    // objects (plain closures over a dialog queue array) remain drainable
+    // even once the real tab behind them is gone, since drainDialogs never
+    // touches the underlying (possibly destroyed) webContents.
+    let closed = false;
+    const acted = makeFakePage({
+      drainDialogs: vi.fn(() => (closed ? [{ type: "beforeunload", message: "closing" }] : [])),
+    });
+    const target: BrowserTarget = {
+      ensurePage: async () => acted,
+      currentPage: () => acted,
+      pageHandles: async () => (closed ? [] : [{ tabId: 1, page: acted }]),
+    };
+    const controller = new BrowserController(target);
+    const openPromise = controller.open({ url: "https://example.com" });
+    closed = true; // simulate the command itself closing the acted-on tab
+    const result = await openPromise;
+    expect(result).toMatchObject({ dialogs: [{ tabId: 1, type: "beforeunload", message: "closing" }] });
+  });
+
+  it("falls back to draining only currentPage() when the target doesn't implement pageHandles", async () => {
+    const page = makeFakePage({ drainDialogs: vi.fn(() => [{ type: "alert", message: "Hello" }]) });
+    const controller = new BrowserController(makeFakeTarget(page)); // makeFakeTarget has no pageHandles
+    const result = await controller.open({ url: "https://example.com" });
+    expect(result).toMatchObject({ dialogs: [{ type: "alert", message: "Hello" }] });
+  });
+});
+
+// Second-pass review finding 8: nothing previously serialized concurrent
+// BrowserController calls — two commands the frontend fired without waiting
+// for each other could interleave (a screenshot's marks overlay landing
+// mid another command's own signature capture, lastSnapshot being replaced
+// mid-perform by a racing snapshot()). A FIFO mutex (`runExclusive`) now
+// makes every public command run to completion before the next one starts.
+describe("command concurrency (finding 8)", () => {
+  it("two concurrent commands run one at a time, never interleaved", async () => {
+    const order: string[] = [];
+    let resolveFirst!: (value: { text: string }) => void;
+    const executeJavaScript = vi.fn((code: string) => {
+      if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+      if (order.length === 0) {
+        order.push("first-start");
+        return new Promise((resolve) => {
+          resolveFirst = (value) => {
+            order.push("first-end");
+            resolve(value);
+          };
+        });
+      }
+      order.push("second-start");
+      return Promise.resolve({ text: "second" });
+    });
+    const page = makeFakePage({ executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+
+    const firstPromise = controller.read(undefined);
+    const secondPromise = controller.read(undefined);
+
+    // Flush a handful of microtasks — if the second command weren't
+    // actually queued behind the first, it would have started executing its
+    // own script by now.
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(order).toEqual(["first-start"]);
+
+    resolveFirst({ text: "first" });
+    const [firstResult, secondResult] = await Promise.all([firstPromise, secondPromise]);
+
+    expect(order).toEqual(["first-start", "first-end", "second-start"]);
+    expect(firstResult).toMatchObject({ text: "first" });
+    expect(secondResult).toMatchObject({ text: "second" });
+  });
+
+  // Third-pass review: a TIMED-OUT command's work keeps running (promises
+  // can't be cancelled), so the queue must not hand the page to the next
+  // command until that abandoned work settles — bounded by the overrun grace.
+  it("a timed-out command's abandoned work finishes before the next command starts", async () => {
+    const order: string[] = [];
+    let resolveFirst!: (value: { text: string }) => void;
+    const executeJavaScript = vi.fn((code: string) => {
+      if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+      if (order.length === 0) {
+        order.push("first-start");
+        return new Promise((resolve) => {
+          resolveFirst = (value) => {
+            order.push("first-end");
+            resolve(value);
+          };
+        });
+      }
+      order.push("second-start");
+      return Promise.resolve({ text: "second" });
+    });
+    const page = makeFakePage({ executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page), { timeoutMs: 20 });
+
+    const first = await controller.read(undefined);
+    expect(first).toHaveProperty("error");
+    const secondPromise = controller.read(undefined);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(order).toEqual(["first-start"]);
+
+    resolveFirst({ text: "late" });
+    const second = await secondPromise;
+    expect(order).toEqual(["first-start", "first-end", "second-start"]);
+    expect(second).toMatchObject({ text: "second" });
+  });
+
+  it("a rejecting command still lets the next queued command run", async () => {
+    let calls = 0;
+    const executeJavaScript = vi.fn((code: string) => {
+      if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+      calls += 1;
+      if (calls === 1) return Promise.reject(new Error("boom"));
+      return Promise.resolve({ text: "ok" });
+    });
+    const page = makeFakePage({ executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const first = await controller.read(undefined);
+    const second = await controller.read(undefined);
+    expect(first).toHaveProperty("error");
+    expect(second).toMatchObject({ text: "ok" });
+  });
+
+  // `act`'s index-based click/type/select branches call `performUnlocked`
+  // directly (not the public `perform`), and `tabs`'s "new"+url case calls
+  // `openUnlocked` directly (not the public `open`) — calling back into the
+  // public, queue-wrapped method from inside an already-queued command would
+  // deadlock forever (enqueued behind itself). These must resolve promptly.
+  it("act's index-routed click does not deadlock by calling back into the public perform()", async () => {
+    const executeJavaScript = vi.fn((code: string) => {
+      if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+      if (code.includes("maxElements")) {
+        return Promise.resolve({
+          url: "https://example.com/",
+          title: "Example",
+          elements: [{ index: 0, tag: "button", label: "Go", ops: ["CLICK"] }],
+          scroll: { y: 0, height: 0, atBottom: true },
+        });
+      }
+      return Promise.resolve({ url: "https://example.com/", title: "Example" });
+    });
+    const page = makeFakePage({ executeJavaScript });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const snap = (await controller.snapshot()) as { snapshotId: string };
+    const result = await controller.act({ action: "click", index: 0, snapshotId: snap.snapshotId });
+    expect(result).not.toHaveProperty("error");
+  });
+
+  it("tabs new+url does not deadlock by calling back into the public open()", async () => {
+    const page = makeFakePage();
+    const target = {
+      ...makeFakeTarget(page),
+      listPages: vi.fn(() => Promise.resolve([{ tabId: 1, url: "", title: "New Tab", current: true }])),
+      selectPage: vi.fn(() => Promise.resolve(true)),
+      closePage: vi.fn(() => Promise.resolve(true)),
+      newPage: vi.fn(() => Promise.resolve({ tabId: 1, url: "", title: "New Tab", current: true })),
+    };
+    const controller = new BrowserController(target);
+    const result = await controller.tabs({ action: "new", url: "https://example.com" });
+    expect(result).not.toHaveProperty("error");
+  });
+});

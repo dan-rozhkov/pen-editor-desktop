@@ -126,6 +126,13 @@ const browser = {
   // command; main is the trust boundary.
   read: (args?: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke("browser:command", { command: "read", args }),
+  // Full browser use (design doc `2026-09-23-full-browser-use-design.md`) —
+  // same "no validation here, main is the trust boundary" shape as every
+  // command above.
+  screenshot: (args?: Record<string, unknown>): Promise<unknown> =>
+    ipcRenderer.invoke("browser:command", { command: "screenshot", args }),
+  tabs: (args: Record<string, unknown>): Promise<unknown> =>
+    ipcRenderer.invoke("browser:command", { command: "tabs", args }),
 };
 
 const api = {

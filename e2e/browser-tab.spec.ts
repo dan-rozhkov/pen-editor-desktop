@@ -22,6 +22,9 @@ let selfDisableUrl: string;
 let readUrl: string;
 let imagesMetaUrl: string;
 let slowLoadUrl: string;
+let interactUrl: string;
+let autoAlertUrl: string;
+let smoothScrollUrl: string;
 
 // How long the /slow-resource route below holds its response open before
 // finally answering — comfortably past OPEN_LOAD_GRACE_MS (1500ms, so
@@ -368,6 +371,84 @@ a plain search box (eligible, must still report its value). -->
 </script>`);
       return;
     }
+    if (req.url && req.url.startsWith("/interact")) {
+      // Full browser use (design doc `2026-09-23-full-browser-use-design.md`):
+      // one fixture covering press (Enter submits a form), hover (:hover +
+      // mouseover), select, and a target=_blank popup link (openedTab).
+      res.end(`<!doctype html>
+<title>Interact</title>
+<h1 id="ready">interact-ready</h1>
+<form id="search-form" onsubmit="document.title = 'Submitted'; return false;">
+  <input id="query" type="text" placeholder="Search" />
+</form>
+<button id="hover-target" style="width:80px;height:40px">Hover me</button>
+<div id="hover-result">not-hovered</div>
+<style>
+  #hover-target:hover { background-color: rgb(255, 0, 0); }
+</style>
+<select id="sel-fruit">
+  <option>Apple</option>
+  <option>Banana</option>
+  <option>Cherry</option>
+</select>
+<a id="popup-link" href="${baseUrl}/gallery/next" target="_blank">Open in new tab</a>
+<button id="alert-btn">Trigger Alert</button>
+<div id="after-alert">before-alert</div>
+<script>
+  document.getElementById('hover-target').addEventListener('mouseover', function () {
+    document.getElementById('hover-result').textContent = 'hovered';
+  });
+  document.getElementById('alert-btn').addEventListener('click', function () {
+    alert('Hello from the page');
+    document.getElementById('after-alert').textContent = 'after-alert';
+  });
+</script>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/auto-alert")) {
+      // Second-pass review finding 1: raises its own alert() well after
+      // page load (2s — comfortably past OPEN_LOAD_GRACE_MS/1500ms, so the
+      // `open` command that navigates here has already resolved and no
+      // `browser:command` is in flight when the dialog actually opens),
+      // proving a dialog raised *between* agent commands is still resolved
+      // (and reported) rather than left open forever, hanging every later
+      // command against this tab.
+      res.end(`<!doctype html>
+<title>Auto Alert</title>
+<h1 id="ready">auto-alert-ready</h1>
+<script>
+  setTimeout(function () {
+    alert('delayed alert, no command in flight');
+  }, 2000);
+</script>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/smooth-scroll")) {
+      // Second-pass review finding 4: html{scroll-behavior:smooth} makes a
+      // plain scrollIntoView() call still animating at the moment the very
+      // next line reads getBoundingClientRect() — a hover/focus target far
+      // below the fold gives that animation real distance to still be
+      // covering when read.
+      res.end(`<!doctype html>
+<title>Smooth Scroll</title>
+<style>
+  html { scroll-behavior: smooth; }
+  body { margin: 0; }
+  #spacer { height: 3000px; }
+  #hover-target { width: 80px; height: 40px; }
+  #hover-target:hover { background-color: rgb(255, 0, 0); }
+</style>
+<h1 id="ready">smooth-scroll-ready</h1>
+<div id="spacer"></div>
+<button id="hover-target">Hover me</button>
+<div id="hover-result">not-hovered</div>
+<script>
+  document.getElementById('hover-target').addEventListener('mouseover', function () {
+    document.getElementById('hover-result').textContent = 'hovered';
+  });
+</script>`);
+      return;
+    }
     // Default: stub editor page, same shape as e2e/smoke.spec.ts's.
     res.end(`<!doctype html><title>Stub Editor</title>
       <h1 id="ready">stub-editor</h1>
@@ -389,6 +470,9 @@ a plain search box (eligible, must still report its value). -->
   readUrl = `${baseUrl}/read`;
   imagesMetaUrl = `${baseUrl}/images-meta`;
   slowLoadUrl = `${baseUrl}/slow-load`;
+  interactUrl = `${baseUrl}/interact`;
+  autoAlertUrl = `${baseUrl}/auto-alert`;
+  smoothScrollUrl = `${baseUrl}/smooth-scroll`;
 });
 
 test.afterAll(() => new Promise<void>((r) => server.close(() => r())));
@@ -400,6 +484,8 @@ type BrowserBridge = {
   snapshot(): Promise<unknown>;
   perform(args: Record<string, unknown>): Promise<unknown>;
   read(args?: Record<string, unknown>): Promise<unknown>;
+  screenshot(args?: Record<string, unknown>): Promise<unknown>;
+  tabs(args: Record<string, unknown>): Promise<unknown>;
 };
 
 /** "Addendum 2, 2026-09-19" §1 — merged into act/perform results alongside
@@ -1709,6 +1795,494 @@ test("addendum 3 §2 (upstream PR #58): a click on a control that disables itsel
     const after = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
     expect(after.elements.map((e) => e.label)).toContain("Continue");
     expect(after.elements.map((e) => e.label)).toContain("Start");
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+// --- Full browser use (design doc `2026-09-23-full-browser-use-design.md`) ---
+
+test("browse_screenshot: returns a non-empty image, and annotate marks never leak into a later snapshot", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    // The /snapshot fixture (not /gallery — its interactive elements are
+    // all above the fold) is reused here since it's already known to have
+    // several always-visible, near-top interactive elements.
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === snapshotUrl }),
+      callBrowser(editorPage, "open", { url: snapshotUrl }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("snapshot-ready");
+
+    const plain = (await callBrowser(editorPage, "screenshot")) as {
+      imageData: string;
+      width: number;
+      height: number;
+      url: string;
+    };
+    expect(plain.imageData).toMatch(/^data:image\/jpeg;base64,/);
+    expect(plain.width).toBeGreaterThan(0);
+    expect(plain.height).toBeGreaterThan(0);
+    expect(plain.url).toBe(snapshotUrl);
+
+    const annotated = (await callBrowser(editorPage, "screenshot", { annotate: true })) as {
+      imageData: string;
+      snapshotId: string;
+      elements: { index: number; label: string }[];
+    };
+    expect(annotated.imageData).toMatch(/^data:image\/jpeg;base64,/);
+    expect(typeof annotated.snapshotId).toBe("string");
+    expect(annotated.elements.length).toBeGreaterThan(0);
+
+    // The marks overlay must be gone from the real page once the command
+    // resolves — not just cosmetically invisible, but actually removed, so
+    // it can never show up as a "found" element in a later snapshot/findImages.
+    expect(await fixturePage.evaluate(() => document.querySelectorAll("[data-pen-marks]").length)).toBe(0);
+
+    const laterSnapshot = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    // None of the marks overlay's own label/box elements (plain <div>s, not
+    // in SNAPSHOT_JS's interactive selector anyway) show up, and — the
+    // sharper check — the annotated screenshot's own snapshotId must not
+    // collide with this fresh one.
+    expect(laterSnapshot.snapshotId).not.toBe(annotated.snapshotId);
+    expect(
+      await fixturePage.evaluate((id) => document.querySelectorAll('[data-pen-snap^="' + id + ':"]').length, annotated.snapshotId),
+    ).toBe(0);
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browse_act: press Enter submits a form, hover triggers :hover/mouseover, and select changes a real <select>", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === interactUrl }),
+      callBrowser(editorPage, "open", { url: interactUrl }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("interact-ready");
+
+    // --- press: Enter inside the search input submits the form ---
+    const pressResult = (await callBrowser(editorPage, "act", {
+      action: "press",
+      key: "Enter",
+      target: "#query",
+    })) as { error?: string };
+    expect(pressResult.error).toBeUndefined();
+    await expect(fixturePage).toHaveTitle("Submitted");
+
+    // --- hover: a real CDP mouse move triggers both :hover CSS and the
+    // page's own mouseover listener — neither is reachable from a
+    // page-script dispatchEvent, which is why this needs CDP at all. ---
+    const hoverResult = (await callBrowser(editorPage, "act", { action: "hover", target: "Hover me" })) as {
+      error?: string;
+    };
+    expect(hoverResult.error).toBeUndefined();
+    await expect(fixturePage.locator("#hover-result")).toHaveText("hovered");
+    await expect
+      .poll(() =>
+        fixturePage.locator("#hover-target").evaluate((el) => getComputedStyle(el).backgroundColor),
+      )
+      .toBe("rgb(255, 0, 0)");
+
+    // --- select: routes to perform SELECT, still through act's own surface ---
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const fruitIndex = snap.elements.find((e) => e.tag === "select")?.index;
+    expect(fruitIndex).not.toBeUndefined();
+    const selectResult = (await callBrowser(editorPage, "act", {
+      action: "select",
+      index: fruitIndex,
+      snapshotId: snap.snapshotId,
+      text: "Banana",
+    })) as { error?: string; changed?: boolean };
+    expect(selectResult.error).toBeUndefined();
+    expect(selectResult.changed).toBe(true);
+    await expect(fixturePage.locator("#sel-fruit")).toHaveValue("Banana");
+
+    // --- wait: text present immediately (found: true), and a genuinely
+    // absent string reports found: false rather than erroring ---
+    const waitFound = (await callBrowser(editorPage, "act", { action: "wait", text: "Hover me", ms: 2000 })) as {
+      found: boolean;
+    };
+    expect(waitFound.found).toBe(true);
+    const waitMissing = (await callBrowser(editorPage, "act", {
+      action: "wait",
+      text: "Definitely not on this page",
+      ms: 300,
+    })) as { found: boolean };
+    expect(waitMissing.found).toBe(false);
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browse_tabs: list/switch/close, and a target=_blank popup reports openedTab", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === interactUrl }),
+      callBrowser(editorPage, "open", { url: interactUrl }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("interact-ready");
+
+    // --- a click that opens a target=_blank popup reports openedTab
+    // (fixes upstream jev-ultrafast #61 — the agent's current tab follows
+    // the popup automatically via agentBrowserTabId). ---
+    const [popupPage, clickResult] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === nextUrl }),
+      callBrowser(editorPage, "act", { action: "click", target: "Open in new tab" }) as Promise<{
+        openedTab?: { tabId: number; url: string; title: string };
+      }>,
+    ]);
+    await expect(popupPage.locator("#ready")).toHaveText("gallery-next-ready");
+    expect(clickResult.openedTab).toBeTruthy();
+    expect(clickResult.openedTab?.url).toBe(nextUrl);
+    const popupTabId = clickResult.openedTab!.tabId;
+
+    // --- list: both browser tabs show up, and the popup (agentBrowserTabId)
+    // is reported current ---
+    const listed = (await callBrowser(editorPage, "tabs", { action: "list" })) as {
+      tabs: { tabId: number; url: string; current: boolean }[];
+      current: number | null;
+    };
+    expect(listed.tabs).toHaveLength(2);
+    expect(listed.current).toBe(popupTabId);
+    const firstTabId = listed.tabs.find((t) => t.tabId !== popupTabId)!.tabId;
+
+    // --- switch: back to the original interact tab ---
+    const switched = (await callBrowser(editorPage, "tabs", { action: "switch", tabId: firstTabId })) as {
+      current: number;
+    };
+    expect(switched.current).toBe(firstTabId);
+    // A command against the "current" tab now really is against the
+    // switched-to page.
+    const readAfterSwitch = (await callBrowser(editorPage, "read", {})) as { url: string };
+    expect(readAfterSwitch.url).toBe(interactUrl);
+
+    // --- close: closes a browser tab; closing the popup leaves just one ---
+    const closed = (await callBrowser(editorPage, "tabs", { action: "close", tabId: popupTabId })) as {
+      tabs: unknown[];
+    };
+    expect(closed.tabs).toHaveLength(1);
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("dialogs: alert() is auto-accepted and reported, without hanging the next command", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === interactUrl }),
+      callBrowser(editorPage, "open", { url: interactUrl }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("interact-ready");
+
+    // Playwright itself auto-dismisses JS dialogs on any page it instruments
+    // (including this browser tab's own WebContentsView, which it discovers
+    // as a "window" the same way it discovers editorPage/fixturePage) unless
+    // a `dialog` listener is registered — racing with this app's own CDP
+    // session (window.ts's dialog policy) for who gets to call
+    // `Page.handleJavaScriptDialog` first. A no-op listener here just opts
+    // this page out of Playwright's own handling, so the app's own policy is
+    // the only thing that resolves the dialog — matching what a real
+    // (non-Playwright-instrumented) run of this app would do.
+    fixturePage.on("dialog", () => {});
+
+    const clickResult = (await callBrowser(editorPage, "act", {
+      action: "click",
+      target: "Trigger Alert",
+    })) as { dialogs?: { tabId?: number; type: string; message: string }[]; error?: string };
+    expect(clickResult.error).toBeUndefined();
+    // Review finding 6: each dialog is now tagged with the tabId it came
+    // from (dialogs are drained from every open browser page, not just
+    // whichever one happens to be current) — matched loosely here since
+    // this test only cares that the one dialog is reported, not its exact
+    // (real, Electron-assigned) tabId.
+    expect(clickResult.dialogs).toMatchObject([{ type: "alert", message: "Hello from the page" }]);
+    expect(clickResult.dialogs?.[0]).toHaveProperty("tabId");
+    // The alert didn't block the page forever — its handler's own follow-up
+    // line ran once the dialog was auto-accepted.
+    await expect(fixturePage.locator("#after-alert")).toHaveText("after-alert");
+
+    // The very next command must not hang — proof the auto-accept actually
+    // unblocked the renderer rather than just being reported after a stall.
+    const read = (await callBrowser(editorPage, "read", {})) as { url: string };
+    expect(read.url).toBe(interactUrl);
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+// Review finding 3: dialogs are now auto-handled only while an agent
+// browser command is actually running against that tab — this is only
+// observable against a real Chromium dialog (a fake/mocked debugger session
+// can't prove Chromium itself left a real modal open), so it belongs here,
+// not in a unit test.
+test("dialogs (finding 3): an alert() the page raises on its own, outside any agent command, is left for the user — not auto-handled", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === interactUrl }),
+      callBrowser(editorPage, "open", { url: interactUrl }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("interact-ready");
+
+    // Registering a listener here just opts this page out of Playwright's
+    // *own* automatic dialog dismissal (see the previous test's comment) —
+    // it does not itself answer the dialog. Capturing the Dialog object lets
+    // this test resolve the dialog itself, at a time of its choosing, rather
+    // than reading anything (like document.title) off a page whose JS
+    // execution is synchronously blocked by the open alert() — a plain
+    // page.evaluate()/toHaveTitle() poll would itself hang until *something*
+    // answers the dialog, which is exactly the ambiguity this approach
+    // avoids.
+    const dialogPromise = fixturePage.waitForEvent("dialog");
+
+    // Triggered directly on the page, not through an act/click command —
+    // no `browser:command` IPC call is in flight while this runs.
+    void fixturePage.evaluate(() => {
+      // eslint-disable-next-line no-alert
+      window.alert("user-triggered, no agent command in flight");
+    });
+
+    const dialog = await dialogPromise;
+    expect(dialog.message()).toBe("user-triggered, no agent command in flight");
+
+    // Give the app's own CDP session a window to (wrongly) auto-handle this
+    // the way finding 3 says it must not, outside any agent command.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // If the app HAD already resolved the dialog via
+    // Page.handleJavaScriptDialog, Chromium would no longer consider one
+    // open, and this call — Playwright's own attempt to resolve the *same*
+    // dialog — would reject instead of succeeding. It resolving cleanly is
+    // the proof the dialog was still genuinely open, left untouched by the
+    // app, half a second after it was raised.
+    await dialog.dismiss();
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+// Review finding 2: on macOS Chromium, a CDP-synthesized Meta/Ctrl-modified
+// `Input.dispatchKeyEvent` doesn't run the browser's native editing-command
+// table the way a genuine OS-level shortcut would — only a real Chromium
+// instance can prove the `commands` field (Puppeteer's own fix) actually
+// makes Cmd/Ctrl+A select the field's whole contents; a fake CDP session in
+// a unit test can only prove the *parameters* sent, not that Chromium acts
+// on them.
+test("browse_act: press Ctrl+A selects a field's whole contents via CDP's native editing command (finding 2)", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === interactUrl }),
+      callBrowser(editorPage, "open", { url: interactUrl }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("interact-ready");
+
+    const typeResult = (await callBrowser(editorPage, "act", {
+      action: "type",
+      target: "#query",
+      text: "select me",
+    })) as { matched?: string };
+    expect(typeResult.matched).toBe("#query");
+    await expect(fixturePage.locator("#query")).toHaveValue("select me");
+
+    // Ctrl+A works cross-platform here regardless of the host OS — CDP's
+    // `commands` field is interpreted the same way by Chromium either way,
+    // which is exactly what makes it a fix for the (Mac-specific) native
+    // accelerator gap: it never depended on which modifier key was used.
+    const selectAllResult = (await callBrowser(editorPage, "act", {
+      action: "press",
+      key: "Ctrl+a",
+      target: "#query",
+    })) as { error?: string };
+    expect(selectAllResult.error).toBeUndefined();
+
+    const pressResult = (await callBrowser(editorPage, "act", {
+      action: "press",
+      key: "Backspace",
+    })) as { error?: string };
+    expect(pressResult.error).toBeUndefined();
+
+    // A single Backspace after Ctrl+A cleared the *whole* field — proof
+    // selectAll genuinely ran (a single Backspace with no prior selection
+    // would only remove the last character, leaving "select m").
+    await expect(fixturePage.locator("#query")).toHaveValue("");
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+// Second-pass review finding 1: a dialog that opens *between* agent
+// commands (a `setTimeout`-delayed alert here — a page's own `load`-handler
+// alert would have the same effect) used to sit open indefinitely, since
+// dialogs were only auto-handled while a command was actually in flight —
+// every later `executeJavaScript` against that tab then hangs on the open
+// modal, so every subsequent command silently ran out the full command
+// timeout. Only a real Chromium dialog left genuinely open (nothing
+// resolves it) proves this — a unit test's fake CDP session can't.
+test("dialogs (finding 1): a dialog raised between commands is resolved and reported by the next command, without hanging it", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === autoAlertUrl }),
+      callBrowser(editorPage, "open", { url: autoAlertUrl }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("auto-alert-ready");
+
+    // Opts this page out of Playwright's own automatic dialog dismissal
+    // (see the finding-3 dialog test's comment above) without itself
+    // answering the dialog — capturing the Dialog object lets this test
+    // confirm the dialog is genuinely still open before the next command.
+    const dialogPromise = fixturePage.waitForEvent("dialog");
+    const dialog = await dialogPromise;
+    expect(dialog.message()).toBe("delayed alert, no command in flight");
+
+    // The `open` command above has long since resolved by now (the alert
+    // fires 2s after load, well past OPEN_LOAD_GRACE_MS) — no
+    // `browser:command` is in flight while the dialog sits open here.
+    const start = Date.now();
+    const snapshotResult = (await callBrowser(editorPage, "snapshot")) as {
+      dialogs?: { type: string; message: string }[];
+      error?: string;
+    };
+    const elapsedMs = Date.now() - start;
+
+    expect(snapshotResult.error).toBeUndefined();
+    // Resolved and reported by the very next command's pre-dispatch sweep,
+    // not left for this test to answer.
+    expect(snapshotResult.dialogs).toMatchObject([
+      { type: "alert", message: "delayed alert, no command in flight" },
+    ]);
+    // Well under BROWSER_COMMAND_TIMEOUT_MS (20s) — the command actually ran
+    // against an unblocked page, rather than hanging until the dialog
+    // resolved some other way.
+    expect(elapsedMs).toBeLessThan(5_000);
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+// Second-pass review finding 4: HOVER_TARGET_JS's scrollIntoView() call used
+// to use the page's default scroll behavior — on a page that sets
+// html{scroll-behavior:smooth}, the very next line's getBoundingClientRect()
+// read the target's position mid-animation, before the smooth scroll had
+// actually finished, so the reported hover coordinates missed the real
+// element. Only a real smooth-scrolling Chromium page proves this — a unit
+// test's fake page has no actual scroll animation to race against.
+test("browse_act hover: on a smooth-scroll page, the reported coordinates land on the real (post-scroll) element (finding 4)", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === smoothScrollUrl }),
+      callBrowser(editorPage, "open", { url: smoothScrollUrl }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("smooth-scroll-ready");
+
+    const hoverResult = (await callBrowser(editorPage, "act", {
+      action: "hover",
+      target: "#hover-target",
+    })) as { error?: string };
+    expect(hoverResult.error).toBeUndefined();
+
+    // :hover only actually triggers (and the mouseover listener only fires)
+    // if CDP's Input.dispatchMouseEvent landed on the real element's real,
+    // post-scroll coordinates — an instant scroll makes that true even
+    // though the page itself asked for a smooth one.
+    await expect(fixturePage.locator("#hover-result")).toHaveText("hovered");
+    await expect
+      .poll(() => fixturePage.locator("#hover-target").evaluate((el) => getComputedStyle(el).backgroundColor))
+      .toBe("rgb(255, 0, 0)");
 
     await app.close();
   } finally {

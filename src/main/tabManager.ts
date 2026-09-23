@@ -100,10 +100,50 @@ export interface TabViewHandle {
    * `BrowserPageHandle.isVisible`'s doc comment for the full rationale.
    */
   isVisible?(): boolean;
+  /**
+   * Optional: full browser use (design doc `2026-09-23-full-browser-use-design.md`).
+   * Structurally identical to browser/controller.ts's `BrowserPageHandle.capture`
+   * — see its doc comment. Present on every tab kind in window.ts's
+   * implementation (capturePage() works regardless of preload), even though
+   * only a browser tab is ever screenshotted through this bridge.
+   */
+  capture?(): Promise<{ imageData: string; width: number; height: number } | null>;
+  /**
+   * Optional: structurally identical to `BrowserPageHandle.sendCdp` — see
+   * its doc comment. Wired only for kind "browser" (window.ts attaches
+   * `webContents.debugger` only there).
+   */
+  sendCdp?(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /**
+   * Optional: structurally identical to `BrowserPageHandle.drainDialogs` —
+   * see its doc comment.
+   */
+  drainDialogs?(): { type: string; message: string }[];
+  /**
+   * Second-pass review finding 1: applies the dialog policy to whatever JS
+   * dialog is *currently open* on this tab, if any — a no-op when nothing is
+   * open. window.ts's `onBrowserCommand` calls this for every browser tab
+   * right before dispatching each new `browser:command`, so a dialog that
+   * opened while no command was in flight (a page's `load`-handler `alert`,
+   * a `setTimeout`-delayed one) gets resolved before the next command's own
+   * `executeJavaScript` call would otherwise hang on it. Wired only for kind
+   * "browser" (window.ts's `openDialog` tracking only exists there).
+   */
+  applyDialogPolicy?(): void;
 }
 
 /** What TabManager.browserHandle() hands to the browser controller (see window.ts). */
 export type BrowserTabHandle = TabViewHandle;
+
+/** A single open browser tab, as `TabManager`'s owner (window.ts) reports it
+ * to `browser/controller.ts`'s `tabs()` command — structurally identical to
+ * `BrowserTarget`'s own `BrowserTabInfo` there. */
+export interface BrowserTabInfo {
+  tabId: number;
+  url: string;
+  title: string;
+  current: boolean;
+}
 
 /**
  * Which webContents id `McpService.setActiveTab` should be told about, given
@@ -237,6 +277,23 @@ export class TabManager {
   private lastEditorWebContentsId: number | null = null;
   private lastLayout: { content: { width: number; height: number }; tabbarHeight: number } | null =
     null;
+  /**
+   * Full browser use (design doc `2026-09-23-full-browser-use-design.md`):
+   * which browser tab (by TabManager's own sequential id, not a webContents
+   * id) the agent is currently driving. `browserHandle()` prefers this tab
+   * while it's still a live browser tab, falling back to the pre-existing
+   * "active if browser, else most-recently-created browser tab" rule
+   * otherwise — this fixes upstream jev-ultrafast #61 ("the agent sticks to
+   * the old tab"): a popup opened from a browser tab (window.ts's
+   * `attachBrowserTabPolicy` callback) sets this to the new tab, so the very
+   * next browser command targets it even if the *active* tab in the strip
+   * hasn't visibly changed yet. `tabs({action:"switch"|"new"})` also set
+   * this. Cleared (not repointed, unlike `lastEditorWebContentsId`) when the
+   * tab it points at closes — there is no equivalent of "another editor tab
+   * is still open" fallback need here, since `browserHandle()`'s own
+   * fallback rule already covers "no explicit agent tab".
+   */
+  private agentBrowserTabId: number | null = null;
 
   constructor(
     private readonly opts: {
@@ -305,6 +362,7 @@ export class TabManager {
       const other = this.tabs.find((t) => t.kind === "editor");
       this.lastEditorWebContentsId = other ? other.view.getWebContentsId() : null;
     }
+    if (this.agentBrowserTabId === id) this.agentBrowserTabId = null;
     if (this.tabs.length === 0) {
       this.activeId = null;
       this.newTab("editor"); // newTab emits — closing the last tab always respawns an editor tab.
@@ -321,8 +379,28 @@ export class TabManager {
     }
   }
 
+  /**
+   * User-initiated activation (a tab-strip click, or anything else that
+   * means "the person looked at this tab") — as opposed to `setActive`, the
+   * private helper every automatic activation (a fresh tab, closing the
+   * active tab, a popup's own activation) already routes through.
+   *
+   * Review finding 4: activating a *browser* tab this way also makes it the
+   * agent's tab (`agentBrowserTabId`) — the agent follows the user's focus.
+   * Before this, `browserHandle()` kept preferring a stale
+   * `agentBrowserTabId` even after the user had switched the strip to a
+   * different browser tab, so the next browser command would silently act on
+   * the tab the user had left, not the one they were looking at. Deliberately
+   * *not* folded into `setActive` itself: a popup's own automatic activation
+   * (`newTab`'s internal `setActive` call) must not repoint the agent on its
+   * own — see window.ts's popup handler / review finding 7, which decides
+   * that repoint explicitly instead.
+   */
   activate(id: number): void {
-    if (this.tabs.some((t) => t.id === id)) this.setActive(id);
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return;
+    this.setActive(id);
+    if (tab.kind === "browser") this.agentBrowserTabId = id;
   }
 
   nextTab(): void {
@@ -337,6 +415,17 @@ export class TabManager {
     return this.tabs.find((t) => t.id === this.activeId)?.view ?? null;
   }
 
+  /** The browser tab the user is LOOKING at, or null when the active tab is
+   * an editor tab. Not `browserHandle()`: that one prefers the agent's pinned
+   * tab, which can be a hidden tab (a popup from a non-agent tab becomes the
+   * active one without repointing the agent) — the address row's back/
+   * forward/reload/URL entry must drive what the row is showing, never a
+   * hidden page the agent is working in. */
+  activeBrowserHandle(): BrowserTabHandle | null {
+    const active = this.tabs.find((t) => t.id === this.activeId);
+    return active?.kind === "browser" ? active.view : null;
+  }
+
   /**
    * The browser tab the BrowserController should drive: the active tab if
    * it is a browser tab, else the most recently created browser tab, else
@@ -344,12 +433,71 @@ export class TabManager {
    * commands fail cleanly in that last case, and `ensurePage()` creates one).
    */
   browserHandle(): BrowserTabHandle | null {
+    const id = this.resolveBrowserTabId();
+    return id === null ? null : (this.tabs.find((t) => t.id === id)?.view ?? null);
+  }
+
+  /** Second-pass review finding 2: the TabManager id of whichever browser
+   * tab `browserHandle()` would currently return — window.ts's `ensurePage`
+   * uses this to pin `agentBrowserTabId` even when handing back an
+   * *existing* tab (not just when creating a new one), and the popup
+   * callback uses it to pin the agent's current tab before a non-agent
+   * popup's own `newTab` call would otherwise make itself the active tab.
+   * `browserHandle()` only ever needed the *view*, not the id, until those
+   * two callers needed the id specifically — factored out here rather than
+   * duplicated so the two can never drift from `browserHandle()`'s own
+   * resolution rule. */
+  currentBrowserTabId(): number | null {
+    return this.resolveBrowserTabId();
+  }
+
+  private resolveBrowserTabId(): number | null {
+    if (this.agentBrowserTabId !== null) {
+      const agent = this.tabs.find((t) => t.id === this.agentBrowserTabId && t.kind === "browser");
+      if (agent) return agent.id;
+    }
     const active = this.tabs.find((t) => t.id === this.activeId);
-    if (active?.kind === "browser") return active.view;
+    if (active?.kind === "browser") return active.id;
     for (let i = this.tabs.length - 1; i >= 0; i--) {
-      if (this.tabs[i].kind === "browser") return this.tabs[i].view;
+      if (this.tabs[i].kind === "browser") return this.tabs[i].id;
     }
     return null;
+  }
+
+  /** Sets which browser tab (by TabManager id) the agent is driving — see
+   * `agentBrowserTabId`'s doc comment. `null` clears it back to the default
+   * fallback rule. Passing an id that isn't a live browser tab is silently
+   * accepted (mirrors `activate`'s own leniency) — `browserHandle()` simply
+   * won't find it and falls through to its existing rule. */
+  setAgentBrowserTabId(id: number | null): void {
+    this.agentBrowserTabId = id;
+  }
+
+  /** Full browser use's `tabs` command (browser/controller.ts): every
+   * currently open browser tab, in creation order, plus which one is the
+   * agent's *effective* current tab (`browserHandle()`'s own rule, not
+   * necessarily the tab strip's `activeId`) — window.ts maps this straight
+   * into `BrowserTarget.listPages()`. */
+  listBrowserTabs(): BrowserTabInfo[] {
+    const current = this.browserHandle();
+    return this.tabs
+      .filter((t) => t.kind === "browser")
+      .map((t) => ({
+        tabId: t.id,
+        url: t.url ?? "",
+        title: t.title,
+        current: t.view === current,
+      }));
+  }
+
+  /** Review finding 6: the view for one specific browser tab, by TabManager
+   * id — `null` if that id isn't currently a browser tab. `browserHandle()`
+   * only ever returns *one* tab's handle (the agent's current one); dialog
+   * draining needs every open browser tab's own handle, tagged with its id,
+   * which this (paired with `listBrowserTabs()`) provides. */
+  browserTabHandleById(id: number): BrowserTabHandle | null {
+    const tab = this.tabs.find((t) => t.id === id && t.kind === "browser");
+    return tab ? tab.view : null;
   }
 
   isEditorTab(webContentsId: number): boolean {
@@ -427,11 +575,22 @@ export class TabManager {
     });
   }
 
+  /** Second-pass review finding 3: a user-driven tab cycle (Ctrl+Tab/
+   * Ctrl+Shift+Tab, via `nextTab`/`prevTab`) landing on a browser tab
+   * repoints the agent to it, the same as clicking it in the strip
+   * (`activate` — finding 4 above). Before this, cycling to a browser tab
+   * left `agentBrowserTabId` wherever it was, so the very next browser
+   * command could silently act on a tab the user wasn't even looking at
+   * anymore. Deliberately *not* folded into `setActive` itself, for the
+   * same reason `activate` isn't either — `setActive` also backs every
+   * *automatic* activation (a popup's own `newTab`, `closeTab`'s neighbor
+   * pick), which must never repoint the agent on their own. */
   private cycle(delta: number): void {
     if (this.tabs.length === 0 || this.activeId === null) return;
     const idx = this.tabs.findIndex((t) => t.id === this.activeId);
     const next = this.tabs[(idx + delta + this.tabs.length) % this.tabs.length];
     this.setActive(next.id);
+    if (next.kind === "browser") this.agentBrowserTabId = next.id;
   }
 
   private setActive(id: number): void {

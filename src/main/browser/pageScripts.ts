@@ -84,6 +84,32 @@ const FIND_BY_TEXT_JS = `
 `;
 
 /**
+ * Shared `findBySnapshot` body, interpolated into FOCUS_JS/HOVER_TARGET_JS
+ * (review finding 5). Both used to embed `args.snapshotId` straight into a
+ * `[data-pen-snap="' + snapshotId + ":" + index + '"]'` selector string —
+ * unlike PERFORM_JS's identical-looking lookup, whose `snapshotId` only ever
+ * comes from this controller's own server-generated ids, these two accept
+ * whatever `snapshotId` a press/hover call passes, so a value containing a
+ * `"` (or any CSS-selector metacharacter) would either throw out of
+ * `querySelector` or, worse, close the attribute selector early and let the
+ * rest of the string be interpreted as selector syntax. Iterating
+ * `[data-pen-snap]` and comparing the attribute value with plain string
+ * equality sidesteps selector-injection entirely — no value of `snapshotId`
+ * can ever be anything other than a literal string compare.
+ */
+const FIND_BY_SNAPSHOT_JS = `
+  function findBySnapshot(snapshotId, index) {
+    if (snapshotId === undefined || snapshotId === null || index === undefined || index === null) return null;
+    var stamp = String(snapshotId) + ":" + String(index);
+    var all = document.querySelectorAll("[data-pen-snap]");
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].getAttribute("data-pen-snap") === stamp) return all[i];
+    }
+    return null;
+  }
+`;
+
+/**
  * Shared `scopedSignatureOf` body, interpolated into CLICK_JS, TYPE_JS,
  * PERFORM_JS and SIGNATURE_JS — a cheap signature of a *single element's own
  * subtree*, not the whole document.
@@ -310,9 +336,10 @@ export const FIND_IMAGES_JS = `(() => {
   var imgs = document.images;
   for (var i = 0; i < imgs.length; i++) {
     var img = imgs[i];
-    // Skip the cursor overlay (pageScripts.ts's CURSOR_JS) — it's not page
-    // content, just pointer-events:none chrome this bridge draws itself.
-    if (img.closest && img.closest("[data-pen-cursor]")) continue;
+    // Skip the cursor overlay (pageScripts.ts's CURSOR_JS) and the
+    // screenshot annotation overlay (MARKS_JS) — neither is page content,
+    // just pointer-events:none chrome this bridge draws itself.
+    if (img.closest && (img.closest("[data-pen-cursor]") || img.closest("[data-pen-marks]"))) continue;
     var rect = img.getBoundingClientRect();
     var srcsetPick = pickLargestSrcsetCandidate(img.getAttribute("srcset"));
     var chosenUrl = (srcsetPick && srcsetPick.url) || img.currentSrc || img.src;
@@ -355,7 +382,7 @@ export const FIND_IMAGES_JS = `(() => {
   var all = document.querySelectorAll("*");
   for (var j = 0; j < all.length; j++) {
     var el = all[j];
-    if (el.closest && el.closest("[data-pen-cursor]")) continue;
+    if (el.closest && (el.closest("[data-pen-cursor]") || el.closest("[data-pen-marks]"))) continue;
     var bg = getComputedStyle(el).backgroundImage;
     var bgUrl = extractBackgroundUrl(bg);
     if (!bgUrl) continue;
@@ -575,10 +602,11 @@ export const SNAPSHOT_JS = `(() => {
     "[role='combobox'], [onclick], [contenteditable='true']";
 
   function isVisible(el) {
-    // The cursor overlay (pageScripts.ts's CURSOR_JS) is pointer-events:none
-    // and never a real interactive control — skip anything inside it so it
-    // can never show up as a snapshot element to act on.
-    if (el.closest && el.closest("[data-pen-cursor]")) return false;
+    // The cursor overlay (pageScripts.ts's CURSOR_JS) and the screenshot
+    // annotation overlay (MARKS_JS) are both pointer-events:none and never a
+    // real interactive control — skip anything inside either so neither can
+    // ever show up as a snapshot element to act on.
+    if (el.closest && (el.closest("[data-pen-cursor]") || el.closest("[data-pen-marks]"))) return false;
     var rect = el.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return false;
     var style = getComputedStyle(el);
@@ -843,6 +871,7 @@ export const PERFORM_JS = `(() => {
 
   ${SCOPED_SIGNATURE_JS}
   ${TARGET_BUSY_HELPER_JS}
+  ${FIND_BY_SNAPSHOT_JS}
 
   if (operation === "SCROLL_UP" || operation === "SCROLL_DOWN") {
     var amount = operation === "SCROLL_UP" ? -1 : 1;
@@ -850,7 +879,15 @@ export const PERFORM_JS = `(() => {
     return { url: location.href, title: document.title };
   }
 
-  var el = document.querySelector('[data-pen-snap="' + snapshotId + ":" + index + '"]');
+  // Second-pass review finding 10: reuses the same exact-attribute-compare
+  // lookup FOCUS_JS/HOVER_TARGET_JS already use (FIND_BY_SNAPSHOT_JS) instead
+  // of an independent, identical-looking inline data-pen-snap selector
+  // lookup — snapshotId here only ever comes from this controller's own
+  // server-generated ids, so the selector-injection risk that motivated
+  // FIND_BY_SNAPSHOT_JS in the first place never applied to PERFORM_JS, but
+  // keeping one lookup implementation instead of two means a future fix to
+  // it can't drift between the two call sites.
+  var el = findBySnapshot(snapshotId, index);
   if (!el) {
     return { error: "No element at index " + index + " for this snapshot (stale or removed)." };
   }
@@ -974,6 +1011,23 @@ export const SIGNATURE_JS = `(() => {
     for (var stg = 0; stg < staleTarget.length; stg++) staleTarget[stg].removeAttribute("data-pen-sig-target");
   }
 
+  // Review finding 10: reverted to the plain innerText-based measure —
+  // a prior pass had replaced this with a per-element
+  // getBoundingClientRect/getComputedStyle walk (collectVisibleText) to keep
+  // MARKS_JS's numeric labels out of textLength/textHash, duplicating (a
+  // simplified copy of) READ_JS's own collectText in the process for no
+  // real benefit: MARKS_JS's [data-pen-marks] overlay only ever exists for
+  // the single, synchronous duration of a browse_screenshot({annotate:true})
+  // capture — installed right before page.capture() and always removed in
+  // finally (see MARKS_JS/REMOVE_MARKS_JS's doc comments) — so it can never
+  // be present while SIGNATURE_JS runs; a before/after signature pair is
+  // only ever captured by an act/perform/press/hover call, none of which
+  // ever installs that overlay. The cursor overlay ([data-pen-cursor])
+  // carries no text of its own either way (an SVG arrow, no textContent), so
+  // plain innerText was never polluted by it. If a future change ever made
+  // the two capture types overlap, the cheap fix is to subtract
+  // [data-pen-marks]'s own innerText length from document.body's, not to
+  // bring back a full per-element visibility walk.
   var rawText = (document.body ? document.body.innerText : "") || "";
   var collapsed = rawText.replace(/\\s+/g, " ").trim();
   var textLength = collapsed.length;
@@ -1414,6 +1468,11 @@ export const READ_JS = `(() => {
     if (tag === "script" || tag === "style" || tag === "noscript" || tag === "nav") return true;
     var role = el.getAttribute ? el.getAttribute("role") : null;
     if (role === "navigation") return true;
+    // Full browser use (2026-09-23): neither the cursor overlay nor the
+    // screenshot annotation overlay (MARKS_JS) is page content — a mark
+    // label carries real visible text (the element's index number), which
+    // would otherwise leak into browse_read's text digest.
+    if (el.hasAttribute && (el.hasAttribute("data-pen-cursor") || el.hasAttribute("data-pen-marks"))) return true;
     return false;
   }
 
@@ -1502,4 +1561,188 @@ export const READ_JS = `(() => {
     headingsTruncated: headingsTruncated,
     linksTruncated: linksTruncated,
   };
+})()`;
+
+// --- Full browser use (design doc `2026-09-23-full-browser-use-design.md`) ---
+
+/**
+ * `browse_screenshot`'s "set of marks" overlay — a numbered label plus an
+ * outline box over every element `SNAPSHOT_JS` stamped `data-pen-snap` for
+ * `args.snapshotId` (`browse_screenshot({ annotate: true })` always takes a
+ * fresh snapshot first, so this always runs against the snapshot it just
+ * minted). Everything is `position:fixed` (viewport-relative), matching the
+ * coordinate space `webContents.capturePage()` captures, and wrapped in a
+ * single `[data-pen-marks]` container so `controller.ts`'s `screenshot()` can
+ * remove the whole thing in one shot via REMOVE_MARKS_JS's `finally`.
+ *
+ * Never left in the DOM across commands: `SNAPSHOT_JS`/`FIND_IMAGES_JS`/
+ * `SIGNATURE_JS`/`READ_JS` all additionally exclude `[data-pen-marks]` from
+ * their own output (see each script's own doc comment), the same way they
+ * already exclude the cursor overlay's `[data-pen-cursor]` — belt-and-braces
+ * on top of the removal, not a substitute for it.
+ */
+export const MARKS_JS = `(() => {
+  var args = ${ARGS_MARKER};
+  var snapshotId = args.snapshotId;
+
+  var existing = document.querySelector("[data-pen-marks]");
+  if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+
+  var container = document.createElement("div");
+  container.setAttribute("data-pen-marks", "1");
+  container.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;z-index:2147483646;pointer-events:none;";
+
+  var marked = document.querySelectorAll('[data-pen-snap^="' + snapshotId + ':"]');
+  var count = 0;
+  for (var i = 0; i < marked.length; i++) {
+    var el = marked[i];
+    var rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    var attr = el.getAttribute("data-pen-snap") || "";
+    var idx = parseInt(attr.slice(String(snapshotId).length + 1), 10);
+    if (isNaN(idx)) continue;
+
+    var box = document.createElement("div");
+    box.style.cssText =
+      "position:fixed;left:" +
+      rect.left +
+      "px;top:" +
+      rect.top +
+      "px;width:" +
+      rect.width +
+      "px;height:" +
+      rect.height +
+      "px;outline:2px solid #0d99ff;outline-offset:-1px;box-sizing:border-box;pointer-events:none;";
+    container.appendChild(box);
+
+    var label = document.createElement("div");
+    label.textContent = String(idx);
+    var labelLeft = Math.max(0, rect.left);
+    var labelTop = Math.max(0, rect.top - 15);
+    label.style.cssText =
+      "position:fixed;left:" +
+      labelLeft +
+      "px;top:" +
+      labelTop +
+      "px;min-width:14px;padding:1px 4px;background:#0d99ff;color:#fff;" +
+      "font:10px/14px -apple-system,BlinkMacSystemFont,sans-serif;border-radius:3px;" +
+      "pointer-events:none;white-space:nowrap;text-align:center;";
+    container.appendChild(label);
+    count++;
+  }
+
+  (document.documentElement || document.body).appendChild(container);
+  return { marked: count };
+})()`;
+
+/** Removes the `[data-pen-marks]` overlay MARKS_JS installed — run in
+ * `controller.ts`'s `finally` so a mark overlay never survives past the
+ * `browse_screenshot` call that created it, regardless of how that call
+ * resolves. */
+export const REMOVE_MARKS_JS = `(() => {
+  var el = document.querySelector("[data-pen-marks]");
+  if (el && el.parentNode) el.parentNode.removeChild(el);
+  return { removed: !!el };
+})()`;
+
+/**
+ * Shared target-resolution + scroll-into-view helper for FOCUS_JS and
+ * HOVER_TARGET_JS (second-pass review finding 10 — before this, both scripts
+ * inlined an identical copy of this same resolution order, one that could
+ * silently drift between the two). Resolves by `snapshotId`+`index` (the
+ * exact `data-pen-snap` stamp, via FIND_BY_SNAPSHOT_JS — same as PERFORM_JS),
+ * else by visible text/selector (FIND_BY_TEXT_JS, same order as CLICK_JS/
+ * TYPE_JS), then scrolls the match into view and returns it (or `null`).
+ *
+ * `behavior: "instant"` (second-pass review finding 4): the default
+ * ("auto", which follows the page's own `scroll-behavior`) is still
+ * animating on a page that sets `html { scroll-behavior: smooth }` at the
+ * moment the very next line reads `getBoundingClientRect()` — so
+ * HOVER_TARGET_JS's reported centre coordinates, and FOCUS_JS's focus call,
+ * would land on where the element WAS about to be, not where it actually is
+ * yet. An instant jump makes the scroll's own effect on layout observable
+ * before either script reads anything back.
+ */
+const LOCATE_TARGET_JS = `
+  ${FIND_BY_TEXT_JS}
+  ${FIND_BY_SNAPSHOT_JS}
+
+  function findBySelector(sel) {
+    try {
+      return document.querySelector(sel);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function locateTarget(args) {
+    var el = null;
+    if (args.snapshotId !== undefined && args.snapshotId !== null && args.index !== undefined && args.index !== null) {
+      el = findBySnapshot(args.snapshotId, args.index);
+    } else if (typeof args.target === "string" && args.target.trim() !== "") {
+      el = findByText(args.target) || findBySelector(args.target);
+    }
+    if (el) el.scrollIntoView({ block: "center", behavior: "instant" });
+    return el;
+  }
+`;
+
+/**
+ * Locates an element the same way `act`'s `hover` resolves its target (see
+ * LOCATE_TARGET_JS) and reports its viewport-relative centre.
+ * `controller.ts`'s `runHover` dispatches the actual hover via CDP's
+ * `Input.dispatchMouseEvent` against these coordinates: a synthetic
+ * `mouseover`/`mouseenter` `dispatchEvent` from page script would not trigger
+ * the browser's own `:hover` CSS pseudo-class, which is the whole point of
+ * `act`'s hover action.
+ */
+export const HOVER_TARGET_JS = `(() => {
+  var args = ${ARGS_MARKER};
+
+  ${LOCATE_TARGET_JS}
+
+  var el = locateTarget(args);
+  if (!el) return { found: false };
+  var rect = el.getBoundingClientRect();
+  return {
+    found: true,
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+  };
+})()`;
+
+/**
+ * Focus step for `act`'s `press` action when it's given a `target`/
+ * `index`+`snapshotId` to focus first (pressing a key with no element in
+ * mind just goes to whatever already has focus). This script itself never
+ * throws — it reports `{ focused: false }` for "no element matched" — but
+ * (review finding 5) `controller.ts`'s `runPress` now turns that into a hard
+ * `{ error }` whenever a target/index was actually given, instead of the
+ * previous best-effort behavior of silently sending the key to whatever
+ * already had focus: dispatching a keystroke to the wrong element on a page
+ * is worse than reporting "couldn't find that to focus." Resolves its target
+ * the same way `act`'s `hover` does — see LOCATE_TARGET_JS.
+ */
+export const FOCUS_JS = `(() => {
+  var args = ${ARGS_MARKER};
+
+  ${LOCATE_TARGET_JS}
+
+  var el = locateTarget(args);
+  if (!el) return { focused: false };
+  if (typeof el.focus === "function") el.focus();
+  return { focused: true };
+})()`;
+
+/** `act`'s `wait` action, when given `text`: a single poll of the page's
+ * visible text for a case-insensitive substring match. `controller.ts`'s
+ * `runWait` calls this in a loop (every 100ms) rather than blocking inside
+ * one long-running script — Electron's `executeJavaScript` has no built-in
+ * polling primitive, and a single call here keeps each round trip cheap and
+ * independently bounded by the outer wait's own deadline. */
+export const WAIT_TEXT_JS = `(() => {
+  var args = ${ARGS_MARKER};
+  var needle = String(args.text || "").toLowerCase();
+  var body = (document.body && document.body.innerText) || "";
+  return { found: body.toLowerCase().indexOf(needle) !== -1 };
 })()`;
