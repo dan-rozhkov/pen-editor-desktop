@@ -680,6 +680,27 @@ export const SNAPSHOT_JS = `(() => {
       if (joined) return joined;
     }
 
+    // An associated <label> (for= or wrapping) — the ONLY name a plain radio
+    // or checkbox has. Without this step both shipping radios of a checkout
+    // form fell through to their shared name="shipping" and were
+    // indistinguishable in the element table: the bench run picked
+    // "express" when asked for "standard" in two runs out of three. Read
+    // from a clone with the form controls removed, so a wrapping
+    // <label>Country <select>…</select></label> doesn't glue every option's
+    // text onto the name.
+    if (el.labels && el.labels.length) {
+      var labelTexts = [];
+      for (var li = 0; li < el.labels.length; li++) {
+        var clone = el.labels[li].cloneNode(true);
+        var controls = clone.querySelectorAll("input, select, textarea, button");
+        for (var ci = 0; ci < controls.length; ci++) controls[ci].remove();
+        var labelText = (clone.textContent || "").trim().replace(/\\s+/g, " ");
+        if (labelText) labelTexts.push(labelText);
+      }
+      var labelJoined = labelTexts.join(" ").trim();
+      if (labelJoined) return labelJoined;
+    }
+
     var text = (el.textContent || "").trim().replace(/\\s+/g, " ");
     if (text) return text;
 
@@ -771,6 +792,13 @@ export const SNAPSHOT_JS = `(() => {
       isPassword: isPassword,
       distance: distance,
     };
+    // Checked state of a checkbox/radio — without it a filter that is
+    // already on looks exactly like one that is off, and the only way to
+    // tell was a screenshot.
+    if (tag === "input") {
+      var checkType = (el.getAttribute("type") || "").toLowerCase();
+      if (checkType === "checkbox" || checkType === "radio") entry.checked = !!el.checked;
+    }
     if (tag === "select") {
       // Addendum D: options capped at 100 entries, each truncated, in the
       // page script itself — the payload must be valid by construction, not
@@ -836,6 +864,7 @@ export const SNAPSHOT_JS = `(() => {
     // can tell. Omitting it made that refusal unreachable end to end — the
     // rule is absolute, so the signal carrying it has to leave the page.
     if (item.isPassword) out.isPassword = true;
+    if (item.checked !== undefined) out.checked = item.checked;
     elements.push(out);
   }
 
