@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { buildMenuTemplate, type MenuActions } from "../src/main/menu";
+import { buildMenuTemplate, buildNewTabMenuTemplate, type MenuActions } from "../src/main/menu";
 import type { MenuItemConstructorOptions } from "electron";
 
 function flatten(items: MenuItemConstructorOptions[]): MenuItemConstructorOptions[] {
@@ -153,3 +153,21 @@ function mcpStatusLabelFor(status: "listening" | "not-published" | "off" | "erro
       return "MCP: Failed to start (see \"Use this app for MCP\")";
   }
 }
+
+describe("buildNewTabMenuTemplate", () => {
+  it("offers an editor tab and a browser tab, each wired to its action", () => {
+    const actions = { newTab: vi.fn(), newBrowserTab: vi.fn() };
+    const [editor, browser] = buildNewTabMenuTemplate(actions);
+
+    expect(editor.label).toBe("New Editor Tab");
+    // Display-only: the application menu already owns ⌘T.
+    expect(editor.accelerator).toBe("CmdOrCtrl+T");
+    expect(editor.registerAccelerator).toBe(false);
+    (editor.click as () => void)();
+    expect(actions.newTab).toHaveBeenCalledOnce();
+
+    expect(browser.label).toBe("New Browser Tab");
+    (browser.click as () => void)();
+    expect(actions.newBrowserTab).toHaveBeenCalledOnce();
+  });
+});

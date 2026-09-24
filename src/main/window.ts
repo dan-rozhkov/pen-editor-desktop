@@ -8,7 +8,7 @@ import {
   type TabsSnapshot,
   type UITheme,
 } from "./tabManager";
-import { buildMenuTemplate } from "./menu";
+import { buildMenuTemplate, buildNewTabMenuTemplate } from "./menu";
 import {
   attachNavigationPolicy,
   attachOfflineFallback,
@@ -639,6 +639,25 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
   const tabbarId = tabbarView.webContents.id;
   const fromOurTabbar = (event: Electron.IpcMainEvent) => event.sender.id === tabbarId;
   const onTabbarNew = (e: Electron.IpcMainEvent) => fromOurTabbar(e) && tabs.newTab("editor");
+  // Second-pass review finding 3: a user-driven "New Browser Tab" pins the
+  // agent to it, the same as any other explicit user action that lands on a
+  // browser tab (activate()'s tab-strip click, nextTab/prevTab's cycle) —
+  // plain `tabs.newTab("browser")` alone (used elsewhere for a *popup's*
+  // automatic tab creation, which must NOT repoint the agent) leaves
+  // agentBrowserTabId untouched.
+  const newUserBrowserTab = () => tabs.setAgentBrowserTabId(tabs.newTab("browser"));
+  // The "+" button's popup. `anchor` is the button's bottom-left corner in
+  // tabbar CSS px, which is window content coordinates too: the tabbar view
+  // sits at (0, 0) at zoom 1.
+  const onTabbarNewMenu = (e: Electron.IpcMainEvent, anchor: unknown) => {
+    if (!fromOurTabbar(e)) return;
+    const at = isRecord(anchor) && typeof anchor.x === "number" && typeof anchor.y === "number"
+      ? { x: Math.round(anchor.x), y: Math.round(anchor.y) }
+      : {};
+    Menu.buildFromTemplate(
+      buildNewTabMenuTemplate({ newTab: () => tabs.newTab("editor"), newBrowserTab: newUserBrowserTab }),
+    ).popup({ window: win, ...at });
+  };
   const onTabbarActivate = (e: Electron.IpcMainEvent, id: number) =>
     fromOurTabbar(e) && tabs.activate(id);
   const onTabbarClose = (e: Electron.IpcMainEvent, id: number) =>
@@ -658,6 +677,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
     }
   };
   ipcMain.on("tabbar:new", onTabbarNew);
+  ipcMain.on("tabbar:new-menu", onTabbarNewMenu);
   ipcMain.on("tabbar:activate", onTabbarActivate);
   ipcMain.on("tabbar:close", onTabbarClose);
   ipcMain.on("tabbar:navigate", onTabbarNavigate);
@@ -677,6 +697,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
   // every tab's WebContentsView (renderer process stays alive).
   win.on("closed", () => {
     ipcMain.removeListener("tabbar:new", onTabbarNew);
+    ipcMain.removeListener("tabbar:new-menu", onTabbarNewMenu);
     ipcMain.removeListener("tabbar:activate", onTabbarActivate);
     ipcMain.removeListener("tabbar:close", onTabbarClose);
     ipcMain.removeListener("tabbar:navigate", onTabbarNavigate);
@@ -700,14 +721,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       buildMenuTemplate(
         {
           newTab: () => tabs.newTab("editor"),
-          // Second-pass review finding 3: a user-driven "New Browser Tab"
-          // pins the agent to it, the same as any other explicit user
-          // action that lands on a browser tab (activate()'s tab-strip
-          // click, nextTab/prevTab's cycle) — plain `tabs.newTab("browser")`
-          // alone (used elsewhere for a *popup's* automatic tab creation,
-          // which must NOT repoint the agent) leaves agentBrowserTabId
-          // untouched.
-          newBrowserTab: () => tabs.setAgentBrowserTabId(tabs.newTab("browser")),
+          newBrowserTab: newUserBrowserTab,
           closeTab: () => {
             const active = tabs.getSnapshot().activeId;
             if (active !== null) tabs.closeTab(active);

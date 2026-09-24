@@ -32,6 +32,26 @@ function mcpStatusLabel(status: McpStatus): string {
 }
 
 /**
+ * The tab strip's "+" popup: pick the kind of tab to open. A native menu, not
+ * an HTML one — the tab bar is its own WebContentsView only as tall as the
+ * strip, so anything drawn inside it would be clipped at its bottom edge.
+ * The accelerator is display-only; the application menu owns ⌘T.
+ */
+export function buildNewTabMenuTemplate(
+  actions: Pick<MenuActions, "newTab" | "newBrowserTab">,
+): MenuItemConstructorOptions[] {
+  return [
+    {
+      label: "New Editor Tab",
+      accelerator: "CmdOrCtrl+T",
+      registerAccelerator: false,
+      click: () => actions.newTab(),
+    },
+    { label: "New Browser Tab", click: () => actions.newBrowserTab() },
+  ];
+}
+
+/**
  * Application menu. File actions forward pen-editor command-palette ids over
  * IPC (the cross-repo contract — see CLAUDE.md); Edit/View use native roles
  * so text fields and zoom behave like any mac app. `mcpStatus` is read once

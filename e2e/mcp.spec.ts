@@ -430,11 +430,13 @@ test("desktop MCP bridge: list_editor_tabs discovers ids that explicit tabId rou
       )
       .toBe(false);
 
-    // Open a second tab via the real tab bar UI.
+    // Open a second tab through the tab bar's own IPC path.
     const tabbarPage =
       app.windows().find((page) => page.url().endsWith("/tabbar/tabbar.html")) ??
       (await app.waitForEvent("window", { predicate: (page) => page.url().endsWith("/tabbar/tabbar.html") }));
-    await tabbarPage.locator("#new-tab").click();
+    // The "+" button pops a native menu Playwright can't click through; this
+    // is the same `tabbar:new` IPC its "New Editor Tab" item ends up in.
+    await tabbarPage.evaluate(() => (window as unknown as { penTabbar: { newTab(): void } }).penTabbar.newTab());
     const editorPage2 = await app.waitForEvent("window", {
       predicate: (p) => p.url().startsWith(baseUrl) && p !== editorPage1,
     });

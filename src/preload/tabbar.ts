@@ -5,6 +5,8 @@ import type { UITheme } from "../main/tabManager";
 const api = {
   isMac: process.platform === "darwin",
   newTab: () => ipcRenderer.send("tabbar:new"),
+  /** Opens the native "+" popup (editor vs browser tab) anchored at window coordinates. */
+  openNewTabMenu: (anchor: { x: number; y: number }) => ipcRenderer.send("tabbar:new-menu", anchor),
   activateTab: (id: number) => ipcRenderer.send("tabbar:activate", id),
   closeTab: (id: number) => ipcRenderer.send("tabbar:close", id),
   navigate: (action: "url" | "back" | "forward" | "reload", url?: string) =>

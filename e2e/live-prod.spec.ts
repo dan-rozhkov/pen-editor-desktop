@@ -219,7 +219,8 @@ test("live: the deployed bundle answers the shell's menu, MCP and backend contra
     expect(mutatedTabIds, `list_editor_tabs did not report the open tab — ${tabsDetail}`).toHaveLength(1);
     const mutatedTabId = (mutatedTabIds as number[])[0];
 
-    await tabbarPage.click("#new-tab");
+    // The "+" button pops a native menu Playwright can't click through.
+    await tabbarPage.evaluate(() => (window as unknown as { penTabbar: { newTab(): void } }).penTabbar.newTab());
     const secondPage = await nextEditorPage(1);
     await secondPage.waitForSelector("canvas", { timeout: 60_000 });
 

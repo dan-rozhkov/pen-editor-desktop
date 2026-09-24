@@ -3,6 +3,7 @@
   --bar-bg: #f5f5f5;
   --tab-active-bg: #ffffff;
   --control-hover-bg: #e5e5e5;
+  --field-hover-bg: #f2f2f2;
   --border: #e0e0e0;
   --text: #666666;
   --text-active: rgba(0, 0, 0, 0.87);
@@ -14,6 +15,7 @@
     --bar-bg: #1a1a1a;
     --tab-active-bg: #2a2a2a;
     --control-hover-bg: #383838;
+  --field-hover-bg: #333333;
     --border: #404040;
     --text: #888888;
     --text-active: rgba(255, 255, 255, 0.87);
@@ -25,6 +27,7 @@
   --bar-bg: #f5f5f5;
   --tab-active-bg: #ffffff;
   --control-hover-bg: #e5e5e5;
+  --field-hover-bg: #f2f2f2;
   --border: #e0e0e0;
   --text: #666666;
   --text-active: rgba(0, 0, 0, 0.87);
@@ -35,6 +38,7 @@
   --bar-bg: #1a1a1a;
   --tab-active-bg: #2a2a2a;
   --control-hover-bg: #383838;
+  --field-hover-bg: #333333;
   --border: #404040;
   --text: #888888;
   --text-active: rgba(255, 255, 255, 0.87);
@@ -109,16 +113,16 @@ body {
 .mcp-status--not-published { background: #ff9f0a; }
 .mcp-status--error { background: #ff3b30; }
 #new-tab {
-  position: relative; flex: 0 0 38px; width: 38px;
-  margin-top: 4px;
+  position: relative; flex: 0 0 28px; width: 28px; height: 28px;
+  margin: auto 6px;
   border: 0; background: none; color: var(--text); cursor: pointer;
-  border-radius: 7px 7px 0 0;
+  border-radius: 6px;
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
 #new-tab:hover { color: var(--text-active); background: var(--control-hover-bg); }
 #new-tab::before, #new-tab::after {
-  content: ""; position: absolute; left: 13px; top: 14.5px;
+  content: ""; position: absolute; left: 8px; top: 13.5px;
   width: 12px; height: 1px; border-radius: 1px; background: currentColor;
 }
 #new-tab::after { transform: rotate(90deg); }
@@ -129,40 +133,60 @@ body {
 
 /* --- address row (row 2, browser tabs only — design doc §2) --- */
 .chrome-row {
+  position: relative;
   height: 32px;
   box-sizing: border-box;
+  background: var(--tab-active-bg);
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 8px;
+  gap: 2px;
+  padding: 0 6px;
   app-region: drag;
   -webkit-app-region: drag;
 }
 .chrome-row[hidden] { display: none; }
 .nav-btn {
-  flex: 0 0 24px; width: 24px; height: 24px;
+  flex: 0 0 28px; width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
   border: 0; background: none; color: var(--text); cursor: pointer;
-  border-radius: 4px; font-size: 14px; line-height: 1;
+  border-radius: 6px; padding: 0;
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
+.nav-btn svg { width: 16px; height: 16px; }
 .nav-btn:hover:not(:disabled) { color: var(--text-active); background: var(--control-hover-bg); }
 .nav-btn:disabled { opacity: 0.35; cursor: default; }
 .nav-btn:focus-visible { outline: 1px solid currentColor; outline-offset: -2px; }
-.url-form { flex: 1; min-width: 0; app-region: no-drag; -webkit-app-region: no-drag; }
+/* Centered on the whole row, not on the space left of the nav buttons —
+   capped at 80% and kept clear of the buttons (6px pad + 3×28px + 2×2px
+   gaps ≈ 94px, mirrored on the right) in narrow windows. */
+.url-form {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(80%, calc(100% - 2 * 100px));
+  margin: 0;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
 .url-input {
+  display: block;
   width: 100%;
   box-sizing: border-box;
-  height: 22px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--tab-active-bg);
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--text-active);
   font: inherit;
-  padding: 0 8px;
+  text-align: center;
+  text-overflow: ellipsis;
+  padding: 0 10px;
 }
-.url-input:focus-visible { outline: 1px solid currentColor; outline-offset: -1px; }
+.url-input:hover, .url-input:focus { background: var(--field-hover-bg); }
+.url-input:focus { outline: none; text-align: left; }
 /* Finding 5: a rejected submission (couldn't be normalized into a
    navigable http(s) URL) stays visible instead of silently doing nothing. */
-.url-input.invalid { border-color: #d64545; }
+.url-input.invalid { box-shadow: inset 0 0 0 1px #d64545; }

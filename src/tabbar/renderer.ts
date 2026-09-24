@@ -26,6 +26,7 @@ type UITheme = "light" | "dark";
 interface PenTabbarApi {
   isMac: boolean;
   newTab(): void;
+  openNewTabMenu(anchor: { x: number; y: number }): void;
   activateTab(id: number): void;
   closeTab(id: number): void;
   navigate(action: "url" | "back" | "forward" | "reload", url?: string): void;
@@ -47,7 +48,11 @@ const urlFormEl = document.getElementById("url-form") as HTMLFormElement;
 const urlInputEl = document.getElementById("url-input") as HTMLInputElement;
 
 document.documentElement.toggleAttribute("data-macos", window.penTabbar.isMac);
-document.getElementById("new-tab")!.addEventListener("click", () => window.penTabbar.newTab());
+const newTabEl = document.getElementById("new-tab")!;
+newTabEl.addEventListener("click", () => {
+  const rect = newTabEl.getBoundingClientRect();
+  window.penTabbar.openNewTabMenu({ x: rect.left, y: rect.bottom + 4 });
+});
 
 // No terminal in a packaged app, so this dot is the only MCP diagnostic.
 // Only the status string itself ever crosses the IPC boundary (see
