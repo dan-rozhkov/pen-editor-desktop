@@ -19,6 +19,9 @@ let snapshotManyUrl: string;
 let snapshotManyWithFrameUrl: string;
 let clickTargetUrl: string;
 let evidenceUrl: string;
+let sideEffectUrl: string;
+let tickerUrl: string;
+let removalUrl: string;
 let selfDisableUrl: string;
 let readUrl: string;
 let imagesMetaUrl: string;
@@ -288,6 +291,76 @@ line ten</textarea>
 <script>
   document.getElementById('swap-btn').addEventListener('click', function () {
     document.getElementById('main-photo').src = ${JSON.stringify(pixelUrl("blue"))};
+  });
+</script>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/side-effect-api")) {
+      // The click handler's real fetch(), delayed enough that it's still
+      // in flight when the click's own settle wait would otherwise resolve
+      // — settleAfterClick's network-quiet wait is what actually catches
+      // this in production (a real POST), not a bare timer.
+      setTimeout(() => {
+        res.end("ok");
+      }, 80);
+      return;
+    }
+    if (req.url && req.url.startsWith("/side-effect")) {
+      // Browse-speed contract (2026-09-24): the bench-shop "Add to Cart"
+      // shape — clicking a button POSTs, then updates a SEPARATE element's
+      // text; the button itself never changes. diffSignatures's scoped
+      // target signature correctly reports changed: false (the acted-on
+      // element is unaffected), but pageChanged must be true and appeared
+      // must surface the new status text — this is the case that used to
+      // make browse_task's loop record "(no effect)" and re-click.
+      res.end(`<!doctype html>
+<title>Side Effect</title>
+<h1 id="ready">side-effect-ready</h1>
+<button id="add-to-cart-btn">Add to Cart</button>
+<p id="cart-status"></p>
+<script>
+  document.getElementById('add-to-cart-btn').addEventListener('click', function () {
+    fetch('/side-effect-api', { method: 'POST' }).then(function () {
+      document.getElementById('cart-status').textContent = 'Added to cart (1 item)';
+    });
+  });
+</script>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/ticker")) {
+      // Browse-speed contract fix (2026-09-24, review finding 1): a live
+      // clock that keeps ticking on its own, well within the action's own
+      // settle window (100ms cadence vs. the ~350+ms a click typically
+      // settles in) — a no-op button click must NOT pick up the clock's own
+      // digit churn as evidence of an effect.
+      res.end(`<!doctype html>
+<title>Ticker</title>
+<h1 id="ready">ticker-ready</h1>
+<div id="clock">00:00:00</div>
+<button id="noop-btn">No Op</button>
+<script>
+  var n = 0;
+  setInterval(function () {
+    n++;
+    var s = String(n % 60).padStart(2, '0');
+    document.getElementById('clock').textContent = '00:00:' + s;
+  }, 100);
+</script>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/removal")) {
+      // Browse-speed contract fix (2026-09-24, review finding 1): clicking
+      // the button removes a real, visible, text-bearing element — removal
+      // alone must never count as pageChanged evidence.
+      res.end(`<!doctype html>
+<title>Removal</title>
+<h1 id="ready">removal-ready</h1>
+<button id="remove-btn">Remove</button>
+<p id="removable">Some real visible content</p>
+<script>
+  document.getElementById('remove-btn').addEventListener('click', function () {
+    var el = document.getElementById('removable');
+    if (el && el.parentNode) el.parentNode.removeChild(el);
   });
 </script>`);
       return;
@@ -651,6 +724,9 @@ line ten</textarea>
   snapshotManyWithFrameUrl = `${baseUrl}/snapshot-many-with-frame`;
   clickTargetUrl = `${baseUrl}/click-target`;
   evidenceUrl = `${baseUrl}/evidence`;
+  sideEffectUrl = `${baseUrl}/side-effect`;
+  tickerUrl = `${baseUrl}/ticker`;
+  removalUrl = `${baseUrl}/removal`;
   selfDisableUrl = `${baseUrl}/self-disable`;
   readUrl = `${baseUrl}/read`;
   imagesMetaUrl = `${baseUrl}/images-meta`;
@@ -685,6 +761,9 @@ type BrowserBridge = {
 interface EffectEvidence {
   changed: boolean;
   changes: string[];
+  /** Browse-speed contract (2026-09-24), report-only. */
+  pageChanged?: boolean;
+  appeared?: string[];
 }
 
 function callBrowser<K extends keyof BrowserBridge>(
@@ -1707,6 +1786,114 @@ test("evidence of effect ('Addendum 2, 2026-09-19' §1): a no-op click reports c
     // Nothing else about the page changed (no navigation, no text change),
     // so "main-image" should be the only category reported.
     expect(swapResult.changes).toEqual(["main-image"]);
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browse-speed contract (2026-09-24): a click that updates a separate status element reports changed: false but pageChanged: true with the new text in appeared", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [sideEffectPage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === sideEffectUrl }),
+      callBrowser(editorPage, "open", { url: sideEffectUrl }),
+    ]);
+    await expect(sideEffectPage.locator("#ready")).toHaveText("side-effect-ready");
+
+    const result = (await callBrowser(editorPage, "act", {
+      action: "click",
+      target: "Add to Cart",
+    })) as { error?: string } & EffectEvidence;
+    expect(result.error).toBeUndefined();
+    // The acted-on element (the button) is itself unaffected — a click
+    // handler that only mutates a different element correctly reports no
+    // scoped/target change.
+    expect(result.changed).toBe(false);
+    // But a real, visible mutation did happen elsewhere on the page, and
+    // pageChanged/appeared must surface it.
+    expect(result.pageChanged).toBe(true);
+    expect(result.appeared).toContain("Added to cart (1 item)");
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browse-speed contract fix (2026-09-24): a no-op click on a page with a live ticking clock reports pageChanged: false", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [tickerPage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === tickerUrl }),
+      callBrowser(editorPage, "open", { url: tickerUrl }),
+    ]);
+    await expect(tickerPage.locator("#ready")).toHaveText("ticker-ready");
+
+    const result = (await callBrowser(editorPage, "act", {
+      action: "click",
+      target: "No Op",
+    })) as { error?: string } & EffectEvidence;
+    expect(result.error).toBeUndefined();
+    expect(result.changed).toBe(false);
+    // The clock kept ticking underneath the click (digits-only text
+    // churning every 100ms) — that must never look like evidence the click
+    // did something.
+    expect(result.pageChanged).toBe(false);
+    expect(result.appeared).toEqual([]);
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browse-speed contract fix (2026-09-24): removing an element reports pageChanged: false", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [removalPage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === removalUrl }),
+      callBrowser(editorPage, "open", { url: removalUrl }),
+    ]);
+    await expect(removalPage.locator("#ready")).toHaveText("removal-ready");
+
+    const result = (await callBrowser(editorPage, "act", {
+      action: "click",
+      target: "Remove",
+    })) as { error?: string } & EffectEvidence;
+    expect(result.error).toBeUndefined();
+    // A real, visible, text-bearing element left the page — but removals
+    // are never counted as evidence (only additions/text changes are).
+    expect(result.pageChanged).toBe(false);
+    expect(result.appeared).toEqual([]);
 
     await app.close();
   } finally {

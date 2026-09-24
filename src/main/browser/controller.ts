@@ -80,6 +80,21 @@ const READ_MAX_CHARS_HARD_CAP = 20_000;
 export interface EffectEvidence {
   changed: boolean;
   changes: string[];
+  /** Browse-speed contract (2026-09-24), report-only: whether a real,
+   * visible-content mutation happened during the action window — a stricter
+   * signal than `changes.includes("dom"|"text")`, which counts whole-
+   * document noise (carousels, lazy images) on purpose to stay useful as
+   * context. `pageChanged` ignores the cursor/marks overlay, script/style/
+   * link/meta churn and attribute-only mutations, so a caller can trust it
+   * as "something a user would see actually changed" even when `changed` is
+   * false (e.g. a click that mutated a status element elsewhere on the page
+   * rather than the clicked element itself). Present whenever an "after"
+   * signature capture succeeded; absent when it didn't (see diffSignatures). */
+  pageChanged?: boolean;
+  /** Up to 3 short (<=80 char) snippets of visible text that newly appeared
+   * or changed during the action window — never input/password values.
+   * Present (possibly empty) whenever `pageChanged` is present. */
+  appeared?: string[];
 }
 
 /** A single element's own signature — SCOPED_SIGNATURE_JS in pageScripts.ts.
@@ -125,6 +140,15 @@ interface PageSignature {
   /** Only present on a `phase: "after"` capture, and only when the acting
    * script stamped a target element — review finding 4. */
   scopedAfter?: ScopedSignature | null;
+  /** Browse-speed contract (2026-09-24) — see EffectEvidence's doc comment.
+   * `false`/`[]` on a "before" capture (SIGNATURE_JS only tracks real
+   * mutations while the observer runs, i.e. between "before" and "after").
+   * Optional on the type (rather than required) only so isPageSignature
+   * keeps validating pre-2026-09-24 fixtures/mocks that predate these
+   * fields — a real SIGNATURE_JS capture always includes both; diffSignatures
+   * defaults a missing value to false/[]. */
+  pageChanged?: boolean;
+  appeared?: string[];
 }
 
 function isPageSignature(value: unknown): value is PageSignature {
@@ -138,7 +162,9 @@ function isPageSignature(value: unknown): value is PageSignature {
     typeof value.mainImageSrc === "string" &&
     typeof value.scrollY === "number" &&
     typeof value.focusedValueLength === "number" &&
-    (value.scopedAfter === undefined || value.scopedAfter === null || isScopedSignature(value.scopedAfter))
+    (value.scopedAfter === undefined || value.scopedAfter === null || isScopedSignature(value.scopedAfter)) &&
+    (value.pageChanged === undefined || typeof value.pageChanged === "boolean") &&
+    (value.appeared === undefined || (Array.isArray(value.appeared) && value.appeared.every((s) => typeof s === "string")))
   );
 }
 
@@ -2910,7 +2936,7 @@ export class BrowserController {
     }
 
     const changed = urlChanged || titleChanged || mainImageChanged || scrollChanged || valueChanged || scopedChanged;
-    return { changed, changes };
+    return { changed, changes, pageChanged: after.pageChanged ?? false, appeared: after.appeared ?? [] };
   }
 
   /** Review finding 3: a short, fixed settle for a non-click action before

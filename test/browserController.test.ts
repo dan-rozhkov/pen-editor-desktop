@@ -678,6 +678,8 @@ describe("BrowserController", () => {
           title: "Example (back)",
           changed: true,
           changes: ["url", "title"],
+          pageChanged: false,
+          appeared: [],
         });
       });
 
@@ -699,6 +701,8 @@ describe("BrowserController", () => {
           title: "Example (forward)",
           changed: true,
           changes: ["url", "title"],
+          pageChanged: false,
+          appeared: [],
         });
       });
 
@@ -741,6 +745,115 @@ describe("BrowserController", () => {
   // before/after diff reflects a real (or genuinely absent) page change,
   // unlike most of the tests above whose fakes return a fixed shape for
   // every script and so always degrade to changed: false.
+  // Browse-speed contract (2026-09-24): "pageChanged"/"appeared" — a
+  // click can mutate a *different* element than the one it acted on (e.g.
+  // "Add to Cart" updates a separate #cart-status text node after a fetch,
+  // never the button itself), which is exactly the case `changed` reports
+  // false for (the scoped/target signature is unaffected) even though the
+  // page plainly did something a user would see. These fields are a
+  // separate, report-only signal for that case, computed from the same
+  // MutationObserver evidence SIGNATURE_JS already collects.
+  describe("evidence of effect ('pageChanged'/'appeared')", () => {
+    it("click reports pageChanged: true with the new text when a different element's text changes, even though changed is false", async () => {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) =>
+          isSignatureCall(code)
+            ? Promise.resolve({
+                url: "https://example.com/",
+                title: "Example",
+                nodeCount: 1,
+                textLength: 1,
+                textHash: 1,
+                mainImageSrc: "",
+                scrollY: 0,
+                focusedValueLength: 0,
+                pageChanged: true,
+                appeared: ["Added to cart (1 item)", "Go to cart"],
+              })
+            : Promise.resolve({ url: "https://example.com/", title: "Example", matched: "Add to Cart" }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.act({ action: "click", target: "Add to Cart" });
+      expect(result).toMatchObject({
+        changed: false,
+        pageChanged: true,
+        appeared: ["Added to cart (1 item)", "Go to cart"],
+      });
+    });
+
+    it("click reports pageChanged: false, appeared: [] when nothing meaningful mutated", async () => {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) =>
+          isSignatureCall(code)
+            ? Promise.resolve({
+                url: "https://example.com/",
+                title: "Example",
+                nodeCount: 1,
+                textLength: 0,
+                textHash: 0,
+                mainImageSrc: "",
+                scrollY: 0,
+                focusedValueLength: 0,
+                pageChanged: false,
+                appeared: [],
+              })
+            : Promise.resolve({ url: "https://example.com/", title: "Example", matched: "Go" }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.act({ action: "click", target: "Go" });
+      expect(result).toMatchObject({ changed: false, pageChanged: false, appeared: [] });
+    });
+
+    it("perform CLICK also carries pageChanged/appeared, computed the same way as act's click", async () => {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) =>
+          isSignatureCall(code)
+            ? Promise.resolve({
+                url: "https://example.com/",
+                title: "Example",
+                nodeCount: 1,
+                textLength: 1,
+                textHash: 1,
+                mainImageSrc: "",
+                scrollY: 0,
+                focusedValueLength: 0,
+                pageChanged: true,
+                appeared: ["Order placed"],
+              })
+            : Promise.resolve({ url: "https://example.com/", title: "Example" }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      const result = await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+      expect(result).toMatchObject({ pageChanged: true, appeared: ["Order placed"] });
+    });
+
+    it("defaults pageChanged to false and appeared to [] when a legacy-shaped signature (predating these fields) is captured", async () => {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) =>
+          isSignatureCall(code)
+            ? Promise.resolve({
+                url: "https://example.com/",
+                title: "Example",
+                nodeCount: 1,
+                textLength: 0,
+                textHash: 0,
+                mainImageSrc: "",
+                scrollY: 0,
+                focusedValueLength: 0,
+              })
+            : Promise.resolve({ url: "https://example.com/", title: "Example", matched: "Go" }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.act({ action: "click", target: "Go" });
+      expect(result).toMatchObject({ pageChanged: false, appeared: [] });
+    });
+  });
+
   describe("evidence of effect ('changed'/'changes')", () => {
     it("click reports changed: false, changes: [] when nothing about the page changed — not an error", async () => {
       const page = makeFakePage({

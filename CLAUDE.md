@@ -354,6 +354,63 @@ mutation — the *inequality* `diffSignatures` checks is exactly as
 meaningful as it was comparing two real scans, since only "did it change"
 was ever read out of these three fields.
 
+**`pageChanged`/`appeared` (browse-speed contract addendum, 2026-09-24).**
+Layered on the same `MutationObserver` as the report-only dom/text booleans
+above, `SIGNATURE_JS` also derives a stricter "did the page meaningfully
+change" signal — `pageChanged: boolean` plus up to 3 short (<=80 char)
+`appeared` snippets of new visible text — surfaced by `act`/`perform` results
+alongside `changed`/`changes`. This exists for the case `diffSignatures`'s
+scoped target signature can't see: a click whose handler mutates a
+*different* element than the one acted on (e.g. "Add to Cart" updating a
+separate cart-status element) — the target itself reports `changed: false`,
+but `pageChanged`/`appeared` still surface that something real happened.
+Deliberately conservative, since whole-document noise must never look like
+evidence an action did something:
+- **Removals never count**, at all — a node leaving the DOM (toast timeout,
+  carousel recycling an off-screen slide) is exactly as likely to be routine
+  page churn as an action's effect, and unlike an addition there's no
+  "still visible with real content" signal left to check once it's
+  detached. Only additions and text changes can set `pageChanged`.
+- **Ticker-like text changes are ignored.** A `characterData` mutation (or a
+  bare text node swapped via `el.textContent = …`) is skipped when the old
+  and new text both match `/^[\s\d:.,/%+\-–—()]*$/` (a clock, "12:34",
+  "3/25") or differ only in which digits appear once both are normalized to
+  `0` (a counter, "Updated 2 min ago" → "Updated 3 min ago") — a live clock
+  or countdown ticking under a no-op click must never register as evidence.
+  Needs `characterDataOldValue: true` on the observer to compare against.
+- **Added elements count only if visible AND either carry non-empty
+  trimmed text or are interactive** (`button`/`a`/`input`/`select`/
+  `textarea`/anything with a `role`) — an empty decorative wrapper appearing
+  doesn't count just because it's in the DOM.
+- **Bounded per `MutationObserver` callback**: at most 50 records examined
+  per invocation (a bulk DOM rewrite can otherwise hand the callback
+  thousands at once), with an early exit the moment there's nothing left to
+  learn (`pageChanged` already true and the 3-snippet cap already full).
+  The "is there real text here" check reads `textContent` (capped to 200
+  chars) — never `innerText`, which forces layout — and the layout-forcing
+  `innerText` read for the final snippet only happens once the 3-snippet
+  cap is confirmed not yet full.
+- **State is reset at the end of every "after" phase**, not just at the
+  start of "before": the observer itself is disconnected there already, but
+  the accumulator object (`window.__penSigState`) used to be left in place
+  too, so a bfcache-restored document (pageshow, no navigation — nothing
+  re-runs "before" first) could read a previous action's stale
+  `pageChanged`/`appeared`. It's nulled out only after `result` has already
+  been built from it.
+- The cursor (`[data-pen-cursor]`) and screenshot-annotation
+  (`[data-pen-marks]`) overlays, and `script`/`style`/`link`/`meta`/
+  `noscript` elements, are still always excluded, same as the report-only
+  dom/text booleans.
+
+Coverage: `e2e/browser-tab.spec.ts`'s `/side-effect` fixture (a click that
+updates a *separate* element — `changed: false`, `pageChanged: true`), a
+`/ticker` fixture (a `setInterval` clock plus a no-op button — a click must
+report `pageChanged: false`), and a `/removal` fixture (a click that only
+removes an element — also `pageChanged: false`). This logic runs inside a
+`SIGNATURE_JS` template-literal string executed in the browser, so it isn't
+unit-testable against a fake DOM the way most of `pageScripts.ts` is —
+coverage is e2e-only by construction.
+
 **`open` resolves at DOM-ready, not at full load.** `webContents.loadURL()`'s
 own promise only resolves at `did-finish-load` — every subresource,
 including ads/trackers/video on a heavy commercial page, which routinely

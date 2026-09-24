@@ -1678,23 +1678,164 @@ export const SIGNATURE_JS = `(() => {
   // relevant mutation — the inequality diffSignatures checks is exactly as
   // meaningful as it was comparing two real scans, since only "did it
   // change" was ever read out of it.
-  var penSigDomChanged = false;
-  var penSigTextChanged = false;
+  // Cross-phase state lives on \`window\`, never in a local var: the observer
+  // registered in the "before" phase's IIFE invocation keeps running (and
+  // its callback keeps firing, asynchronously) long after that particular
+  // executeJavaScript call has returned — but the "after" phase is a
+  // completely separate IIFE invocation with its own fresh locals. A local
+  // \`var penSigDomChanged\` etc. would silently discard whatever the live
+  // callback saw in between (it usually fires well before "after" ever
+  // runs, so takeRecords() in "after" often has nothing left to flush) —
+  // exactly the bug this comment is here to prevent regressing. Every
+  // helper below reads/writes \`window.__penSigState\` for that reason, so
+  // both "the callback that's still running from 'before'" and "the manual
+  // takeRecords() flush 'after' does" accumulate into the one shared object.
+  if (phase === "before" || !window.__penSigState) {
+    window.__penSigState = { domChanged: false, textChanged: false, pageChanged: false, appeared: [] };
+  }
+  var penSigState = window.__penSigState;
 
+  // Browse-speed contract addendum (2026-09-24): a second, stricter signal —
+  // "did the page meaningfully change" (pageChanged) plus up to 3 short
+  // snippets of text that newly appeared/changed (appeared) — layered on top
+  // of the same MutationObserver used for the report-only dom/text booleans
+  // above. Deliberately more conservative than domChanged/textChanged:
+  // whole-document noise (a carousel auto-advancing, a lazy image swapping
+  // in, the cursor/marks overlay's own DOM churn) must never count as
+  // confirmation that an action had an effect — only visible, real-content
+  // mutations do.
+  var IGNORED_TAGS = { SCRIPT: 1, STYLE: 1, LINK: 1, META: 1, NOSCRIPT: 1 };
+  var INTERACTIVE_TAGS = { BUTTON: 1, A: 1, INPUT: 1, SELECT: 1, TEXTAREA: 1 };
+  // Review finding 1: a value/timestamp that only ever cycles through
+  // digits/whitespace/punctuation (a clock, a countdown, "12:34", "3/25")
+  // is exactly the kind of background noise a live page mutates on its own
+  // — it must never look like evidence that an *action* did something.
+  var TICKER_RE = /^[\\s\\d:.,\\/%+\\-–—()]*$/;
+
+  function isOverlayNode(node) {
+    return !!(node && node.closest && (node.closest("[data-pen-cursor]") || node.closest("[data-pen-marks]")));
+  }
+
+  function shortSnippet(text) {
+    if (!text) return "";
+    var trimmed = String(text).replace(/\\s+/g, " ").trim();
+    if (!trimmed) return "";
+    return trimmed.length > 80 ? trimmed.slice(0, 80) : trimmed;
+  }
+
+  function pushAppeared(text) {
+    if (penSigState.appeared.length >= 3) return;
+    var snippet = shortSnippet(text);
+    if (!snippet) return;
+    if (penSigState.appeared.indexOf(snippet) !== -1) return;
+    penSigState.appeared.push(snippet);
+  }
+
+  function normalizeDigits(text) {
+    return String(text || "").replace(/\\d/g, "0");
+  }
+
+  // Two ways a text change can be pure ticker noise: both the old and new
+  // text are entirely digits/whitespace/punctuation (a clock face), or they
+  // differ only in which digits appear (a counter, "Updated 2 min ago" →
+  // "Updated 3 min ago").
+  function isTickerChange(oldText, newText) {
+    if (TICKER_RE.test(oldText) && TICKER_RE.test(newText)) return true;
+    return normalizeDigits(oldText) === normalizeDigits(newText);
+  }
+
+  function isInteractive(el) {
+    var tag = (el.tagName || "").toUpperCase();
+    return !!INTERACTIVE_TAGS[tag] || el.hasAttribute("role");
+  }
+
+  // Perf/review finding 2: textContent never forces layout the way
+  // innerText does, and it's cheap enough to read repeatedly — used for the
+  // "is there any real text here at all" check before anything touches
+  // innerText. Capped to 200 chars, since this is only ever used to decide
+  // "empty or not" / feed the ticker comparison, never rendered in full.
+  function cheapText(node) {
+    return (node.textContent || "").slice(0, 200);
+  }
+
+  // Removals are never evidence (review finding 1): a node leaving the DOM
+  // (however "real" it was) is exactly as likely to be routine cleanup
+  // (a toast timing out, a carousel recycling an off-screen slide) as it is
+  // to be the effect of an action — unlike an *addition*, there's no
+  // "still visible with real content" signal left to check once a node is
+  // detached, so removals are simply never counted at all.
+  function considerElement(el) {
+    if (!el || el.nodeType !== 1) return;
+    var tag = (el.tagName || "").toUpperCase();
+    if (IGNORED_TAGS[tag]) return;
+    if (isOverlayNode(el)) return;
+    // Attached and currently in the live document — isVisible's layout
+    // read is meaningful here.
+    if (!isVisible(el)) return;
+    var interactive = isInteractive(el);
+    if (!interactive && !cheapText(el).trim()) return;
+    penSigState.pageChanged = true;
+    // Snippet cap checked BEFORE the (layout-forcing) innerText read.
+    if (penSigState.appeared.length < 3) {
+      var text = (el.innerText || el.textContent || "").slice(0, 200);
+      pushAppeared(text);
+    }
+  }
+
+  // oldValue is only ever supplied for an actual characterData mutation
+  // (a text node's content changing in place); a brand-new text node has no
+  // "old" counterpart, so it's filtered on its own content alone.
+  function considerTextNode(node, oldValue) {
+    if (!node) return;
+    var parent = node.parentElement;
+    if (!parent) return;
+    var tag = (parent.tagName || "").toUpperCase();
+    if (IGNORED_TAGS[tag]) return;
+    if (isOverlayNode(parent)) return;
+    if (!isVisible(parent)) return;
+    var newText = cheapText(node);
+    if (!newText.trim()) return;
+    if (oldValue !== undefined) {
+      if (isTickerChange(String(oldValue || "").slice(0, 200), newText)) return;
+    } else if (TICKER_RE.test(newText)) {
+      return;
+    }
+    penSigState.pageChanged = true;
+    if (penSigState.appeared.length < 3) pushAppeared(newText);
+  }
+
+  // Perf finding 2: bounded per invocation two ways — at most 50 records
+  // examined (this callback fires on every quiet MutationObserver
+  // microtask, and a bulk DOM rewrite can otherwise hand it thousands at
+  // once), and an early exit the moment there's nothing left to learn
+  // (pageChanged already true and the 3-snippet cap already full).
   function penSigProcessRecords(records) {
-    for (var r = 0; r < records.length; r++) {
+    var limit = records.length < 50 ? records.length : 50;
+    for (var r = 0; r < limit; r++) {
+      if (penSigState.pageChanged && penSigState.appeared.length >= 3) break;
       var rec = records[r];
       if (rec.type === "characterData") {
-        penSigTextChanged = true;
+        penSigState.textChanged = true;
+        considerTextNode(rec.target, rec.oldValue);
         continue;
       }
       if (rec.type === "childList" && (rec.addedNodes.length || rec.removedNodes.length)) {
-        penSigDomChanged = true;
-        for (var an = 0; an < rec.addedNodes.length && !penSigTextChanged; an++) {
-          if (rec.addedNodes[an].nodeType === 3) penSigTextChanged = true;
+        penSigState.domChanged = true;
+        for (var an = 0; an < rec.addedNodes.length; an++) {
+          var added = rec.addedNodes[an];
+          if (added.nodeType === 3) {
+            penSigState.textChanged = true;
+            considerTextNode(added);
+          } else {
+            considerElement(added);
+          }
         }
-        for (var rn = 0; rn < rec.removedNodes.length && !penSigTextChanged; rn++) {
-          if (rec.removedNodes[rn].nodeType === 3) penSigTextChanged = true;
+        // Removals only feed the report-only textChanged/domChanged
+        // booleans above — never pageChanged/appeared (see considerElement's
+        // doc comment).
+        for (var rn = 0; rn < rec.removedNodes.length; rn++) {
+          var removed = rec.removedNodes[rn];
+          if (removed.nodeType === 3) penSigState.textChanged = true;
         }
       }
     }
@@ -1715,7 +1856,14 @@ export const SIGNATURE_JS = `(() => {
     try {
       var observer = new MutationObserver(penSigProcessRecords);
       if (document.body) {
-        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+        // characterDataOldValue is needed so considerTextNode can tell a
+        // ticker-like text change (a clock/counter) apart from real content.
+        observer.observe(document.body, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+          characterDataOldValue: true,
+        });
       }
       window.__penSigObserver = observer;
     } catch (e) {
@@ -1738,8 +1886,8 @@ export const SIGNATURE_JS = `(() => {
       } catch (e) {}
       window.__penSigObserver = null;
     }
-    textLength = penSigTextChanged ? 1 : 0;
-    hash = penSigTextChanged ? 1 : 0;
+    textLength = penSigState.textChanged ? 1 : 0;
+    hash = penSigState.textChanged ? 1 : 0;
   }
 
   var mainImageSrc = "";
@@ -1780,17 +1928,28 @@ export const SIGNATURE_JS = `(() => {
   var result = {
     url: location.href,
     title: document.title,
-    nodeCount: phase === "after" && penSigDomChanged ? 1 : 0,
+    nodeCount: phase === "after" && penSigState.domChanged ? 1 : 0,
     textLength: textLength,
     textHash: hash,
     mainImageSrc: mainImageSrc,
     scrollY: window.scrollY,
     focusedValueLength: focusedValueLength,
+    pageChanged: phase === "after" && penSigState.pageChanged,
+    appeared: phase === "after" ? penSigState.appeared : [],
   };
 
   if (phase === "after") {
     var targetEl = document.querySelector("[data-pen-sig-target]");
     result.scopedAfter = targetEl ? scopedSignatureOf(targetEl) : null;
+    // Review finding 3: the observer itself is already disconnected above,
+    // but the state object it was accumulating into (domChanged/
+    // pageChanged/appeared) stayed on \`window\` — if this document is later
+    // restored from bfcache (pageshow, no navigation, so nothing re-runs
+    // the "before" phase's reset first) whatever read \`window.__penSigState\`
+    // at that point would see the previous action's leftover evidence.
+    // Clearing it here, once \`result\` has already been built from it, means
+    // there's nothing to leak.
+    window.__penSigState = null;
   }
 
   return result;
