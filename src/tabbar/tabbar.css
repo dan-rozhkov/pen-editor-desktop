@@ -72,22 +72,23 @@ body {
   -webkit-app-region: drag;
 }
 :root[data-macos] .tab-row { padding-left: 88px; }
-#tabs { display: flex; align-items: stretch; overflow: hidden; flex: 1; }
+#tabs { display: flex; align-items: center; gap: 4px; padding-left: 6px; overflow: hidden; flex: 1; }
 .tab {
   position: relative;
   display: flex; align-items: center; gap: 6px;
-  padding: 0 4px 2px 14px; max-width: 200px; min-width: 60px;
-  margin-top: 4px;
-  border: 1px solid transparent; border-bottom: 0;
-  border-radius: 7px 7px 0 0;
+  height: 28px; box-sizing: border-box;
+  padding: 0 4px 0 12px; max-width: 200px; min-width: 60px;
+  margin: auto 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
   cursor: default; white-space: nowrap;
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
 .tab .title { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.tab:not(.active):hover { background: var(--control-hover-bg); color: var(--text-active); }
 .tab.active {
   border-color: var(--border);
-  border-bottom: 0;
   background: var(--tab-active-bg);
   color: var(--text-active);
 }
@@ -97,21 +98,14 @@ body {
   cursor: pointer; padding: 0; border-radius: 4px; visibility: hidden;
 }
 .tab:hover .close, .tab.active .close { visibility: visible; }
-.tab .close:hover { background: var(--control-hover-bg); }
+/* Translucent so it still reads on a hovered (already grey) inactive pill. */
+.tab .close:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 .tab .close::before, .tab .close::after {
   content: ""; position: absolute; left: 5px; top: 9.5px;
   width: 10px; height: 1px; border-radius: 1px; background: currentColor;
 }
 .tab .close::before { transform: rotate(45deg); }
 .tab .close::after { transform: rotate(-45deg); }
-.mcp-status {
-  flex: 0 0 8px; width: 8px; height: 8px; margin: auto 6px;
-  border-radius: 50%; app-region: no-drag; -webkit-app-region: no-drag;
-}
-.mcp-status--off { display: none; }
-.mcp-status--listening { background: #34c759; }
-.mcp-status--not-published { background: #ff9f0a; }
-.mcp-status--error { background: #ff3b30; }
 #new-tab {
   position: relative; flex: 0 0 28px; width: 28px; height: 28px;
   margin: auto 6px;

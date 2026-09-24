@@ -27,13 +27,11 @@ open. No terminal, no manual token, no local backend required.
   File menu's **"Use this app for MCP"** item to force-publish over it; the
   same not-published state also recovers on its own once the other server's
   handshake entry disappears (it exited, or was never live to begin with).
-- **Status:** the tab strip shows a small indicator — green
-  ("listening"), amber ("not-published", tooltip names the situation), red
-  ("error" — the local server failed to bind, or its handshake file
-  couldn't be written), or hidden ("off"). The File menu also has a disabled
-  "MCP: …" line with the same status, plus "Use this app for MCP" as the
-  escape hatch — for an "error" status it retries. The token and port never
-  appear in either UI — only the status string does.
+- **Status:** the File menu has a disabled "MCP: …" line — "listening",
+  "not-published", "error" (the local server failed to bind, or its
+  handshake file couldn't be written) or off — plus "Use this app for MCP"
+  as the escape hatch; for an "error" status it retries. The token and port
+  never appear in the UI — only the status string does.
 - **Security:** loopback bind only, a random 64-hex bearer token per launch,
   `Host`/`Origin` header checks (rejects anything a browser tab could send),
   `~/.pen-editor/` at `0700` and `mcp.json` at `0600`.

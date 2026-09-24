@@ -142,9 +142,10 @@ path string rather than the API; `window.ts`/`index.ts` adapt real
 
 Only the MCP status string (`"listening" | "not-published" | "off" | "error"`)
 ever crosses into anything rendered — never the token or the port number. The
-tab strip's indicator and the File menu's "MCP: …"/"Use this app for MCP"
-items (see `menu.ts`) are the only diagnostics available, since a packaged app
-has no terminal.
+File menu's "MCP: …"/"Use this app for MCP" items (see `menu.ts`) are the only
+diagnostics available, since a packaged app has no terminal. (The tab strip
+used to show a status dot too; it was removed 2026-09-24. `mcpStatus` is still
+in the tab snapshot but the tab bar no longer renders it.)
 
 ## Built-in browser tab
 
