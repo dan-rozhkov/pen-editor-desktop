@@ -244,22 +244,115 @@ the full settle wait. `click`'s page script reads
 `location.href`/`document.title` synchronously, so if the click itself
 starts a navigation it can report the page just left rather than the one
 landed on. `BrowserController.settleAfterClick` (used by both `act`'s click
-and `perform`'s `CLICK`) settles in two phases — a short (300ms,
-`CLICK_SETTLE_TIMEOUT_MS`) bounded wait for *any* sign a navigation started
-at all (`getURL()` moving, or `TabViewHandle.isLoading()` going true —
-checking `isLoading()` too is what keeps the short bound viable, since real
-Electron flips it true essentially as soon as a navigation is requested,
-well before a slow network response would actually move `getURL()`), then,
-only if a navigation was observed, a longer (8s, `CLICK_LOAD_SETTLE_TIMEOUT_MS`)
-bounded wait for `isLoading()` to go back to `false` before trusting the
-result's url/title. This two-phase shape (addendum F, "Load, not commit",
-in `docs/superpowers/specs/2026-09-18-browse-task-jev-loop-design.md`)
-replaced settling at navigation *commit* alone: a following
-`browse_find_images` would otherwise measure an unlaid-out document at
-commit, where every `getBoundingClientRect()` is 0×0, so the size filter
-dropped every image and the tool reported `count: 0` even on an image-rich
-page. `back`/`forward` still use the plain `waitForUrlChange` poll with
-their longer (2s) bound — addendum F's fix is scoped to the click path.
+and `perform`'s `CLICK`, and `act`'s `press`) settles in two phases. Phase
+one asks "did this even start a navigation" — event-driven since Wave 1
+speed (`docs/superpowers/specs/2026-09-24-browse-speed-contract.md`):
+`armNavigationWatcher` subscribes to the acted-on tab's navigation lifecycle
+(`did-start-navigation`/`did-navigate`/`did-navigate-in-page`/
+`did-start-loading`, forwarded by `TabViewHandle.onNavigationEvent` in
+`window.ts`) *before* the action runs (a synchronous click handler can start
+a navigation, or fire a `fetch()`, inside the very `executeJavaScript` call
+that runs it, so arming has to happen first), and resolves as soon as any of
+those fires, or after a short grace (`NAV_START_GRACE_MS`, 80ms) if none do.
+This replaced a fixed 300ms poll of `getURL()`/`isLoading()`
+(`CLICK_SETTLE_TIMEOUT_MS`) that always paid the full 300ms for the common
+non-navigating case; that poll is now only a fallback, used when a
+`BrowserPageHandle` doesn't implement `onNavigationEvent` (every unit-test
+fake, notably). If a navigation *was* observed, phase two is the original
+longer (8s, `CLICK_LOAD_SETTLE_TIMEOUT_MS`) bounded wait for `isLoading()` to
+go back to `false` before trusting the result's url/title — addendum F,
+"Load, not commit" (`docs/superpowers/specs/2026-09-18-browse-task-jev-loop-design.md`):
+a following `browse_find_images` would otherwise measure an unlaid-out
+document at commit, where every `getBoundingClientRect()` is 0×0, so the
+size filter dropped every image and the tool reported `count: 0` even on an
+image-rich page. If no navigation was observed, phase two is now a
+**network-quiet settle** instead of returning immediately — see below.
+`back`/`forward` still use the plain `waitForUrlChange` poll with their
+longer (2s) bound — addendum F's fix (and Wave 1 speed's event-driven
+version of it) is scoped to the click/press path.
+
+**Network-quiet settle (Wave 1 speed).** A click that fires a `fetch()`/XHR
+without a full navigation — the common SPA case — used to get no wait at all
+beyond the 300ms fixed probe above, so a slow-rendering response (say,
+1.2s) routinely raced the very next `browse_read`/`browse_snapshot`. Each
+browser tab's `webContents.debugger` session now also sends
+`Network.enable` (alongside `Page.enable`), and `window.ts` tracks every
+`Network.requestWillBeSent`/`loadingFinished`/`loadingFailed` event into a
+per-tab `pendingNetworkRequests` map plus a monotonic `networkGeneration`
+counter (bumped once per *new* relevant request). WebSocket/EventSource/Ping
+(Chromium's CDP type for both `navigator.sendBeacon()` and a ping/beacon
+request) are never counted — none of them are the "request, then render"
+shape a settle should wait on, and a WebSocket/EventSource connection never
+"finishes" while the page is open, so counting it would make the tab
+permanently non-quiet. `TabViewHandle.networkStats(dropAfterMs)` is a cheap,
+synchronous snapshot (`{ pending, generation }`); any single request still
+outstanding longer than `dropAfterMs` (`NETWORK_REQUEST_DROP_MS`, 2s) is
+force-dropped from `pending` so a long-poll/SSE connection can't keep the
+tab non-quiet forever. `BrowserController.waitForNetworkQuiet` (controller.ts)
+captures `networkStats().generation` as a baseline *before* the action runs
+(same moment `armNavigationWatcher` is armed) and, once the navigation-watch
+phase resolves with no navigation, checks that baseline again: if nothing
+new started and nothing is pending, it returns immediately — **a no-network
+action must never pay for this** — otherwise it polls
+(`NETWORK_POLL_INTERVAL_MS`, 20ms) until `pending` has been `0`
+continuously for `NETWORK_QUIET_WINDOW_MS` (300ms — long enough that a
+request chain doesn't get cut off between requests, short enough not to
+meaningfully slow down an already-settled page), bounded overall by
+`NETWORK_QUIET_HARD_CAP_MS` (5s). `act`'s `press` used to run this same
+click-settle wait *and then* an unconditional extra fixed sleep
+(`settleShort`, `NON_CLICK_SETTLE_MS`) on top — a double settle for every
+single key. It now runs the settle above exactly once, same as click.
+`act`'s `wait` with no `text` used to always sleep the full `ms` (default
+`WAIT_DEFAULT_MS`, 3s) regardless of whether the page had anything left to
+settle. A first pass made it return as soon as the page looked network-quiet
+from the very start — but `wait` exists precisely because the caller expects
+*something* to still be in flight, often a client-side timer with no network
+involvement at all (a spinner resolving into a button, say), and "quiet from
+the start" is indistinguishable from "nothing ever happens" until it's too
+late: that version returned almost immediately for a purely-timer-driven UI
+change, the opposite of what the caller asked for. The rule instead is
+"waits for *activity*, then for that activity to settle" — never "returns
+early just because nothing has happened yet." `BrowserController.
+runWaitForActivityThenQuiet` polls **two** signals every
+`WAIT_POLL_INTERVAL_MS` (100ms): network activity (the same `networkStats`
+CDP tracking above) and DOM-mutation activity, via a `MutationObserver`
+installed on `document.body` for the duration of the call
+(`WAIT_DOM_ACTIVITY_JS`, `pageScripts.ts` — `action: "install"` at the start,
+`"check"` on each poll via `takeRecords()` so nothing is missed regardless of
+async callback timing, `"uninstall"` when the wait ends). It only starts
+accumulating a quiet streak once *either* signal has actually fired (a new
+network request, or a DOM mutation) — before that, "currently quiet" and
+"nothing has ever happened" look identical (`pending === 0`, no mutation
+seen), and only the latter should ever return early. Once something has
+fired, it waits for both signals to go quiet — no pending network request,
+and no DOM mutation within the last `NETWORK_QUIET_WINDOW_MS` — continuously
+for `NETWORK_QUIET_WINDOW_MS`, then returns. If nothing at all happens for
+the whole call, it waits out the full `ms`, exactly like the original fixed
+sleep — a purely-timer-driven spinner with no network traffic is still
+caught by the DOM-mutation signal, so the button rendering at ~1.5s settles
+the wait at roughly 1.5s + the quiet window, not the full 3s default, and
+not near-instantly either.
+
+**Cheaper evidence (Wave 1 speed).** `SIGNATURE_JS`'s whole-document
+`nodeCount`/`textLength`/`textHash` fields used to come from
+`document.querySelectorAll("*").length` and `document.body.innerText` — the
+latter forces a full layout/reflow — run once "before" an action and once
+"after", on *every* act/perform/press call. `diffSignatures` (controller.ts)
+only ever treats these three as *report-only* entries in `changes` — they
+never gate `changed` on their own, only url/title/main-image/scroll/value
+and the acted-on element's own scoped signature do (see its doc comment) —
+so `SIGNATURE_JS` now derives them from a `MutationObserver` installed on
+`document.body` at the "before" call (`childList`/`subtree`/
+`characterData`) and read back (via `takeRecords()`, which can't miss a
+mutation regardless of microtask timing, plus whatever the observer's own
+async callback already processed) at the "after" call, instead of scanning
+the document twice. The three fields keep their original names/types
+(numbers) so `isPageSignature`/`diffSignatures` need no changes: "before"
+always reports a fixed `0`/`0`/`0` baseline (no scan needed at all), "after"
+reports `1`/`1`/`1` only when the observer actually saw a relevant
+mutation — the *inequality* `diffSignatures` checks is exactly as
+meaningful as it was comparing two real scans, since only "did it change"
+was ever read out of these three fields.
 
 **`open` resolves at DOM-ready, not at full load.** `webContents.loadURL()`'s
 own promise only resolves at `did-finish-load` — every subresource,
@@ -1152,3 +1245,429 @@ found ten more real defects, fixed together:
     `data-pen-snap` selector. `window.ts`'s `selectPage` no longer calls
     `setAgentBrowserTabId` right after `activate()`, which already sets it
     for a browser tab.
+
+### Wave 2 reliability (2026-09-24): trusted input, hidden-target refusal, scroll containers
+
+Design doc: `docs/superpowers/specs/2026-09-24-browse-speed-contract.md`
+("Desktop → Wave 2 reliability"). Builds on Wave 1 speed above; the human
+cursor overlay (`CURSOR_JS`/`moveCursor`) is unchanged and still runs before
+every action, exactly as before.
+
+**Trusted click/type via CDP, with the pre-existing DOM path as fallback.**
+`act`'s `click`/`type` (a `target`, or `index`+`snapshotId`) and `perform`'s
+`CLICK`/`TYPE_TEXT` now try a genuinely trusted input path first —
+`event.isTrusted === true` on the page, and a real `beforeinput` for typing —
+falling back to the pre-existing `el.click()`/native-setter path
+(`CLICK_JS`/`TYPE_JS`/`PERFORM_JS`) whenever the trusted path can't safely
+proceed. `controller.ts`'s `dispatchClick`/`dispatchType` are the shared
+entry points both the target-based and index-based branches route through;
+`pageScripts.ts`'s `CLICK_RESOLVE_JS` is the shared "resolve, but don't act"
+step both use, built on the same `locateTarget` (`LOCATE_TARGET_JS`) every
+other indexed/targeted action already shares (hover, focus, scroll — see
+below).
+
+- `CLICK_RESOLVE_JS` locates the element (visible text → CSS selector for a
+  `target`, or the `data-pen-snap` stamp for `index`+`snapshotId`), stamps it
+  `data-pen-sig-target` and captures its scoped signature (same as
+  `CLICK_JS`/`TYPE_JS`/`PERFORM_JS` always have), then computes the
+  viewport-CSS-px centre of its `getBoundingClientRect()` and hit-tests that
+  point with `document.elementFromPoint` — recursing into *open* shadow roots
+  (a closed root is opaque to this check the same way it is to
+  `elementFromPoint` itself). The hit passes (`hitOk: true`) when the point
+  lands on the element itself, one of its descendants, one of its ancestors
+  (a click can legitimately land on a wrapper that bubbles to a listener
+  further up), or an ancestor `<label>` associated with the element (by
+  containment or `for`) — and fails outright for a zero-size element or a
+  centre point outside the current viewport.
+- **Click:** when `hitOk` and the tab has a CDP session (`page.sendCdp`), a
+  `mouseMoved`/`mousePressed`/`mouseReleased` triple (`Input.
+  dispatchMouseEvent`, button `"left"`, `clickCount: 1`) lands a real,
+  OS-trusted click at that point — CDP coordinates are CSS px of the page
+  viewport, the same space `getBoundingClientRect()` reports in, so no
+  zoom/devicePixelRatio conversion is needed. Otherwise (hit-test failed —
+  covered, zero-size, offscreen after scroll — or no CDP session, or the
+  trusted dispatch itself threw), it falls back to the existing `el.click()`
+  script (`CLICK_JS` for a `target`, `PERFORM_JS`'s `CLICK` branch for an
+  index) exactly as before this wave.
+- **Type:** focus is attempted via a trusted CDP click at the resolved point
+  when `hitOk` passed, *and then* an explicit `el.focus()`
+  (`SELECT_ALL_CONTENT_JS`) — the CDP click can land on a non-focusable
+  wrapper that merely delegates focus on click, so the explicit call is what
+  actually guarantees the field itself is focused. `SELECT_ALL_CONTENT_JS`
+  then selects the field's *existing* content (native `el.select()`/
+  `setSelectionRange` for input/textarea, a DOM `Range` for
+  `contenteditable`) so the typed text replaces it, the way a real
+  keyboard-driven fill does — and reports only whether the target *is*
+  editable at all, never its content. Typing itself is one `keyDown`+`keyUp`
+  pair for the first character (no `text`, so it fires `keydown`/`keyup`
+  listeners without inserting anything itself — resolved via `keys.ts`'s
+  `resolveNamedKey`, the same table `act`'s `press` uses) followed by a
+  single `Input.insertText` for the *entire* string — this fires
+  `beforeinput`/`input` the way real typing or an IME/paste commit would,
+  React-compatible, unlike a raw `.value =` assignment. One `insertText` call
+  for the whole string, not one `dispatchKeyEvent` pair per character, was a
+  deliberate choice — character-at-a-time dispatch is far slower for
+  anything but a short string. The result is verified
+  (`READ_TARGET_VALUE_JS`, comparing on the page — it never returns the raw
+  value itself, matching this file's existing value-privacy rules) before
+  being trusted: a masked/formatted input that rewrites what was inserted
+  falls back to the legacy native-setter + `input`/`change` path
+  (`TYPE_JS`/`PERFORM_JS`'s `TYPE_TEXT` branch) instead of reporting a false
+  success. Password fields are untouched by any of this — nothing in the
+  trusted-input path reads or reports a field's value, only a boolean match.
+- Both paths report an optional `via: "cdp" | "dom"` on the result, so a
+  caller (or a test) can tell which one actually ran.
+- `select`/`scroll`/`back`/`forward`/`reload`/`wait` are unchanged by this
+  wave — `select` (a `<select>`'s option) has no meaningful "trusted click"
+  equivalent, and `press`/`hover` were already CDP-backed since "Full browser
+  use" above.
+
+**Text-target resolution prefers a visible match, and refuses a hidden
+one.** A bench run found a bare word matching a `display:none` menu item
+that happened to share the wanted text with the real, visible control,
+silently "succeeding" against an element nothing could see. `FIND_BY_TEXT_JS`
+(the `findByText` shared by `CLICK_JS`, `TYPE_JS`, `CLICK_RESOLVE_JS`, and —
+via `LOCATE_TARGET_JS` — `HOVER_TARGET_JS`/`FOCUS_JS`/`SCROLL_JS`) now
+searches every candidate set twice: once requiring visibility (the same test
+`SNAPSHOT_JS`'s `isVisible` uses, minus its viewport-distance margin clause —
+a target below the fold is still fair game, just not one the page itself
+hides), and only if that finds nothing does it fall back to a hidden match.
+Its return shape is now `{ el, hidden } | null`, not a bare element, so every
+caller can tell "found, but only hidden" apart from "found and visible" —
+every one of them refuses to act on a hidden-only match, reporting
+`"target is not visible (hidden element)"` (`click`/`type`/`scroll`) or the
+same message via a `hidden: true` field on their own result shape
+(`hover`/`press`'s focus step). `CURSOR_JS`'s own target resolution (cosmetic
+only — it's guidance for where the overlay points, not a gate on whether the
+action proceeds) still accepts a hidden match rather than refusing it.
+
+**Scroll containers.** `act`'s `scroll` now accepts an optional `target` (or
+`index`+`snapshotId`); when given, it resolves that element
+(`LOCATE_TARGET_JS`) and scrolls it directly if it's itself scrollable
+(`overflow-y: auto|scroll` and `scrollHeight > clientHeight`, `SCROLL_
+CONTAINER_HELPER_JS`'s `isScrollableContainer`), else its nearest scrollable
+ancestor. With no target, and `perform`'s `SCROLL_UP`/`SCROLL_DOWN` (with an
+optional `index`+`snapshotId` of their own), the *window* is scrolled unless
+it can't (`!windowIsScrollable()` — body `overflow: hidden`, or
+`document.documentElement.scrollHeight <= innerHeight`), in which case the
+largest visible scrollable container near the viewport centre is auto-picked
+(`pickLargestScrollableInCenter`) and scrolled instead — the common
+fixed-height-app-shell-with-one-inner-scroll-pane shape.
+`SNAPSHOT_JS` marks up to 10 visible scrollable containers (largest-by-area
+first) as their own element-table entries — `{ tag, label
+(aria-label → nearest heading → first text ≤60 chars → tag), ops: [],
+scrollable: true }`, stamped with the same `data-pen-snap` every indexed
+action already relies on, so `act scroll`/`perform SCROLL_*` can be pointed
+at one by index. **`ops: []`, not `["SCROLL"]`**: pen-editor-backend's
+`/api/browse/step` zod schema enumerates `ops` as `CLICK | TYPE_TEXT |
+SELECT` with `.min(1)`, so a fourth op value there — or an empty array at
+all — is a *separate*, backend-repo schema change, not something this repo
+can add unilaterally; a container is recognizable purely by `scrollable:
+true` on the frontend/backend side once they're updated to read it.
+`SNAPSHOT_JS`'s `scroll` field also now reports the auto-picked container's
+own `{ index, y, height, atBottom }` (alongside the window's own, unchanged
+`{ y, height, atBottom }`) whenever the window itself can't scroll — without
+it, a caller has no way to tell how much of that container is left to
+scroll without a wasted round trip.
+
+**Unit vs. e2e split.** The unit suite (`test/browserController.test.ts`)
+stubs `executeJavaScript` and a fake `sendCdp` that records every `Input.*`
+call, covering the trusted/fallback branch selection, the hidden-target
+error, and scroll-container argument plumbing — it cannot prove a click is
+*genuinely* trusted, that a synthetic click never fires `pointerdown`, or
+that `Input.insertText` fires a real `beforeinput` (React's own signal that
+a change came from a real input event, not a scripted one). Those three —
+plus a real inner-scroll container — are e2e-only, against a real DOM served
+by `e2e/browser-tab.spec.ts`'s own stub HTTP server (`/wave2` fixture).
+
+### Wave 3 reliability (2026-09-24): shadow DOM, iframes/OOPIF, console errors, botCheck
+
+Shared contract doc: `docs/superpowers/specs/2026-09-24-browse-speed-contract.md`
+("Desktop → Wave 3"). Builds on Waves 1/2 above; the human cursor overlay
+(`CURSOR_JS`/`moveCursor`) is unchanged and still runs before every action —
+for a frame-routed element it moves to an explicit top-level-viewport point
+(the matched iframe's own center) rather than resolving/scrolling to the
+element itself, since the overlay lives in the top document and can't reach
+into a frame's own document at all (`CURSOR_JS`'s `args.point` branch).
+
+**Open shadow roots.** `deepQueryAll(root, selector)` (`pageScripts.ts`) is a
+bounded, shadow-piercing `querySelectorAll`: it collects `root.querySelectorAll(selector)`
+then recurses into every descendant's `.shadowRoot` (only ever `open` roots
+are reachable this way — a `closed` root's `shadowRoot` property is `null`
+from outside, so no separate check is needed). Capped at 5000 elements
+visited and 30 levels of *shadow-root nesting* (not plain DOM depth, which
+`querySelectorAll` already handles within one root) — `PEN_DEEP_QUERY_MAX_NODES`/
+`PEN_DEEP_QUERY_MAX_DEPTH`. Wired into `findByText`/`findBySnapshot`
+(`FIND_BY_TEXT_JS`/`FIND_BY_SNAPSHOT_JS`, shared by `CLICK_JS`/`TYPE_JS`/
+`CLICK_RESOLVE_JS`/`LOCATE_TARGET_JS`/`PERFORM_JS`), `SNAPSHOT_JS`'s
+interactive-element and scroll-container candidate walks, `FIND_IMAGES_JS`'s
+`<img>`/background-image scan, and `READ_JS`'s heading/link queries and text
+collection (`collectText` also walks into `n.shadowRoot`'s own `childNodes`
+directly — a `ShadowRoot` is a `DocumentFragment`, `nodeType` 11, not an
+`Element`, so a naive `walk(n.shadowRoot)` call hits `collectText`'s own
+`nodeType !== 1` guard and silently drops every bit of shadow text; this bit
+during development and is why that branch is handled before the element
+guard, not folded into the generic recursion). `CLICK_RESOLVE_JS`'s
+`document.elementFromPoint` hit-test needs no equivalent change — Chromium's
+own implementation already pierces every open shadow root.
+
+**Iframes (same-origin AND cross-origin/OOPIF), one level deep.**
+`BrowserPageHandle.listFrames()`/`executeJavaScriptInFrame()` (`controller.ts`,
+mirrored on `TabViewHandle` in `tabManager.ts`) wrap Electron's
+`webContents.mainFrame.frames` (direct children only — `WebFrameMain`
+abstracts over the process boundary, so a same-origin child and a
+cross-origin/OOPIF child look identical here) and `WebFrameMain#executeJavaScript`.
+`frameId` is `frameTreeNodeId` (stable for the frame's lifetime), not the
+deprecated `routingId`. `BrowserController.resolveVisibleFrames` matches each
+`WebFrameMain` child against a visible `<iframe>` element the top document's
+own `IFRAME_RECTS_JS` reports (by `url` first, falling back to `name` — a
+`WebFrameMain` has no DOM-side identity a page script could read, and a
+cross-origin iframe's `src` attribute can differ from the frame's current,
+possibly-redirected `url`), capped at `MAX_BROWSER_FRAMES` (8) and skipping
+any iframe element with zero rendered size. `snapshot()`/`read()`/
+`findImages()` all descend into every matched frame after their own
+top-document script call: snapshot indices are global and stable within one
+snapshot (top-document elements keep SNAPSHOT_JS's own 0..N-1, each frame's
+own elements are appended and renumbered), capped at the existing
+`MAX_SNAPSHOT_ELEMENTS`; each frame-sourced element/read-text-append carries
+`frame: "<title|name|host>"` (`frameLabel`). `BrowserController.lastSnapshot`
+now also keeps a `frameMap` (global index → `{frameId, localIndex}`) and a
+`frameRects` map (frameId → the iframe's own content-box offset/size in
+top-level viewport px) alongside the existing id/page staleness check, so
+`perform()` can route CLICK/TYPE_TEXT/SELECT/SCROLL_* to the right document.
+A frame-routed CLICK/TYPE_TEXT skips the trusted-CDP path entirely and runs
+the DOM path (`PERFORM_JS`) directly inside that frame via
+`executeJavaScriptInFrame` (`frameClickOrType`) — this is the design's own
+sanctioned fallback ("if hit-test inside the frame fails fall back to DOM
+click via frame.executeJavaScript"), not a shortcut: computing a genuinely
+trusted CDP click's coordinates across a frame boundary (accumulating each
+ancestor iframe's own content-box offset) is real, separate work this pass
+scoped out — nested iframes (a frame inside a frame) are out of scope for
+the same reason, one level deep only. Text-target (`act`'s `target: "…"`)
+resolution is **not** frame-aware in this pass — only snapshot/index-based
+routing is; a `target` click/type still only searches the top document, see
+`FIND_BY_TEXT_JS`.
+
+`electron/electron#5183` (`executeJavaScript` defers until the page stops
+loading) means a child frame that never finishes loading must not hang a
+whole `snapshot`/`read`/`findImages` call — every per-frame script call
+(`executeScriptInFrame`) is raced against `FRAME_SCRIPT_TIMEOUT_MS` (1.5s,
+enforced both in `window.ts`'s own `executeJavaScriptInFrame` and again in
+`controller.ts`'s wrapper), and a timed-out or rejecting frame is simply
+skipped — the command still succeeds with whatever it already had. This bit
+concretely with `checkBotWall` below (a *top-document* script, not a frame
+one) before it got its own short, independent timeout — see that section.
+
+**Console error ring buffer.** (Revised by a later code-review pass — see
+"Code review fixes" below: this no longer goes through the CDP `Runtime`
+domain.) Each browser tab's `webContents.on("console-message", ...)`
+listener (`window.ts`, wired unconditionally for `kind: "browser"`, no
+debugger session required) captures every message with `level === "error"`
+— both an explicit `console.error(...)` call and an uncaught JS exception
+report to the same console sink in Chromium, so one check covers both —
+pushing each (truncated to 200 chars) into a per-tab ring buffer capped at
+50 (oldest dropped first). Exposed as `drainConsoleErrors()` on
+`TabViewHandle`/`BrowserPageHandle` — same "drain empties it" shape as
+`drainDialogs`, but gated on `kind === "browser"` rather than
+`debuggerAttached`, since it needs no CDP session at all — it stays
+available even on a browser tab whose debugger attach failed (e.g. real
+DevTools already attached). `BrowserController.act()`/
+`perform()` (the public entry points, not their `*Unlocked` internals — so
+an action that internally routes through another command, e.g. `act`'s
+index-based click calling `perform`'s CLICK branch, never double-drains)
+merge up to 5 entries into the result as `consoleErrors: string[]`, omitted
+entirely when empty rather than an always-present empty array.
+**"New since the previous command" means exactly that**: an exception thrown
+synchronously as part of a click's own dispatch and settle is typically
+already drained by *that click's own* `act`/`perform` call, not a
+subsequent one — a caller (or a test) watching for a specific error should
+check the acting command's own result first, not assume it always lands on
+the next call. `open`/`findImages`/`snapshot`/`read`/`screenshot`/`tabs`
+carry no `consoleErrors` field at all — only `act`/`perform` have a
+meaningful "since the previous command" window.
+
+**botCheck on open.** `BOT_CHECK_JS` (`pageScripts.ts`) checks the page's
+title and the first 2000 chars of its visible body text against a fixed
+regex (`just a moment|verify you are human|are you a robot|captcha|attention
+required|access denied|unusual traffic`, case-insensitive) or the presence
+of an `<iframe>` whose `src` points at a known challenge host
+(`challenges.cloudflare.com`, `google.com/recaptcha`, `hcaptcha.com`).
+`BrowserController.checkBotWall` runs it after `open` settles (both the
+"full load beat DOM-ready" and "DOM-ready then grace period" branches) and
+merges `{ botCheck: true }` into the result — omitted, not `{ botCheck:
+false }`, when the page doesn't look like a challenge wall, matching this
+file's convention for other optional fields (`openedTab`, `dialogs`).
+Bounded by its own short `BOT_CHECK_TIMEOUT_MS` (400ms), *independent* of
+`open`'s own DOM-ready/grace-period timing: this bit during development — a
+first cut let the bot-check script inherit however long was left, and
+`electron#5183` means `executeJavaScript` on a page `open` correctly
+returned early for (`loaded: false`, a subresource still pending) blocks
+until that subresource finally settles, silently reintroducing the exact
+"wait for the whole page" cost the DOM-ready fix exists to avoid, one call
+later — an e2e regression (the DOM-ready timing test's elapsed-time
+assertion) caught it directly. A timed-out or throwing check degrades to no
+`botCheck` field at all, same as a script that genuinely disagrees.
+
+**Testing.** `test/browserController.test.ts`'s "BrowserController — Wave 3
+reliability" describe block covers frame discovery/matching/routing (a fake
+`listFrames`/`executeJavaScriptInFrame`, including a rejecting frame call
+proving a stuck frame is skipped, not fatal), the console-error merge (and
+its absence on a page with no `drainConsoleErrors`), and `checkBotWall`
+(true/omitted/throwing). Shadow-DOM piercing itself is e2e-only (a fake page
+can't prove a real shadow root was traversed) —
+`e2e/browser-tab.spec.ts`'s `/wave3` fixture (served by the suite's existing
+stub HTTP server) covers an open shadow root, a same-origin iframe, and a
+button whose click handler throws; a **second** http server, bound to
+`"localhost"` rather than the main server's `"127.0.0.1"` (genuinely
+different origins/sites, not just a different port — Chromium's default site
+isolation puts it in its own renderer process, a real OOPIF), serves the
+cross-origin iframe fixture. `/botcheck` is a separate fixture page titled
+"Just a moment...".
+
+### Code review fixes on top of Waves 1–3 (2026-09-24)
+
+A follow-up review pass found and fixed several correctness bugs in the
+above, without touching the human cursor overlay:
+
+- **Navigation-event forwarding is main-frame-only.** `window.ts`'s
+  `onNavigationEvent` broadcast (Wave 1 speed) used to forward
+  `did-start-navigation`/`did-navigate-in-page`/`did-start-loading`
+  unfiltered — all three fire for ANY frame, and `did-start-loading` in
+  particular reflects the whole tab's loading state, which flips for a
+  subframe too. An ad/embed iframe navigating during the 80ms
+  `NAV_START_GRACE_MS` grace window made an ordinary, non-navigating click
+  wait the full 8s `CLICK_LOAD_SETTLE_TIMEOUT_MS` load-stop settle for
+  nothing. Fixed via `navigation.ts`'s new pure
+  `shouldForwardNavigationEvent({ isMainFrame })`: `did-start-navigation`
+  and `did-navigate-in-page` are now filtered on their own `isMainFrame`
+  arg, `did-navigate` needs no filter (already main-frame-only per
+  Electron's own doc), and `did-start-loading` — which carries no frame
+  info to filter on — is dropped from the broadcast entirely.
+- **`waitForNetworkQuiet` ignores requests already pending before the
+  action.** Wave 1 speed's network-quiet settle used to treat ANY currently
+  pending request as reason to wait, even one that started well before the
+  acted-on command (a Pinterest-style lazy-loading image grid still
+  fetching from an earlier scroll, say) — a genuinely no-network action
+  could pay the full quiet-window/hard-cap wait for a request it never
+  caused. `window.ts`'s `pendingNetworkRequests` map now carries each
+  request's own `networkGeneration` snapshot at the moment it started, and
+  `networkStats(dropAfterMs, sinceGeneration?)` takes an optional second
+  argument scoping `pending` down to only requests started after it;
+  `waitForNetworkQuiet` passes its captured baseline generation, so a
+  request that predates the baseline never counts.
+- **`dispatchType` no longer clicks before checking editability.** Wave 2
+  reliability's trusted-typing path used to send a trusted CDP click to
+  "focus" the resolved target BEFORE checking whether it was actually
+  editable — typing into a text match that turned out to be a link/button
+  clicked it. `CLICK_RESOLVE_JS` now also reports a read-only `editable`
+  flag (the same tag/`isContentEditable` check `SELECT_ALL_CONTENT_JS`
+  already used, but with no focus/select side effect), and `dispatchType`
+  checks it immediately after resolving, before any click — a non-editable
+  target goes straight to the legacy DOM path (which reports the same "not
+  editable" error TYPE_JS/PERFORM_JS always have) without ever touching the
+  mouse.
+- **Hidden-only text match now tries the CSS selector before refusing, and
+  `<style>`/`<script>`/`<noscript>`/`<template>` are never click targets.**
+  `FIND_BY_TEXT_JS`'s `findByText` used to be consulted first in
+  `CLICK_JS`/`TYPE_JS`/`LOCATE_TARGET_JS`'s `locateTarget` — if it found
+  *any* match, even a hidden-only one, the selector fallback never ran at
+  all, so a bare word matching a hidden element elsewhere on the page (a
+  closed dropdown's own copy of the label, say) could shadow a perfectly
+  good CSS selector for the real, visible target. The order is now: visible
+  text match → CSS selector → the hidden text match's own refusal (`"target
+  is not visible (hidden element)"`) → "No element matched". Separately,
+  `findByText`'s candidate search now skips `<style>`/`<script>`/
+  `<noscript>`/`<template>` elements outright — their `textContent` is
+  CSS/JS/inert source, not page content, and a target string that happened
+  to appear literally in one (a class name, a URL, a JSON blob) could
+  otherwise "match" it and report a false click success against an element
+  nothing could ever see.
+- **`act`'s index-based `scroll`/`hover`/`press` are frame-routed.** Only
+  `perform`'s CLICK/TYPE_TEXT/SELECT/SCROLL_* branches used
+  `resolveFrameRoute`/`executeScriptInFrame` — `act`'s own `scroll` (via
+  `runOnPageWithEvidence`), `hover` (`runHover`), and `press`'s optional
+  focus target (`runPress`) always ran their page script against the top
+  document regardless of the frame map `snapshot()` built, so any of them
+  given an index that actually lived in a child frame failed with "No
+  element matched" instead of acting. All three now resolve through
+  `resolveFrameRouteWithCursorPoint` (factored out of `performUnlocked`'s
+  existing frame-routing logic) and route `SCROLL_JS`/`HOVER_TARGET_JS`/
+  `FOCUS_JS` into the matched frame via `executeScriptInFrame` when
+  frame-routed. `press`'s actual key dispatch needs no frame routing itself
+  — CDP keyboard input targets whichever frame currently holds focus,
+  regardless of which document `FOCUS_JS` ran in to get it there — but
+  `hover`'s trusted `Input.dispatchMouseEvent` does: a frame-routed
+  `HOVER_TARGET_JS` call reports coordinates local to that frame's own
+  document, so the matched iframe's own content-box offset (`frameRect`) is
+  added back in before dispatching, to land in the top-level-viewport
+  coordinate space CDP mouse events are always expressed in.
+- **`SNAPSHOT_JS`'s scroll-container budget is shared with the interactive-
+  element cap, not additional to it.** Scroll containers used to be
+  appended UNCONDITIONALLY on top of the already-`maxElements`-capped
+  interactive elements (up to 10 more) — a busy page with both could report
+  more elements than `maxElements`, and `controller.ts`'s `takeSnapshot`
+  computes its own child-frame budget as `remaining = MAX_SNAPSHOT_ELEMENTS
+  - elements.length` straight off that count: a negative `remaining` made
+  its `if (remaining > 0)` guard skip the whole frame merge outright. The
+  scroll-container slice is now capped to whatever budget is left after the
+  interactive elements (`min(10, maxElements - capped.length)`, never
+  negative), so the top document's own element count can never exceed
+  `maxElements` and `remaining` downstream can never go negative.
+- **`dispatchClick` no longer falls back to a DOM click after the mouse-down
+  was already sent.** The trusted-CDP click path's single `try`/`catch`
+  used to fall through to the DOM `el.click()` fallback on ANY failure,
+  including one after `Input.dispatchMouseEvent`'s `mousePressed` had
+  already been dispatched — risking a genuine mouse-down (or a full
+  press+release that merely failed to report success) PLUS a synthetic
+  click landing on the same target, a double click. A `mousePressedSent`
+  flag (set right before that call, not after it resolves) now
+  distinguishes the two cases: a failure before it (only `mouseMoved` ran)
+  still falls through to the DOM path exactly as before; a failure at or
+  after it reports an error instead, never touching the DOM fallback.
+  `dispatchType`'s own catch around its CDP click attempt carries no such
+  risk and is unchanged — a failed focus-click there just falls through to
+  `SELECT_ALL_CONTENT_JS`'s own `el.focus()`, never a second click.
+  Frame-routed clicks/types (`frameClickOrType`) were never in scope for
+  either of these two fixes — Wave 3 already routes them straight to the
+  DOM path inside the frame, skipping the trusted-CDP path (and its
+  editability check / double-click risk) entirely by design.
+
+### Second-pass review fixes (2026-09-24)
+
+- **`SNAPSHOT_JS`'s scroll-container pass no longer double-stamps an
+  interactive element that is also a scroll container.** A scroll container
+  that is ALSO an interactive element — a `<textarea>` with
+  `overflow-y:auto` and more content than fits, a `contenteditable` editor
+  pane, a combobox's own scrollable listbox — used to get a *second*
+  element-table entry from the scroll-container pass, which re-stamped its
+  `data-pen-snap` with a fresh container index. That overwrote the
+  interactive element's own earlier stamp, so a `perform` call using the
+  index a prior `snapshot()` had reported for it no longer resolved
+  ("No element at index … (stale or removed)"), even though the element was
+  neither stale nor removed. The scroll-container loop now checks each
+  candidate's `data-pen-snap` before stamping it: if it already carries
+  *this* snapshot's stamp (interactive, or — defensively — an earlier
+  scroll-container entry), it is skipped and that existing element-table
+  entry is flagged `scrollable: true` instead of getting a duplicate entry.
+  Covered by `e2e/browser-tab.spec.ts`'s `/snapshot` fixture (a scrollable
+  `<textarea>` added alongside the existing interactive elements) and a new
+  e2e test asserting exactly one entry with both `ops: ["TYPE_TEXT"]` and
+  `scrollable: true`, and that `perform` TYPE_TEXT by that index still
+  resolves the element.
+- **`runWaitForActivityThenQuiet` (the `act wait` no-`text` engine) now
+  scopes `networkStats` to its own baseline generation.** It already
+  captured a `networkBaseline` generation up front (the same pattern
+  `waitForNetworkQuiet` uses for click/press settle), but its poll loop
+  called `page.networkStats(NETWORK_REQUEST_DROP_MS)` without passing that
+  baseline as the second (`sinceGeneration`) argument, so `pending` counted
+  *every* currently in-flight request — including ones that started before
+  the wait itself, which never contributed to `networkStarted`/
+  `sawActivity` but still held `currentlyActive` (and therefore the whole
+  wait) true for as long as they stayed pending, up to the full `ms`
+  budget. The call now passes `networkBaseline` through, matching
+  `waitForNetworkQuiet`. Covered by a new unit test in
+  `test/browserController.test.ts` (Wave 1 speed describe block) that
+  starts a request before the wait begins (never finished) and a second one
+  after the baseline is captured (started and finished quickly) — the wait
+  must settle once the *new* request goes quiet, not wait out the stale
+  one for the full budget.

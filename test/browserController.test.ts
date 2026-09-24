@@ -3,6 +3,7 @@ import {
   BrowserController,
   BROWSER_COMMAND_TIMEOUT_MS,
   BROWSER_OPEN_TIMEOUT_MS,
+  MAX_SNAPSHOT_ELEMENTS,
   type BrowserPageHandle,
   type BrowserTarget,
 } from "../src/main/browser/controller";
@@ -347,19 +348,28 @@ describe("BrowserController", () => {
         });
         const controller = new BrowserController(makeFakeTarget(page));
         const result = await controller.act({ action: "click", target: "Buy now" });
-        // 3 calls: captureSignature (before), CLICK_JS, captureSignature
-        // (after) — see "Addendum 2" §1. This fake's executeJavaScript
-        // returns the same canned CLICK_JS-shaped object for every call
-        // (including the two signature calls), which is not a valid
-        // signature, so evidence capture degrades to changed: false rather
-        // than throwing — covered on its own in the "evidence of effect"
-        // block below.
-        // 3 non-cursor calls (a 4th, the cursor overlay's CURSOR_JS, runs
+        // 4 calls: captureSignature (before), CLICK_RESOLVE_JS (Wave 2's
+        // trusted-click resolve step — this fake's canned response has no
+        // `hitOk`/`found`, so it always falls back to the DOM path below),
+        // CLICK_JS, captureSignature (after) — see "Addendum 2" §1. This
+        // fake's executeJavaScript returns the same canned CLICK_JS-shaped
+        // object for every call (including the two signature calls), which
+        // is not a valid signature, so evidence capture degrades to
+        // changed: false rather than throwing — covered on its own in the
+        // "evidence of effect" block below.
+        // 4 non-cursor calls (a 5th, the cursor overlay's CURSOR_JS, runs
         // before all of them — see isCursorCall's doc comment).
-        expect(nonCursorCallCount(page.executeJavaScript as ReturnType<typeof vi.fn>)).toBe(3);
+        expect(nonCursorCallCount(page.executeJavaScript as ReturnType<typeof vi.fn>)).toBe(4);
         const code = findScriptCall(page.executeJavaScript as ReturnType<typeof vi.fn>, JSON.stringify("Buy now"));
         expect(code).not.toContain("PEN_BROWSER_ARGS");
-        expect(result).toEqual({ url: "https://x/", title: "X", matched: "Buy now", changed: false, changes: [] });
+        expect(result).toEqual({
+          url: "https://x/",
+          title: "X",
+          matched: "Buy now",
+          via: "dom",
+          changed: false,
+          changes: [],
+        });
       });
 
       it("finding 7: settles to the post-navigation url/title when a click starts a navigation, rather than trusting the script's stale pre-navigation read", async () => {
@@ -400,6 +410,7 @@ describe("BrowserController", () => {
             url: "https://example.com/next",
             title: "Next",
             matched: "Go",
+            via: "dom",
             changed: true,
             changes: ["url"],
           });
@@ -426,6 +437,7 @@ describe("BrowserController", () => {
             url: "https://example.com/",
             title: "Example",
             matched: "Go",
+            via: "dom",
             changed: false,
             changes: [],
           });
@@ -477,6 +489,7 @@ describe("BrowserController", () => {
           expect(result).toEqual({
             url: "https://example.com/next",
             title: "Next",
+            via: "dom",
             changed: true,
             changes: ["url"],
           });
@@ -523,7 +536,13 @@ describe("BrowserController", () => {
           // above — this fake's executeJavaScript isn't signature-aware
           // either, so the diff again comes from the previousUrl/currentUrl
           // fallback.
-          expect(result).toEqual({ url: "https://example.com/next", title: "Next", changed: true, changes: ["url"] });
+          expect(result).toEqual({
+            url: "https://example.com/next",
+            title: "Next",
+            via: "dom",
+            changed: true,
+            changes: ["url"],
+          });
         } finally {
           vi.useRealTimers();
         }
@@ -1385,8 +1404,10 @@ describe("BrowserController", () => {
       const result = await controller.perform({ snapshotId: snapshot.snapshotId, index: 3, operation: "CLICK" });
       // This fake's executeJavaScript ignores which script it was called
       // with, so neither before/after signature capture (see makeFakePage's
-      // doc comment) sees a valid signature here — changed stays false.
-      expect(result).toEqual({ url: "https://x/", title: "X", changed: false, changes: [] });
+      // doc comment) sees a valid signature here — changed stays false. The
+      // canned response also has no `hitOk`, so dispatchClick falls back to
+      // the DOM path (PERFORM_JS's CLICK branch) — via: "dom".
+      expect(result).toEqual({ url: "https://x/", title: "X", via: "dom", changed: false, changes: [] });
       const code = findScriptCall(
         page.executeJavaScript as ReturnType<typeof vi.fn>,
         JSON.stringify({ snapshotId: snapshot.snapshotId, index: 3, operation: "CLICK" }),
@@ -1421,7 +1442,13 @@ describe("BrowserController", () => {
         // diff comes from the previousUrl/currentUrl fallback — see the
         // "finding 7"/"finding 4" comments in the act/click tests above for
         // the full explanation.
-        expect(result).toEqual({ url: "https://example.com/next", title: "Next", changed: true, changes: ["url"] });
+        expect(result).toEqual({
+          url: "https://example.com/next",
+          title: "Next",
+          via: "dom",
+          changed: true,
+          changes: ["url"],
+        });
       } finally {
         vi.useRealTimers();
       }
@@ -3109,5 +3136,1136 @@ describe("command concurrency (finding 8)", () => {
     const controller = new BrowserController(target);
     const result = await controller.tabs({ action: "new", url: "https://example.com" });
     expect(result).not.toHaveProperty("error");
+  });
+});
+
+// Wave 1 speed (`2026-09-24-browse-speed-contract.md`): event-driven
+// navigation detection and CDP network-quiet settle. Every test here fakes
+// `onNavigationEvent`/`networkStats` — every `makeFakePage()` test above this
+// point deliberately leaves both undefined, exercising the legacy polling
+// fallback instead (see `armNavigationWatcher`'s doc comment), which is why
+// none of it needed to change.
+describe("BrowserController — Wave 1 speed", () => {
+  /** A fake `onNavigationEvent`/`networkStats` pair modeling a real desktop
+   * tab: `fireNavigation()` lets a test simulate a navigation-lifecycle
+   * event firing at a chosen moment; `startRequest()`/`finishRequest()`
+   * model in-flight CDP-tracked network requests, each carrying its own
+   * per-request generation the way `window.ts`'s `pendingNetworkRequests`
+   * does — `networkStats`'s optional `sinceGeneration` filters `pending`
+   * down to only requests started after it (code review finding 2), same as
+   * the real implementation. */
+  function makeNetworkFakes() {
+    const navListeners = new Set<() => void>();
+    let generation = 0;
+    const pendingRequests = new Map<number, number>(); // requestId -> generation
+    let nextRequestId = 0;
+    return {
+      onNavigationEvent: (cb: () => void): (() => void) => {
+        navListeners.add(cb);
+        return () => navListeners.delete(cb);
+      },
+      networkStats: vi.fn((_dropAfterMs: number, sinceGeneration?: number) => {
+        let pending = 0;
+        for (const reqGeneration of pendingRequests.values()) {
+          if (sinceGeneration === undefined || reqGeneration > sinceGeneration) pending += 1;
+        }
+        return { pending, generation };
+      }),
+      fireNavigation: () => {
+        for (const cb of navListeners) cb();
+      },
+      /** Returns the started request's id, for a matching `finishRequest()`. */
+      startRequest: (): number => {
+        generation += 1;
+        const id = nextRequestId++;
+        pendingRequests.set(id, generation);
+        return id;
+      },
+      finishRequest: (id?: number) => {
+        if (id !== undefined) {
+          pendingRequests.delete(id);
+          return;
+        }
+        // No id given: finish an arbitrary (oldest) pending request — kept
+        // for existing single-request tests that don't need to track one.
+        const first = pendingRequests.keys().next();
+        if (!first.done) pendingRequests.delete(first.value);
+      },
+    };
+  }
+
+  it("a non-navigating, no-network click settles well under the old 300ms fixed probe", async () => {
+    vi.useFakeTimers();
+    try {
+      const net = makeNetworkFakes();
+      const page = makeFakePage({
+        onNavigationEvent: net.onNavigationEvent,
+        networkStats: net.networkStats,
+        executeJavaScript: vi.fn((code: string) =>
+          isSignatureCall(code) || isCursorCall(code) ? Promise.resolve({ ok: true }) : Promise.resolve({ matched: "Go" }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const promise = controller.act({ action: "click", target: "Go" });
+      let settled = false;
+      void promise.then(() => {
+        settled = true;
+      });
+      // No navigation event ever fires and no request ever starts — the
+      // click should resolve once the navigation-start grace elapses
+      // (well under the old 300ms fixed probe), with no additional
+      // network-quiet wait on top (networkStats reports nothing new).
+      await vi.advanceTimersByTimeAsync(150);
+      expect(settled).toBe(true);
+      const result = await promise;
+      expect(result).not.toHaveProperty("error");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("code review finding 2: a no-network click settles immediately even with requests already pending from BEFORE the action (Pinterest-style lazy images)", async () => {
+    vi.useFakeTimers();
+    try {
+      const net = makeNetworkFakes();
+      // A request already in flight before the click ever runs — e.g. a
+      // lazy-loading image grid still fetching from an earlier scroll.
+      // Never finished, so it would keep `pending` above zero forever if it
+      // weren't excluded by baseline generation.
+      net.startRequest();
+      const page = makeFakePage({
+        onNavigationEvent: net.onNavigationEvent,
+        networkStats: net.networkStats,
+        executeJavaScript: vi.fn((code: string) =>
+          isSignatureCall(code) || isCursorCall(code) ? Promise.resolve({ ok: true }) : Promise.resolve({ matched: "Go" }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const promise = controller.act({ action: "click", target: "Go" });
+      let settled = false;
+      void promise.then(() => {
+        settled = true;
+      });
+      // The click itself starts no new request — it should settle after the
+      // navigation-start grace alone, not wait on the pre-existing pending
+      // request (which never finishes in this test).
+      await vi.advanceTimersByTimeAsync(150);
+      expect(settled).toBe(true);
+      const result = await promise;
+      expect(result).not.toHaveProperty("error");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a click that fires a fetch (no navigation) waits for network to go quiet before settling", async () => {
+    vi.useFakeTimers();
+    try {
+      const net = makeNetworkFakes();
+      const page = makeFakePage({
+        onNavigationEvent: net.onNavigationEvent,
+        networkStats: net.networkStats,
+        executeJavaScript: vi.fn((code: string) => {
+          if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+          // Models a click handler firing a fetch() synchronously — the
+          // request "starts" (networkStats' generation bumps) before this
+          // resolves, same as a real CDP requestWillBeSent would arrive
+          // before executeJavaScript's own promise settles.
+          net.startRequest();
+          setTimeout(() => net.finishRequest(), 1_200);
+          return Promise.resolve({ matched: "Load" });
+        }),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const promise = controller.act({ action: "click", target: "Load" });
+      let settled = false;
+      void promise.then(() => {
+        settled = true;
+      });
+
+      // Not yet quiet at 1000ms — the request is still in flight.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(settled).toBe(false);
+
+      // The request finishes at 1200ms; quiet needs to hold for the
+      // network-quiet window afterward before the command settles.
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(settled).toBe(true);
+      const result = await promise;
+      expect(result).not.toHaveProperty("error");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("press: a single settle, not a double — a non-navigating, no-network press resolves without an extra fixed sleep on top", async () => {
+    vi.useFakeTimers();
+    try {
+      const net = makeNetworkFakes();
+      const sendCdp = vi.fn(() => Promise.resolve({}));
+      const page = makeFakePage({
+        sendCdp,
+        onNavigationEvent: net.onNavigationEvent,
+        networkStats: net.networkStats,
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const promise = controller.act({ action: "press", key: "Tab" });
+      let settled = false;
+      void promise.then(() => {
+        settled = true;
+      });
+      // Old behavior: settleAfterClick's 300ms fixed probe *plus* a
+      // separate settleShort() (50ms) — 350ms total. Wave 1 speed's
+      // event-driven grace plus an instant "nothing to wait for"
+      // network-quiet check settles well before that combined bound.
+      await vi.advanceTimersByTimeAsync(200);
+      expect(settled).toBe(true);
+      const result = await promise;
+      expect(result).not.toHaveProperty("error");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Follow-up rule: `wait` exists precisely because the caller expects
+  // something — often a client-side timer with no network at all — to
+  // still be in flight, so it must never return early just because nothing
+  // has happened *yet*. It only returns early once something DID happen and
+  // has since gone quiet.
+
+  it("act wait (no text): nothing ever happens (no DOM mutation, no network) — waits the full ms, exactly like the original fixed sleep", async () => {
+    vi.useFakeTimers();
+    try {
+      const page = makeFakePage(); // no networkStats; executeJavaScript's
+      // generic { ok: true } response for WAIT_DOM_ACTIVITY_JS never
+      // reports a mutation.
+      const controller = new BrowserController(makeFakeTarget(page));
+      const promise = controller.act({ action: "wait", ms: 500 });
+      let settled = false;
+      void promise.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(400);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(settled).toBe(true);
+      const result = await promise;
+      expect(result).toMatchObject({ found: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("act wait (no text): a spinner-style DOM mutation with no network activity — waits for the mutation, then the quiet window, not the full default", async () => {
+    vi.useFakeTimers();
+    try {
+      // Models WAIT_DOM_ACTIVITY_JS: "install" arms a mutation that lands at
+      // t=1500ms (a spinner resolving into a button, no network involved at
+      // all); "check" reports { mutated, ageMs } from that same clock,
+      // exactly like the real page script would via its MutationObserver.
+      let mutatedAt: number | null = null;
+      const executeJavaScript = vi.fn((code: string) => {
+        if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+        if (code.includes('"action":"install"')) {
+          setTimeout(() => {
+            mutatedAt = Date.now();
+          }, 1_500);
+          return Promise.resolve({ installed: true });
+        }
+        if (code.includes('"action":"uninstall"')) return Promise.resolve({ uninstalled: true });
+        // "check"
+        if (mutatedAt === null) return Promise.resolve({ mutated: false, ageMs: null });
+        return Promise.resolve({ mutated: true, ageMs: Date.now() - mutatedAt });
+      });
+      const page = makeFakePage({ executeJavaScript });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const promise = controller.act({ action: "wait" }); // default ms (3000)
+      let settled = false;
+      void promise.then(() => {
+        settled = true;
+      });
+
+      // Not settled before the mutation even happens.
+      await vi.advanceTimersByTimeAsync(1_400);
+      expect(settled).toBe(false);
+
+      // Mutation lands at 1500ms; must not settle immediately — it needs to
+      // observe quiet (no further mutation) for the quiet window first.
+      await vi.advanceTimersByTimeAsync(200); // now at ~1600ms
+      expect(settled).toBe(false);
+
+      // By ~1500 + 300 (quiet window) + a little poll slack, it should have
+      // settled — well before the 3000ms default.
+      await vi.advanceTimersByTimeAsync(600); // now at ~2200ms
+      expect(settled).toBe(true);
+      const result = await promise;
+      expect(result).toMatchObject({ found: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("act wait (no text): network-only activity (no DOM mutation) is also waited for, then settled", async () => {
+    vi.useFakeTimers();
+    try {
+      const net = makeNetworkFakes();
+      const page = makeFakePage({ networkStats: net.networkStats });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const promise = controller.act({ action: "wait" }); // default ms (3000)
+      let settled = false;
+      void promise.then(() => {
+        settled = true;
+      });
+
+      // Nothing pending yet — must not settle immediately just because
+      // pending is currently 0 (no activity has been observed at all yet).
+      await vi.advanceTimersByTimeAsync(100);
+      expect(settled).toBe(false);
+
+      net.startRequest();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(settled).toBe(false); // still in flight
+
+      net.finishRequest();
+      await vi.advanceTimersByTimeAsync(400); // past the quiet window
+      expect(settled).toBe(true);
+      const result = await promise;
+      expect(result).toMatchObject({ found: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("act wait (no text): second-pass review finding 2 — a request already pending from BEFORE the wait started must not keep it 'active' for the whole ms budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const net = makeNetworkFakes();
+      // A request already in flight before `act wait` is even called — e.g.
+      // a lazy-loading image grid still fetching from an earlier scroll.
+      // Never finishes in this test, so an unscoped `pending` count (no
+      // baseline generation passed to networkStats) would report it forever
+      // and the wait would never see quiet, burning the entire `ms` budget.
+      const staleId = net.startRequest();
+      const page = makeFakePage({ networkStats: net.networkStats });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const promise = controller.act({ action: "wait", ms: 3_000 });
+      let settled = false;
+      void promise.then(() => {
+        settled = true;
+      });
+
+      // Flush the DOM-activity install + baseline capture (both awaited
+      // before the poll loop starts) before starting the "new" request —
+      // otherwise it would race into the same baseline generation as the
+      // stale one above instead of landing strictly after it.
+      await vi.advanceTimersByTimeAsync(0);
+      const newId = net.startRequest();
+      await vi.advanceTimersByTimeAsync(100);
+      net.finishRequest(newId);
+      // Past the quiet window, well under the 3000ms budget — only possible
+      // if the still-pending `staleId` request is excluded from `pending`.
+      await vi.advanceTimersByTimeAsync(400);
+      expect(settled).toBe(true);
+      const result = await promise;
+      expect(result).toMatchObject({ found: true });
+      // Sanity: the stale request genuinely never finished.
+      expect(staleId).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a genuine navigation still waits for load-stop, event-driven, instead of the network-quiet path", async () => {
+    vi.useFakeTimers();
+    try {
+      const net = makeNetworkFakes();
+      let loading = false;
+      const page = makeFakePage({
+        onNavigationEvent: net.onNavigationEvent,
+        networkStats: net.networkStats,
+        isLoading: vi.fn(() => loading),
+        executeJavaScript: vi.fn((code: string) => {
+          if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+          loading = true;
+          net.fireNavigation();
+          setTimeout(() => {
+            loading = false;
+          }, 1_000);
+          return Promise.resolve({ matched: "Go" });
+        }),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const promise = controller.act({ action: "click", target: "Go" });
+      let settled = false;
+      void promise.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(settled).toBe(true);
+      // networkStats is called exactly once, to capture the baseline before
+      // the action runs — the network-quiet *wait* loop must never run once
+      // a navigation was observed (it would keep polling networkStats
+      // otherwise).
+      expect(net.networkStats).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Wave 2 reliability (desktop/src/main/browser/controller.ts,
+  // pageScripts.ts) — trusted CDP click/type, hidden-target text resolution,
+  // and scroll-container targeting. `CLICK_RESOLVE_JS`'s code always
+  // contains "elementFromPointDeep" (its hit-test helper — unique to that
+  // script); `SELECT_ALL_CONTENT_JS`'s always contains "Target element not
+  // found for typing." (its own error message); `READ_TARGET_VALUE_JS`'s
+  // always contains "matches: actual === expected" (its comparison
+  // expression) — used below to give each script call a distinct canned
+  // response without depending on call order.
+  describe("Wave 2 reliability", () => {
+    function isResolveCall(code: unknown): boolean {
+      return typeof code === "string" && code.includes("elementFromPointDeep");
+    }
+    function isSelectAllCall(code: unknown): boolean {
+      return typeof code === "string" && code.includes("Target element not found for typing.");
+    }
+    function isReadValueCall(code: unknown): boolean {
+      return typeof code === "string" && code.includes("matches: actual === expected");
+    }
+    function isBusyCall(code: unknown): boolean {
+      return typeof code === "string" && code.includes("present: true, busy: penTargetIsBusy(el)");
+    }
+
+    describe("dispatchClick (act click / perform CLICK)", () => {
+      it("act click: dispatches a trusted CDP mouseMoved/mousePressed/mouseReleased triple when the hit-test passes, and reports via: \"cdp\"", async () => {
+        const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://x/"),
+          getTitle: vi.fn(() => "X"),
+          sendCdp,
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            if (isResolveCall(code)) {
+              return Promise.resolve({ found: true, x: 12, y: 34, hitOk: true, matched: "Buy now" });
+            }
+            if (isBusyCall(code)) return Promise.resolve({ present: true, busy: false });
+            return Promise.resolve({ ok: true });
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const result = await controller.act({ action: "click", target: "Buy now" });
+        expect(result).toMatchObject({ via: "cdp", matched: "Buy now" });
+        const calls = sendCdp.mock.calls.filter((c) => c[0] === "Input.dispatchMouseEvent");
+        expect(calls.map((c) => (c[1] as Record<string, unknown>).type)).toEqual([
+          "mouseMoved",
+          "mousePressed",
+          "mouseReleased",
+        ]);
+        for (const call of calls) {
+          expect(call[1]).toMatchObject({ x: 12, y: 34 });
+        }
+        expect(calls[1][1]).toMatchObject({ button: "left", clickCount: 1 });
+        expect(calls[2][1]).toMatchObject({ button: "left", clickCount: 1 });
+        // The DOM-fallback script (CLICK_JS, which always calls el.click())
+        // must never run on the trusted path — every executeJavaScript call
+        // seen is cursor/signature/resolve/busy, never CLICK_JS itself. (A
+        // plain substring check for CLICK_JS's own error text is not viable
+        // here: CLICK_RESOLVE_JS's *source* also contains that same string
+        // as its own not-found message, even when its canned mock response
+        // never triggers that branch.)
+        for (const call of (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls) {
+          const code = call[0] as string;
+          expect(isCursorCall(code) || isSignatureCall(code) || isResolveCall(code) || isBusyCall(code)).toBe(true);
+        }
+      });
+
+      it("act click: falls back to the DOM el.click() path (CLICK_JS) when the hit-test fails, reporting via: \"dom\"", async () => {
+        const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://x/"),
+          getTitle: vi.fn(() => "X"),
+          sendCdp,
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            if (isResolveCall(code)) {
+              // Covered/offscreen after scroll — hitOk: false.
+              return Promise.resolve({ found: true, x: 12, y: 34, hitOk: false, matched: "Buy now" });
+            }
+            // CLICK_JS itself.
+            return Promise.resolve({ url: "https://x/", title: "X", matched: "Buy now" });
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const result = await controller.act({ action: "click", target: "Buy now" });
+        expect(result).toMatchObject({ via: "dom", matched: "Buy now" });
+        expect(sendCdp).not.toHaveBeenCalledWith("Input.dispatchMouseEvent", expect.anything());
+      });
+
+      it("code review finding 8: a CDP failure BEFORE mousePressed (mouseMoved rejects) still falls back to the DOM click", async () => {
+        const sendCdp = vi.fn((method: string, _params?: Record<string, unknown>) => {
+          if (method === "Input.dispatchMouseEvent") {
+            // Only the very first dispatchMouseEvent call (mouseMoved) is
+            // made to fail here — asserted below.
+            if (sendCdp.mock.calls.filter((c) => c[0] === "Input.dispatchMouseEvent").length === 1) {
+              return Promise.reject(new Error("debugger detached"));
+            }
+          }
+          return Promise.resolve({});
+        });
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://x/"),
+          getTitle: vi.fn(() => "X"),
+          sendCdp,
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            if (isResolveCall(code)) {
+              return Promise.resolve({ found: true, x: 12, y: 34, hitOk: true, matched: "Buy now" });
+            }
+            // CLICK_JS itself (the DOM fallback).
+            return Promise.resolve({ url: "https://x/", title: "X", matched: "Buy now" });
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const result = await controller.act({ action: "click", target: "Buy now" });
+        expect(result).toMatchObject({ via: "dom", matched: "Buy now" });
+        // mousePressed was never reached.
+        const pressedCalls = sendCdp.mock.calls.filter(
+          (c) => c[0] === "Input.dispatchMouseEvent" && (c[1] as Record<string, unknown>).type === "mousePressed",
+        );
+        expect(pressedCalls).toHaveLength(0);
+      });
+
+      it("code review finding 8: a CDP failure AFTER mousePressed was sent (mouseReleased rejects) reports an error instead of risking a double click via the DOM fallback", async () => {
+        const sendCdp = vi.fn((method: string, params?: Record<string, unknown>) => {
+          if (method === "Input.dispatchMouseEvent" && (params as { type?: string })?.type === "mouseReleased") {
+            return Promise.reject(new Error("debugger detached"));
+          }
+          return Promise.resolve({});
+        });
+        const clickJs = vi.fn();
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://x/"),
+          getTitle: vi.fn(() => "X"),
+          sendCdp,
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            if (isResolveCall(code)) {
+              return Promise.resolve({ found: true, x: 12, y: 34, hitOk: true, matched: "Buy now" });
+            }
+            clickJs();
+            return Promise.resolve({ url: "https://x/", title: "X", matched: "Buy now" });
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const result = (await controller.act({ action: "click", target: "Buy now" })) as { error?: string };
+        expect(result.error).toBeTruthy();
+        expect(result.error).toMatch(/double click/i);
+        // CLICK_JS (the DOM el.click() fallback) must never have run — that
+        // would be a second click on top of a press that may have already
+        // landed.
+        expect(clickJs).not.toHaveBeenCalled();
+        expect(sendCdp).toHaveBeenCalledWith(
+          "Input.dispatchMouseEvent",
+          expect.objectContaining({ type: "mousePressed" }),
+        );
+      });
+
+      it("act click: falls back to the DOM path outright when the tab has no CDP session", async () => {
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://x/"),
+          getTitle: vi.fn(() => "X"),
+          // No sendCdp at all — models a tab whose debugger never attached.
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            if (isResolveCall(code)) {
+              return Promise.resolve({ found: true, x: 12, y: 34, hitOk: true, matched: "Buy now" });
+            }
+            return Promise.resolve({ url: "https://x/", title: "X", matched: "Buy now" });
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const result = await controller.act({ action: "click", target: "Buy now" });
+        expect(result).toMatchObject({ via: "dom" });
+      });
+
+      it("perform CLICK: routes an index-based click through the same trusted-CDP resolve/dispatch path", async () => {
+        const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://x/"),
+          getTitle: vi.fn(() => "X"),
+          sendCdp,
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            if (isResolveCall(code)) return Promise.resolve({ found: true, x: 1, y: 2, hitOk: true });
+            if (isBusyCall(code)) return Promise.resolve({ present: false, busy: false });
+            return Promise.resolve({ ok: true });
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const snapshot = (await controller.snapshot()) as { snapshotId: string };
+        const result = await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+        expect(result).toMatchObject({ via: "cdp" });
+        expect(sendCdp).toHaveBeenCalledWith("Input.dispatchMouseEvent", expect.objectContaining({ type: "mousePressed" }));
+      });
+
+      it("target text resolving to only a hidden element is refused, not clicked", async () => {
+        const page = makeFakePage({
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            if (isResolveCall(code)) return Promise.resolve({ error: "target is not visible (hidden element)" });
+            return Promise.resolve({ ok: true });
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const result = await controller.act({ action: "click", target: "Hidden menu item" });
+        expect(result).toEqual({ error: "target is not visible (hidden element)" });
+      });
+    });
+
+    describe("dispatchType (act type / perform TYPE_TEXT)", () => {
+      it("act type: focuses via a trusted CDP click, selects existing content, and types via Input.insertText, reporting via: \"cdp\"", async () => {
+        const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://x/"),
+          getTitle: vi.fn(() => "X"),
+          sendCdp,
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            if (isResolveCall(code)) return Promise.resolve({ found: true, x: 5, y: 6, hitOk: true, matched: "Email", editable: true });
+            if (isSelectAllCall(code)) return Promise.resolve({ editable: true });
+            if (isReadValueCall(code)) return Promise.resolve({ matches: true, present: true });
+            if (isBusyCall(code)) return Promise.resolve({ present: false, busy: false });
+            return Promise.resolve({ ok: true });
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const result = await controller.act({ action: "type", target: "Email", text: "hi@example.com" });
+        expect(result).toMatchObject({ via: "cdp", matched: "Email" });
+        expect(sendCdp).toHaveBeenCalledWith("Input.dispatchMouseEvent", expect.objectContaining({ type: "mousePressed" }));
+        // First char fires a real keyDown/keyUp so key listeners see it —
+        // carrying no `text` (a raw key event, not an inserted character).
+        const firstCharCall = sendCdp.mock.calls.find(
+          (c) => c[0] === "Input.dispatchKeyEvent" && (c[1] as Record<string, unknown>).type === "rawKeyDown",
+        );
+        expect(firstCharCall).toBeTruthy();
+        expect((firstCharCall![1] as Record<string, unknown>).text).toBeUndefined();
+        expect(sendCdp).toHaveBeenCalledWith("Input.insertText", { text: "hi@example.com" });
+      });
+
+      it("act type: verifies the typed value and falls back to the native-setter path (TYPE_JS) on a mismatch", async () => {
+        const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://x/"),
+          getTitle: vi.fn(() => "X"),
+          sendCdp,
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            if (isResolveCall(code)) return Promise.resolve({ found: true, x: 5, y: 6, hitOk: true, matched: "Card", editable: true });
+            if (isSelectAllCall(code)) return Promise.resolve({ editable: true });
+            // A masked/formatted input rewrote what was inserted.
+            if (isReadValueCall(code)) return Promise.resolve({ matches: false, present: true });
+            // TYPE_JS itself (the legacy fallback).
+            return Promise.resolve({ url: "https://x/", title: "X", matched: "Card" });
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const result = await controller.act({ action: "type", target: "Card", text: "4242 4242 4242 4242" });
+        expect(result).toMatchObject({ via: "dom" });
+      });
+
+      it("act type: falls back to TYPE_JS outright when there is no CDP session", async () => {
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://x/"),
+          getTitle: vi.fn(() => "X"),
+          executeJavaScript: vi.fn(() => Promise.resolve({ url: "https://x/", title: "X", matched: "Search" })),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const result = await controller.act({ action: "type", target: "Search", text: "shoes" });
+        expect(result).toMatchObject({ via: "dom" });
+      });
+
+      it("perform TYPE_TEXT: routes an index-based type through the trusted-CDP path too", async () => {
+        const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://x/"),
+          getTitle: vi.fn(() => "X"),
+          sendCdp,
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            if (isResolveCall(code)) return Promise.resolve({ found: true, x: 1, y: 2, hitOk: true, editable: true });
+            if (isSelectAllCall(code)) return Promise.resolve({ editable: true });
+            if (isReadValueCall(code)) return Promise.resolve({ matches: true, present: true });
+            if (isBusyCall(code)) return Promise.resolve({ present: false, busy: false });
+            return Promise.resolve({ ok: true });
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const snapshot = (await controller.snapshot()) as { snapshotId: string };
+        const result = await controller.perform({
+          snapshotId: snapshot.snapshotId,
+          index: 0,
+          operation: "TYPE_TEXT",
+          text: "hello",
+        });
+        expect(result).toMatchObject({ via: "cdp" });
+        expect(sendCdp).toHaveBeenCalledWith("Input.insertText", { text: "hello" });
+      });
+
+      it("code review finding 4: a text match that resolves to a non-editable element (a link/button) is never trusted-clicked — it goes straight to the legacy 'not editable' error", async () => {
+        const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://x/"),
+          getTitle: vi.fn(() => "X"),
+          sendCdp,
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            if (isResolveCall(code)) {
+              // A text match found and hittable, but it's a link, not a
+              // text field — CLICK_RESOLVE_JS's own read-only editable check.
+              return Promise.resolve({ found: true, x: 5, y: 6, hitOk: true, matched: "Checkout", editable: false });
+            }
+            // TYPE_JS's legacy path — reached without ever clicking.
+            return Promise.resolve({ error: "Element is not editable: Checkout" });
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const result = await controller.act({ action: "type", target: "Checkout", text: "hi" });
+        expect(result).toEqual({ error: "Element is not editable: Checkout" });
+        // The whole point: no mouse event of any kind was ever dispatched —
+        // clicking a link/button as a side effect of typing is the bug.
+        expect(sendCdp).not.toHaveBeenCalledWith("Input.dispatchMouseEvent", expect.anything());
+      });
+    });
+
+    describe("scroll targeting", () => {
+      it("act scroll: a target is passed through to SCROLL_JS for the page script to resolve", async () => {
+        const page = makeFakePage({
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            return Promise.resolve({ url: "https://x/", title: "X" });
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        await controller.act({ action: "scroll", target: "Reviews list" });
+        const code = findScriptCall(page.executeJavaScript as ReturnType<typeof vi.fn>, JSON.stringify("Reviews list"));
+        expect(code).toContain(JSON.stringify({ amount: 1, target: "Reviews list" }));
+      });
+
+      it("act scroll: index+snapshotId is passed through to SCROLL_JS", async () => {
+        const page = makeFakePage({
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            return Promise.resolve({ url: "https://x/", title: "X" });
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const snapshot = (await controller.snapshot()) as { snapshotId: string };
+        (page.executeJavaScript as ReturnType<typeof vi.fn>).mockClear();
+        await controller.act({ action: "scroll", index: 2, snapshotId: snapshot.snapshotId });
+        const code = findScriptCall(page.executeJavaScript as ReturnType<typeof vi.fn>, JSON.stringify(snapshot.snapshotId));
+        expect(code).toContain(JSON.stringify({ amount: 1, index: 2, snapshotId: snapshot.snapshotId }));
+      });
+
+      it("perform SCROLL_DOWN: an index+snapshotId targets that container's own scroll, same as act scroll", async () => {
+        const page = makeFakePage({
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            return Promise.resolve({ url: "https://x/", title: "X" });
+          }),
+        });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const snapshot = (await controller.snapshot()) as { snapshotId: string };
+        (page.executeJavaScript as ReturnType<typeof vi.fn>).mockClear();
+        await controller.perform({ snapshotId: snapshot.snapshotId, index: 4, operation: "SCROLL_DOWN" });
+        const code = findScriptCall(page.executeJavaScript as ReturnType<typeof vi.fn>, JSON.stringify(snapshot.snapshotId));
+        expect(code).toContain(
+          JSON.stringify({ snapshotId: snapshot.snapshotId, index: 4, operation: "SCROLL_DOWN", text: undefined }),
+        );
+      });
+    });
+  });
+});
+
+// Wave 3 reliability (2026-09-24): shadow-DOM piercing is entirely inside
+// the page scripts themselves (deepQueryAll) — covered by e2e only, a fake
+// executeJavaScript can't prove a real shadow root was traversed. This
+// section covers what a unit test *can* prove: frame discovery/routing,
+// the console-error ring buffer merge, and the botCheck heuristic wiring.
+describe("BrowserController — Wave 3 reliability", () => {
+  function isIframeRectsCall(code: unknown): boolean {
+    return typeof code === "string" && code.includes('deepQueryAll(document, "iframe")');
+  }
+  function isBotCheckCall(code: unknown): boolean {
+    return typeof code === "string" && code.includes("just a moment");
+  }
+  function isSnapshotCall(code: unknown): boolean {
+    return typeof code === "string" && code.includes("INTERACTIVE_SELECTOR");
+  }
+  function isReadCall(code: unknown): boolean {
+    return typeof code === "string" && code.includes("headingsTruncated");
+  }
+  function isFindImagesCall(code: unknown): boolean {
+    return typeof code === "string" && code.includes("pickLargestSrcsetCandidate");
+  }
+
+  const oneChildFrame = { frameId: 7, url: "https://frame.example/", name: "checkout" };
+  const frameRect = { url: "https://frame.example/", name: "checkout", x: 10, y: 20, width: 300, height: 150 };
+
+  /** A page with one matched child frame — `listFrames`/`executeJavaScriptInFrame`
+   * wired, and the top document's own `IFRAME_RECTS_JS` call reporting a
+   * single visible iframe that matches it by url. `frameScript` answers
+   * every call actually routed into the frame (SNAPSHOT_JS/READ_JS/
+   * FIND_IMAGES_JS/PERFORM_JS); it defaults to a stock response for each. */
+  function makeFramedPage(opts: {
+    frameScript?: (code: string) => unknown;
+    executeJavaScriptInFrame?: (frameId: number, code: string, timeoutMs: number) => Promise<unknown>;
+  } = {}) {
+    const executeJavaScriptInFrame = vi.fn((frameId: number, code: string, timeoutMs: number) => {
+        if (opts.executeJavaScriptInFrame) return opts.executeJavaScriptInFrame(frameId, code, timeoutMs);
+        if (opts.frameScript) return Promise.resolve(opts.frameScript(code));
+        if (isSnapshotCall(code)) {
+          return Promise.resolve({
+            url: frameRect.url,
+            title: "Checkout Frame",
+            elements: [{ index: 0, tag: "button", label: "Pay", ops: ["CLICK"] }],
+            scroll: { y: 0, height: 100, atBottom: true },
+          });
+        }
+        if (isReadCall(code)) {
+          return Promise.resolve({
+            url: frameRect.url,
+            title: "Checkout Frame",
+            headings: [],
+            text: "Pay now",
+            links: [],
+            truncated: false,
+            headingsTruncated: false,
+            linksTruncated: false,
+          });
+        }
+        if (isFindImagesCall(code)) {
+          return Promise.resolve({ images: [{ url: "https://frame.example/a.png", alt: "", width: 400, height: 400 }], count: 1, pageUrl: frameRect.url });
+        }
+        return Promise.resolve({ url: frameRect.url, title: "Checkout Frame", __scopedBefore: null, __targetSelfDisabled: false });
+      });
+    const page = makeFakePage({
+      listFrames: vi.fn(() => [oneChildFrame]),
+      executeJavaScriptInFrame,
+      executeJavaScript: vi.fn((code: string) => {
+        if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+        if (isIframeRectsCall(code)) return Promise.resolve({ frames: [frameRect] });
+        if (isBotCheckCall(code)) return Promise.resolve({ botCheck: false });
+        if (isSnapshotCall(code)) {
+          return Promise.resolve({
+            url: "https://example.com/",
+            title: "Top",
+            elements: [],
+            scroll: { y: 0, height: 100, atBottom: true },
+          });
+        }
+        if (isReadCall(code)) {
+          return Promise.resolve({
+            url: "https://example.com/",
+            title: "Top",
+            headings: [],
+            text: "Top text",
+            links: [],
+            truncated: false,
+            headingsTruncated: false,
+            linksTruncated: false,
+          });
+        }
+        if (isFindImagesCall(code)) {
+          return Promise.resolve({ images: [], count: 0, pageUrl: "https://example.com/" });
+        }
+        return Promise.resolve({ ok: true });
+      }),
+    });
+    return { page, executeJavaScriptInFrame };
+  }
+
+  describe("iframe discovery and routing", () => {
+    it("snapshot merges a matched child frame's elements, global-indexed and frame-labeled", async () => {
+      const { page } = makeFramedPage();
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = (await controller.snapshot()) as { elements: { index: number; frame?: string; label: string }[] };
+      expect(result.elements).toHaveLength(1);
+      expect(result.elements[0]).toMatchObject({ index: 0, frame: "Checkout Frame", label: "Pay" });
+    });
+
+    it("code review finding 7: a top document reporting the full MAX_SNAPSHOT_ELEMENTS never drives a negative frame budget", async () => {
+      // Models the FIXED SNAPSHOT_JS: it never reports more than the
+      // maxElements it was given, even on a busy page with scroll
+      // containers — so the top document here reports exactly
+      // MAX_SNAPSHOT_ELEMENTS elements, never MAX_SNAPSHOT_ELEMENTS + 10
+      // (what the pre-fix script could produce by appending containers
+      // unconditionally on top of an already-full interactive-element cap).
+      const manyElements = Array.from({ length: MAX_SNAPSHOT_ELEMENTS }, (_, i) => ({
+        index: i,
+        tag: "button",
+        label: "Many " + i,
+        ops: ["CLICK"],
+      }));
+      const executeJavaScriptInFrame = vi.fn(() => Promise.resolve({ url: "https://frame.example/", title: "Frame", elements: [] }));
+      const page = makeFakePage({
+        listFrames: vi.fn(() => [oneChildFrame]),
+        executeJavaScriptInFrame,
+        executeJavaScript: vi.fn((code: string) => {
+          if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+          if (isIframeRectsCall(code)) return Promise.resolve({ frames: [frameRect] });
+          if (isSnapshotCall(code)) {
+            return Promise.resolve({
+              url: "https://example.com/",
+              title: "Top",
+              elements: manyElements,
+              scroll: { y: 0, height: 100, atBottom: true },
+            });
+          }
+          return Promise.resolve({ ok: true });
+        }),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = (await controller.snapshot()) as { elements: unknown[] };
+      expect(result).not.toHaveProperty("error");
+      // The whole point: never more than the documented hard cap, and no
+      // exception/negative-argument fallout from a would-be-negative
+      // `remaining` — the frame is correctly skipped (budget genuinely
+      // exhausted by the top document alone), not crashed past.
+      expect(result.elements.length).toBe(MAX_SNAPSHOT_ELEMENTS);
+      expect(executeJavaScriptInFrame).not.toHaveBeenCalled();
+    });
+
+    it("perform CLICK on a frame-routed index runs PERFORM_JS inside that frame, not the top page", async () => {
+      const { page, executeJavaScriptInFrame } = makeFramedPage();
+      const controller = new BrowserController(makeFakeTarget(page));
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      const result = await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+      expect(result).not.toHaveProperty("error");
+      expect(result).toMatchObject({ via: "dom" });
+      const frameCall = executeJavaScriptInFrame.mock.calls.find((c) => typeof c[1] === "string" && c[1].includes('"operation":"CLICK"'));
+      expect(frameCall).toBeTruthy();
+      expect(frameCall![0]).toBe(oneChildFrame.frameId);
+      // The frame's own SNAPSHOT_JS numbered its one element "0" — the
+      // frameMap must translate the caller's global index (also 0, since
+      // it's the only element) back to that same local index.
+      expect(frameCall![1]).toContain('"index":0');
+    });
+
+    // Code review finding 6: `act`'s scroll/hover/press by index used to
+    // always run their page script against the TOP document — ignoring the
+    // frame map `snapshot()` built entirely — so any of them targeting an
+    // element that actually lived in a child frame failed with "No element
+    // matched: index N" (or the operation's own equivalent) instead of
+    // acting on it. All three now resolve through the same frame map
+    // perform's CLICK/TYPE_TEXT/SELECT already used.
+
+    it("act scroll on a frame-routed index runs SCROLL_JS inside that frame, not the top page", async () => {
+      const frameScript = vi.fn((code: string) => {
+        if (code.includes("INTERACTIVE_SELECTOR")) {
+          return {
+            url: frameRect.url,
+            title: "Checkout Frame",
+            elements: [{ index: 0, tag: "div", label: "Order summary", ops: [], scrollable: true }],
+            scroll: { y: 0, height: 100, atBottom: false },
+          };
+        }
+        // SCROLL_JS itself.
+        return { url: frameRect.url, title: "Checkout Frame" };
+      });
+      const { page, executeJavaScriptInFrame } = makeFramedPage({ frameScript });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      const result = await controller.act({ action: "scroll", index: 0, snapshotId: snapshot.snapshotId });
+      expect(result).not.toHaveProperty("error");
+      const frameCall = executeJavaScriptInFrame.mock.calls.find(
+        (c) => typeof c[1] === "string" && c[1].includes("No scrollable container found for that target."),
+      );
+      expect(frameCall).toBeTruthy();
+      expect(frameCall![0]).toBe(oneChildFrame.frameId);
+      expect(frameCall![1]).toContain('"index":0');
+    });
+
+    it("act hover on a frame-routed index runs HOVER_TARGET_JS inside that frame, and adds the frame's own viewport offset to the trusted mouseMoved coordinates", async () => {
+      const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+      const frameScript = vi.fn((code: string) => {
+        if (code.includes("INTERACTIVE_SELECTOR")) {
+          return {
+            url: frameRect.url,
+            title: "Checkout Frame",
+            elements: [{ index: 0, tag: "button", label: "Pay", ops: ["CLICK"] }],
+            scroll: { y: 0, height: 100, atBottom: true },
+          };
+        }
+        if (code.includes("y: rect.top + rect.height / 2,")) {
+          // HOVER_TARGET_JS itself — coordinates local to the frame's own
+          // document (frameRect is { x: 10, y: 20, width: 300, height: 150 }).
+          return { found: true, x: 15, y: 25 };
+        }
+        return { url: frameRect.url, title: "Checkout Frame" };
+      });
+      const { page, executeJavaScriptInFrame } = makeFramedPage({ frameScript });
+      const pageWithCdp = { ...page, sendCdp };
+      const controller = new BrowserController(makeFakeTarget(pageWithCdp));
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      const result = await controller.act({ action: "hover", index: 0, snapshotId: snapshot.snapshotId });
+      expect(result).not.toHaveProperty("error");
+      const frameCall = executeJavaScriptInFrame.mock.calls.find(
+        (c) => typeof c[1] === "string" && c[1].includes("y: rect.top + rect.height / 2,"),
+      );
+      expect(frameCall).toBeTruthy();
+      expect(frameCall![0]).toBe(oneChildFrame.frameId);
+      // Frame-local (15, 25) + the frame's own top-level-viewport offset
+      // (10, 20) from frameRect = (25, 45).
+      expect(sendCdp).toHaveBeenCalledWith(
+        "Input.dispatchMouseEvent",
+        expect.objectContaining({ type: "mouseMoved", x: 25, y: 45 }),
+      );
+    });
+
+    it("act press with a frame-routed focus index focuses FOCUS_JS inside that frame before dispatching the key", async () => {
+      const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+      const frameScript = vi.fn((code: string) => {
+        if (code.includes("INTERACTIVE_SELECTOR")) {
+          return {
+            url: frameRect.url,
+            title: "Checkout Frame",
+            elements: [{ index: 0, tag: "input", label: "Card number", ops: ["TYPE_TEXT"] }],
+            scroll: { y: 0, height: 100, atBottom: true },
+          };
+        }
+        if (code.includes("focused: true")) {
+          // FOCUS_JS itself.
+          return { focused: true };
+        }
+        return { url: frameRect.url, title: "Checkout Frame" };
+      });
+      const { page, executeJavaScriptInFrame } = makeFramedPage({ frameScript });
+      const pageWithCdp = { ...page, sendCdp };
+      const controller = new BrowserController(makeFakeTarget(pageWithCdp));
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      const result = await controller.act({ action: "press", key: "Tab", index: 0, snapshotId: snapshot.snapshotId });
+      expect(result).not.toHaveProperty("error");
+      const frameCall = executeJavaScriptInFrame.mock.calls.find(
+        (c) => typeof c[1] === "string" && c[1].includes("focused: true"),
+      );
+      expect(frameCall).toBeTruthy();
+      expect(frameCall![0]).toBe(oneChildFrame.frameId);
+      expect(frameCall![1]).toContain('"index":0');
+      // The key dispatch itself needs no frame routing — CDP keyboard
+      // input targets whichever frame currently holds focus.
+      expect(sendCdp).toHaveBeenCalledWith("Input.dispatchKeyEvent", expect.objectContaining({ code: "Tab" }));
+    });
+
+    it("a frame whose script call rejects (electron#5183 timeout) is skipped, not fatal", async () => {
+      const executeJavaScriptInFrame = vi.fn(() => Promise.reject(new Error("Frame script timed out after 1500ms.")));
+      const { page } = makeFramedPage({ executeJavaScriptInFrame });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = (await controller.snapshot()) as { elements: unknown[] };
+      expect(result).not.toHaveProperty("error");
+      expect(result.elements).toHaveLength(0);
+    });
+
+    it("findImages merges a child frame's images with the top document's own", async () => {
+      const { page } = makeFramedPage();
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = (await controller.findImages({})) as { images: { url: string }[]; count: number };
+      expect(result.count).toBe(1);
+      expect(result.images[0].url).toBe("https://frame.example/a.png");
+    });
+
+    it("read appends a child frame's text with a [frame: X] header", async () => {
+      const { page } = makeFramedPage();
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = (await controller.read({})) as { text: string };
+      expect(result.text).toContain("Top text");
+      expect(result.text).toContain("[frame: Checkout Frame]");
+      expect(result.text).toContain("Pay now");
+    });
+
+    it("read with a selector does not descend into frames", async () => {
+      const { page, executeJavaScriptInFrame } = makeFramedPage();
+      const controller = new BrowserController(makeFakeTarget(page));
+      await controller.read({ selector: "h1" });
+      expect(executeJavaScriptInFrame).not.toHaveBeenCalled();
+    });
+
+    it("a page/target with no frame support behaves exactly as before Wave 3", async () => {
+      const page = makeFakePage();
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = (await controller.snapshot()) as { elements: unknown[] };
+      expect(result).not.toHaveProperty("error");
+    });
+  });
+
+  describe("console error ring buffer", () => {
+    it("act attaches consoleErrors (max 5) when the tab reports new ones", async () => {
+      const drainConsoleErrors = vi.fn(() => ["TypeError: boom", "ReferenceError: x is not defined"]);
+      const page = makeFakePage({
+        drainConsoleErrors,
+        executeJavaScript: vi.fn((code: string) =>
+          isSignatureCall(code) || isCursorCall(code) ? Promise.resolve({ ok: true }) : Promise.resolve({ matched: "Go" }),
+        ),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.act({ action: "click", target: "Go" });
+      expect(result).toMatchObject({ consoleErrors: ["TypeError: boom", "ReferenceError: x is not defined"] });
+      expect(drainConsoleErrors).toHaveBeenCalledTimes(1);
+    });
+
+    it("perform omits consoleErrors entirely when there are none", async () => {
+      const page = makeFakePage({ drainConsoleErrors: vi.fn(() => []) });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      const result = await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "SCROLL_DOWN" });
+      expect(result).not.toHaveProperty("consoleErrors");
+    });
+
+    it("a page with no drainConsoleErrors (unit-test fakes predating Wave 3) is unaffected", async () => {
+      const page = makeFakePage();
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.act({ action: "wait", ms: 1 });
+      expect(result).not.toHaveProperty("consoleErrors");
+    });
+  });
+
+  describe("botCheck on open", () => {
+    it("open reports botCheck: true when the page looks like a challenge wall", async () => {
+      const page = makeFakePage({
+        getTitle: vi.fn(() => "Just a moment..."),
+        executeJavaScript: vi.fn((code: string) => {
+          if (isBotCheckCall(code)) return Promise.resolve({ botCheck: true });
+          return Promise.resolve({ ok: true });
+        }),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.open({ url: "https://example.com/" });
+      expect(result).toMatchObject({ botCheck: true });
+    });
+
+    it("open omits botCheck entirely on an ordinary page", async () => {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) => {
+          if (isBotCheckCall(code)) return Promise.resolve({ botCheck: false });
+          return Promise.resolve({ ok: true });
+        }),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.open({ url: "https://example.com/" });
+      expect(result).not.toHaveProperty("botCheck");
+    });
+
+    it("a botCheck script that throws never fails a successful open", async () => {
+      const page = makeFakePage({
+        executeJavaScript: vi.fn((code: string) => {
+          if (isBotCheckCall(code)) return Promise.reject(new Error("boom"));
+          return Promise.resolve({ ok: true });
+        }),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = await controller.open({ url: "https://example.com/" });
+      expect(result).not.toHaveProperty("error");
+      expect(result).not.toHaveProperty("botCheck");
+    });
   });
 });

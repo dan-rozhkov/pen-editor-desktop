@@ -118,6 +118,71 @@ interface RunMetrics {
   contextTokens: number | null;
   order: OrderRecord | null;
   finalAssistantMessageExcerpt: string;
+  /** browse_* tool results as the model saw them, read from the LAST
+   * /api/chat request body (it carries the whole UI-message history).
+   * `errors` counts results that came back `{ error }` or as an
+   * output-error part — the "how often did the agent hit a wall" number. */
+  browseToolResults: {
+    total: number;
+    errors: number;
+    errorSamples: string[];
+    /** Every browse_task transcript as returned to the model — why the Jev
+     * loop stopped (status/reason) and what each step did. */
+    taskTranscripts: unknown[];
+  };
+}
+
+interface UiToolPart {
+  type?: string;
+  state?: string;
+  output?: unknown;
+  errorText?: string;
+}
+
+/** Counts browse_* tool results (and those that errored) in an AI SDK v6
+ * chat request body: `{ messages: [{ parts: [{ type: "tool-<name>", state,
+ * output }] }] }`. Tolerant of any other shape — returns zeros. */
+function countBrowseToolResults(requestBody: string | null): RunMetrics["browseToolResults"] {
+  const result = { total: 0, errors: 0, errorSamples: [] as string[], taskTranscripts: [] as unknown[] };
+  if (!requestBody) return result;
+  let parsed: { messages?: { parts?: UiToolPart[] }[] };
+  try {
+    parsed = JSON.parse(requestBody) as typeof parsed;
+  } catch {
+    return result;
+  }
+  for (const message of parsed.messages ?? []) {
+    for (const part of message.parts ?? []) {
+      if (typeof part.type !== "string" || !part.type.startsWith("tool-browse_")) continue;
+      if (part.state !== "output-available" && part.state !== "output-error") continue;
+      result.total += 1;
+      if (part.type === "tool-browse_task" && part.state === "output-available") {
+        let transcript: unknown = part.output;
+        if (typeof transcript === "string") {
+          try {
+            transcript = JSON.parse(transcript);
+          } catch {
+            // Keep the raw string — still readable in the report.
+          }
+        }
+        result.taskTranscripts.push(transcript);
+      }
+      let errorText: string | null = null;
+      if (part.state === "output-error") errorText = part.errorText ?? "output-error";
+      else if (part.output && typeof part.output === "object" && "error" in part.output) {
+        errorText = String((part.output as { error: unknown }).error);
+      } else if (typeof part.output === "string" && /^\s*\{\s*"error"/.test(part.output)) {
+        errorText = part.output;
+      }
+      if (errorText !== null) {
+        result.errors += 1;
+        if (result.errorSamples.length < 10) {
+          result.errorSamples.push(`${part.type.slice("tool-".length)}: ${errorText.slice(0, 160)}`);
+        }
+      }
+    }
+  }
+  return result;
 }
 
 /** Tracks request start times keyed by Request identity so a matching
@@ -205,8 +270,15 @@ async function runOnce(runIndex: number): Promise<RunMetrics> {
     await editorPage.waitForSelector("canvas", { timeout: 60_000 });
 
     const chatRequestBodies: string[] = [];
+    let lastChatRequestPayload: string | null = null;
     const browseStep = new LatencyTracker();
     const browseLocate = new LatencyTracker();
+
+    editorPage.on("request", (request) => {
+      if (request.url().includes("/api/chat") && request.method() === "POST") {
+        lastChatRequestPayload = request.postData() ?? lastChatRequestPayload;
+      }
+    });
 
     editorPage.on("response", (response) => {
       const url = response.url();
@@ -311,6 +383,7 @@ async function runOnce(runIndex: number): Promise<RunMetrics> {
       contextTokens,
       order,
       finalAssistantMessageExcerpt: excerptMatch,
+      browseToolResults: countBrowseToolResults(lastChatRequestPayload),
     };
     return metrics;
   } finally {

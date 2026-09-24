@@ -7,6 +7,7 @@ import {
   attachOfflineFallback,
   attachLocalOnlyPolicy,
   shouldDropMcpRegistration,
+  shouldForwardNavigationEvent,
 } from "../src/main/navigation";
 
 const ORIGIN = "https://pen-editor.onrender.com";
@@ -163,6 +164,16 @@ describe("shouldDropMcpRegistration", () => {
   it("ignores subframe navigations regardless of same-document-ness", () => {
     expect(shouldDropMcpRegistration({ isMainFrame: false, isSameDocument: false })).toBe(false);
     expect(shouldDropMcpRegistration({ isMainFrame: false, isSameDocument: true })).toBe(false);
+  });
+});
+
+describe("shouldForwardNavigationEvent", () => {
+  it("forwards main-frame navigation events", () => {
+    expect(shouldForwardNavigationEvent({ isMainFrame: true })).toBe(true);
+  });
+
+  it("does NOT forward subframe navigation events (finding 1: ad/embed iframe navigating during the click-settle grace window)", () => {
+    expect(shouldForwardNavigationEvent({ isMainFrame: false })).toBe(false);
   });
 });
 

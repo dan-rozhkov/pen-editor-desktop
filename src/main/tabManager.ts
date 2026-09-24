@@ -120,6 +120,12 @@ export interface TabViewHandle {
    */
   drainDialogs?(): { type: string; message: string }[];
   /**
+   * Optional: Wave 3 reliability, item 3. Structurally identical to
+   * `BrowserPageHandle.drainConsoleErrors` — see its doc comment. Wired only
+   * for kind "browser", same gate as `sendCdp`/`drainDialogs`.
+   */
+  drainConsoleErrors?(): string[];
+  /**
    * Second-pass review finding 1: applies the dialog policy to whatever JS
    * dialog is *currently open* on this tab, if any — a no-op when nothing is
    * open. window.ts's `onBrowserCommand` calls this for every browser tab
@@ -130,6 +136,31 @@ export interface TabViewHandle {
    * "browser" (window.ts's `openDialog` tracking only exists there).
    */
   applyDialogPolicy?(): void;
+  /**
+   * Optional: Wave 1 speed (`2026-09-24-browse-speed-contract.md`).
+   * Structurally identical to `BrowserPageHandle.onNavigationEvent` — see
+   * its doc comment. Wired for both tab kinds in window.ts's implementation
+   * (cheap webContents event wiring, no debugger dependency), even though
+   * only a browser tab is ever driven through `browser/controller.ts`.
+   */
+  onNavigationEvent?(cb: () => void): () => void;
+  /**
+   * Optional: Wave 1 speed. Structurally identical to
+   * `BrowserPageHandle.networkStats` — see its doc comment. Wired only for
+   * kind "browser" (window.ts's CDP `Network.enable`/tracking only exists
+   * there, alongside `sendCdp`/`drainDialogs`).
+   */
+  networkStats?(dropAfterMs: number, sinceGeneration?: number): { pending: number; generation: number };
+  /**
+   * Optional: Wave 3 reliability, item 2. Structurally identical to
+   * `BrowserPageHandle.listFrames` — see its doc comment.
+   */
+  listFrames?(): { frameId: number; url: string; name: string }[];
+  /**
+   * Optional: Wave 3 reliability, item 2. Structurally identical to
+   * `BrowserPageHandle.executeJavaScriptInFrame` — see its doc comment.
+   */
+  executeJavaScriptInFrame?(frameId: number, code: string, timeoutMs: number): Promise<unknown>;
 }
 
 /** What TabManager.browserHandle() hands to the browser controller (see window.ts). */

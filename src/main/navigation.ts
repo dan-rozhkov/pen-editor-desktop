@@ -98,6 +98,28 @@ export function shouldDropMcpRegistration(details: { isMainFrame: boolean; isSam
   return details.isMainFrame && !details.isSameDocument;
 }
 
+/**
+ * Whether a `did-start-navigation`/`did-navigate-in-page` event should be
+ * forwarded to `browser/controller.ts`'s navigation-watch settle (`window.ts`'s
+ * `onNavigationEvent`, feeding `armNavigationWatcher`). Both events fire for
+ * ANY frame, not just the main one, and carry an `isMainFrame` flag — without
+ * this filter, a subframe navigation (an ad/embed iframe reloading itself,
+ * say) firing during the short post-click grace window made an ordinary,
+ * non-navigating click look like it had started a real navigation, forcing
+ * the caller to pay the full multi-second "wait for load" settle
+ * (`CLICK_LOAD_SETTLE_TIMEOUT_MS`, 8s) for nothing — `isLoading()` reflects
+ * the whole tab including subframes, so it looked exactly like a genuine
+ * main-frame navigation. `did-navigate` needs no equivalent filter — per
+ * Electron's own doc it "is emitted when a main frame navigation is done"
+ * and never fires for a subframe. `did-start-loading` carries no frame
+ * information at all (it reflects the whole tab's loading state, which
+ * *does* flip for a subframe load) — with nothing to filter on, it is not
+ * forwarded at all rather than risk the same false positive.
+ */
+export function shouldForwardNavigationEvent(details: { isMainFrame: boolean }): boolean {
+  return details.isMainFrame;
+}
+
 /** did-fail-load hook: main-frame load failures (except ERR_ABORTED -3) load the offline page. */
 export function attachOfflineFallback(contents: WebContents, offlineFile: string): void {
   contents.on(

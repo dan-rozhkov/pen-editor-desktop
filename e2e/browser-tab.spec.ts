@@ -16,6 +16,7 @@ let galleryUrl: string;
 let nextUrl: string;
 let snapshotUrl: string;
 let snapshotManyUrl: string;
+let snapshotManyWithFrameUrl: string;
 let clickTargetUrl: string;
 let evidenceUrl: string;
 let selfDisableUrl: string;
@@ -25,6 +26,18 @@ let slowLoadUrl: string;
 let interactUrl: string;
 let autoAlertUrl: string;
 let smoothScrollUrl: string;
+let wave2Url: string;
+let wave3Url: string;
+let wave3FrameUrl: string;
+let botCheckUrl: string;
+// Wave 3 reliability item 2: a SECOND http server on a different port,
+// bound to "localhost" rather than "127.0.0.1" (the main server's own
+// bind), so the two are genuinely different origins/sites — a real
+// cross-origin/OOPIF child frame under Chromium's site isolation, not just
+// a different port on the same host.
+let crossOriginServer: http.Server;
+let crossOriginBaseUrl: string;
+let crossOriginFrameUrl: string;
 
 // How long the /slow-resource route below holds its response open before
 // finally answering — comfortably past OPEN_LOAD_GRACE_MS (1500ms, so
@@ -112,6 +125,34 @@ test.beforeAll(async () => {
       res.end(`<!doctype html><title>Gallery Next</title><h1 id="ready">gallery-next-ready</h1>`);
       return;
     }
+    if (req.url && req.url.startsWith("/snapshot-many-with-frame")) {
+      // Code review finding 7 fixture: the same 150-button cap-trigger as
+      // /snapshot-many above, PLUS 15 visible scroll containers, PLUS a
+      // same-origin iframe with its own interactive element
+      // (/wave3-frame's #frame-btn). Before the fix, SNAPSHOT_JS appended
+      // its (up to 10) scroll containers on top of the already-120-capped
+      // interactive elements, so `elements.length` here would be 130 —
+      // `controller.ts`'s `remaining = MAX_SNAPSHOT_ELEMENTS -
+      // elements.length` went negative, and its `if (remaining > 0)` guard
+      // then skipped the iframe merge outright, so the iframe's button
+      // never showed up in the snapshot no matter how visible it was.
+      const buttons = Array.from(
+        { length: 150 },
+        (_, i) => `<button style="position:absolute;top:${i * 4}px;left:0;width:20px;height:20px">Many ${i}</button>`,
+      ).join("\n");
+      const containers = Array.from(
+        { length: 15 },
+        (_, i) =>
+          `<div style="position:absolute;top:${i * 40}px;left:700px;width:150px;height:30px;overflow:auto">` +
+          `<div style="height:200px">container ${i} content</div></div>`,
+      ).join("\n");
+      res.end(
+        `<!doctype html><title>Snapshot Many With Frame</title>` +
+          `<h1 id="ready">snapshot-many-with-frame-ready</h1>${buttons}${containers}` +
+          `<iframe src="${wave3FrameUrl}" style="position:absolute;top:610px;left:0;width:300px;height:100px"></iframe>`,
+      );
+      return;
+    }
     if (req.url && req.url.startsWith("/snapshot-many")) {
       // Cap test (jev-loop design doc §1, MAX_SNAPSHOT_ELEMENTS = 120): 150
       // genuinely visible, interactive buttons, absolutely positioned 4px
@@ -186,6 +227,23 @@ a plain search box (eligible, must still report its value). -->
 <input id="inp-email" type="email" value="autofilled@example.com" />
 <input id="inp-cc" type="text" autocomplete="cc-number" value="4111111111111111" />
 <input id="inp-search" type="search" value="chairs" />
+<!-- Second-pass review: a scroll container that is ALSO an interactive
+element (a textarea with overflow:auto and content taller than its box) must
+not get a second, duplicate element-table entry with its own data-pen-snap
+stamp — that would overwrite the textarea's own interactive stamp, and the
+model's earlier TYPE_TEXT index would then resolve to nothing ("No element
+matched"). It should instead get exactly one entry, with ops: ["TYPE_TEXT"]
+(its interactive identity) AND scrollable: true. -->
+<textarea id="textarea-scrollable" style="height:40px;overflow-y:auto" placeholder="Notes">line one
+line two
+line three
+line four
+line five
+line six
+line seven
+line eight
+line nine
+line ten</textarea>
 <div id="click-result"></div>
 <script>
   document.getElementById('btn-aria').addEventListener('click', function () {
@@ -423,6 +481,58 @@ a plain search box (eligible, must still report its value). -->
 </script>`);
       return;
     }
+    if (req.url && req.url.startsWith("/wave2")) {
+      // Wave 2 reliability e2e fixture, one page covering three cases the
+      // hermetic unit suite can't prove against a fake page:
+      // - #trusted-btn records event.isTrusted (real vs synthetic click).
+      // - #menu-btn only opens #menu on a real "pointerdown" event (not
+      //   "click") — a synthetic el.click() never fires pointerdown at all,
+      //   so this only opens via a genuinely trusted CDP mouse dispatch.
+      // - #react-input records whether a real "beforeinput" event fired —
+      //   the CDP Input.insertText path fires one (like real typing); the
+      //   legacy native-setter + synthetic Event("input") fallback does not.
+      // - #outer-scroll / #inner-scroll: the document itself doesn't scroll
+      //   (body height fits the viewport), but #inner-scroll is a real
+      //   overflow:auto container taller than its box.
+      res.end(`<!doctype html>
+<title>Wave 2</title>
+<style>/* pen-e2e-style-only-text should never be a click target */</style>
+<h1 id="ready">wave2-ready</h1>
+<button id="trusted-btn">Trusted Click</button>
+<div id="trusted-result">not-clicked</div>
+<button id="menu-btn">Menu</button>
+<div id="menu" style="display:none">menu-open</div>
+<label for="react-input">React-like Input</label>
+<input id="react-input" type="text" value="old value" />
+<div id="beforeinput-result">no-beforeinput</div>
+<div id="outer-scroll" style="height:200px;overflow:hidden">
+  <div id="inner-scroll" style="height:200px;overflow:auto">
+    <div style="height:2000px">tall content</div>
+  </div>
+</div>
+<!-- Code review finding 5 fixture: "Select" is both a bare-word text match
+     (the hidden button below) AND a valid CSS type selector matching the
+     real, visible <select> — the hidden text match must not short-circuit
+     before the selector fallback gets a chance to run. -->
+<select id="real-select"><option>Option A</option></select>
+<button id="hidden-select-label" style="display:none">Select</button>
+<script>
+  document.getElementById('trusted-btn').addEventListener('click', function (e) {
+    document.getElementById('trusted-result').textContent = e.isTrusted ? 'trusted-clicked' : 'synthetic-clicked';
+  });
+  document.getElementById('menu-btn').addEventListener('pointerdown', function () {
+    document.getElementById('menu').style.display = 'block';
+  });
+  document.getElementById('react-input').addEventListener('beforeinput', function () {
+    document.getElementById('beforeinput-result').textContent = 'beforeinput-fired';
+  });
+  // Code review finding 5 fixture: this literal string must never be
+  // clickable as a text match — a target search for it should report "No
+  // element matched", never falsely succeed against this <script> element.
+  var penE2eScriptOnlyText = "pen-e2e-script-only-text";
+</script>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/smooth-scroll")) {
       // Second-pass review finding 4: html{scroll-behavior:smooth} makes a
       // plain scrollIntoView() call still animating at the moment the very
@@ -449,6 +559,60 @@ a plain search box (eligible, must still report its value). -->
 </script>`);
       return;
     }
+    if (req.url && req.url.startsWith("/wave3-frame")) {
+      // Wave 3 reliability item 2: the same-origin iframe's own content —
+      // a button by itself, and enough text to prove browse_read's
+      // "[frame: X]" append actually pulled from here.
+      res.end(`<!doctype html>
+<title>Same-Origin Frame</title>
+<button id="frame-btn">Frame Button</button>
+<div id="frame-result">not-clicked</div>
+<p>same-origin frame text digest</p>
+<script>
+  document.getElementById('frame-btn').addEventListener('click', function () {
+    document.getElementById('frame-result').textContent = 'frame-clicked';
+  });
+</script>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/wave3")) {
+      // Wave 3 reliability e2e fixture: an open shadow root, a same-origin
+      // iframe, a cross-origin/OOPIF iframe (served by the second http
+      // server, a genuinely different origin/site — see
+      // crossOriginFrameUrl's doc comment), and a button whose click handler
+      // throws (proving the console-error ring buffer surfaces a real
+      // Runtime.exceptionThrown).
+      res.end(`<!doctype html>
+<title>Wave 3</title>
+<h1 id="ready">wave3-ready</h1>
+<div id="shadow-host"></div>
+<iframe id="same-origin-frame" src="${wave3FrameUrl}" style="width:300px;height:120px;border:1px solid #ccc"></iframe>
+<iframe id="cross-origin-frame" src="${crossOriginFrameUrl}" style="width:300px;height:120px;border:1px solid #ccc"></iframe>
+<button id="throw-btn">Throw</button>
+<script>
+  var shadowRoot = document.getElementById('shadow-host').attachShadow({ mode: 'open' });
+  shadowRoot.innerHTML =
+    '<button id="shadow-btn">Shadow Button</button>' +
+    '<div id="shadow-result">not-clicked</div>' +
+    '<p>shadow root text digest</p>';
+  shadowRoot.getElementById('shadow-btn').addEventListener('click', function () {
+    shadowRoot.getElementById('shadow-result').textContent = 'shadow-clicked';
+  });
+  document.getElementById('throw-btn').addEventListener('click', function () {
+    throw new Error('wave3 console error fixture');
+  });
+</script>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/botcheck")) {
+      // Wave 3 reliability item 4: title + body text matching the botCheck
+      // heuristic's regex.
+      res.end(`<!doctype html>
+<title>Just a moment...</title>
+<h1 id="ready">botcheck-ready</h1>
+<p>Checking if the site connection is secure. This may take a moment.</p>`);
+      return;
+    }
     // Default: stub editor page, same shape as e2e/smoke.spec.ts's.
     res.end(`<!doctype html><title>Stub Editor</title>
       <h1 id="ready">stub-editor</h1>
@@ -458,12 +622,33 @@ a plain search box (eligible, must still report its value). -->
         }
       </script>`);
   });
+  // Wave 3 reliability item 2: the cross-origin/OOPIF fixture server, on a
+  // different port AND a different host ("localhost" vs the main server's
+  // "127.0.0.1") — genuinely different origins, so a child frame pointing
+  // at it is a real cross-origin (and, under Chromium's default site
+  // isolation, out-of-process) frame, not just a different port.
+  crossOriginServer = http.createServer((_req, res) => {
+    res.end(`<!doctype html>
+<title>Cross-Origin Frame</title>
+<button id="cross-btn">Cross Button</button>
+<div id="cross-result">not-clicked</div>
+<p>cross-origin frame text digest</p>
+<script>
+  document.getElementById('cross-btn').addEventListener('click', function () {
+    document.getElementById('cross-result').textContent = 'cross-clicked';
+  });
+</script>`);
+  });
+  await new Promise<void>((resolve) => crossOriginServer.listen(0, "localhost", resolve));
+  crossOriginBaseUrl = `http://localhost:${(crossOriginServer.address() as AddressInfo).port}`;
+  crossOriginFrameUrl = `${crossOriginBaseUrl}/wave3-cross-frame`;
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   galleryUrl = `${baseUrl}/gallery`;
   nextUrl = `${baseUrl}/gallery/next`;
   snapshotUrl = `${baseUrl}/snapshot`;
   snapshotManyUrl = `${baseUrl}/snapshot-many`;
+  snapshotManyWithFrameUrl = `${baseUrl}/snapshot-many-with-frame`;
   clickTargetUrl = `${baseUrl}/click-target`;
   evidenceUrl = `${baseUrl}/evidence`;
   selfDisableUrl = `${baseUrl}/self-disable`;
@@ -473,9 +658,16 @@ a plain search box (eligible, must still report its value). -->
   interactUrl = `${baseUrl}/interact`;
   autoAlertUrl = `${baseUrl}/auto-alert`;
   smoothScrollUrl = `${baseUrl}/smooth-scroll`;
+  wave2Url = `${baseUrl}/wave2`;
+  wave3Url = `${baseUrl}/wave3`;
+  wave3FrameUrl = `${baseUrl}/wave3-frame`;
+  botCheckUrl = `${baseUrl}/botcheck`;
 });
 
-test.afterAll(() => new Promise<void>((r) => server.close(() => r())));
+test.afterAll(async () => {
+  await new Promise<void>((r) => server.close(() => r()));
+  await new Promise<void>((r) => crossOriginServer.close(() => r()));
+});
 
 type BrowserBridge = {
   open(args: { url: string }): Promise<unknown>;
@@ -523,6 +715,12 @@ interface SnapshotElement {
   options?: string[];
   /** Only ever present, and only ever true, for a password input. */
   isPassword?: boolean;
+  /** Wave 2 reliability item 4/5: present and true only on an ADD entry for
+   * a scrollable container (never on a real interactive element). */
+  scrollable?: boolean;
+  /** Wave 3 reliability item 2: present only on an element merged in from a
+   * child frame — the frame's own title/name/host. */
+  frame?: string;
 }
 
 interface SnapshotResult {
@@ -1286,6 +1484,49 @@ test("browser snapshot: hard-caps at 120 elements even when more are visible", a
   }
 });
 
+test("code review finding 7: scroll containers never push the top document's element count over the hard cap", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === snapshotManyWithFrameUrl }),
+      callBrowser(editorPage, "open", { url: snapshotManyWithFrameUrl }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("snapshot-many-with-frame-ready");
+
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult & {
+      elements: { index: number; frame?: string; scrollable?: boolean }[];
+    };
+    // Never more than the hard cap, even with 150 buttons (which alone
+    // already saturate it) AND 15 scroll containers on top. Before this
+    // fix, SNAPSHOT_JS appended up to 10 scroll containers UNCONDITIONALLY
+    // on top of the already-120-capped interactive elements — 130 total —
+    // which made `controller.ts`'s `remaining = MAX_SNAPSHOT_ELEMENTS -
+    // elements.length` go negative.
+    expect(snap.elements.length).toBeLessThanOrEqual(120);
+    expect(snap.elements.length).toBe(120);
+    // With 150 interactive elements alone already at the cap, the shared
+    // budget correctly leaves NO room for a scroll container here — this is
+    // the page legitimately being full, not a bug (a negative `remaining`
+    // and a zero `remaining` both skip the same downstream merges; the
+    // observable, testable difference this fix makes is the element COUNT
+    // itself never lying about being within the documented cap).
+    expect(snap.elements.some((e) => e.scrollable === true)).toBe(false);
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
 test("browser perform: acts by index, and rejects a snapshotId superseded by a newer snapshot", async () => {
   const app = await electron.launch({
     args: ["."],
@@ -1358,6 +1599,65 @@ test("browser perform: acts by index, and rejects a snapshotId superseded by a n
     })) as { error?: string };
     expect(selectResult.error).toBeUndefined();
     await expect(snapshotPage.locator("#sel-color")).toHaveValue("Blue");
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("second-pass review: a scroll container that is ALSO an interactive element (scrollable textarea) gets one entry, not two, and TYPE_TEXT by its interactive index still works", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [snapshotPage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === snapshotUrl }),
+      callBrowser(editorPage, "open", { url: snapshotUrl }),
+    ]);
+    await expect(snapshotPage.locator("#ready")).toHaveText("snapshot-ready");
+
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+
+    // Exactly one element-table entry for the textarea — the scroll-
+    // container pass must not append a second entry for something already
+    // stamped as an interactive element in this same snapshot.
+    const textareaEntries = snap.elements.filter((e) => e.tag === "textarea");
+    expect(textareaEntries.length).toBe(1);
+
+    // That single entry keeps its interactive identity (TYPE_TEXT) AND
+    // picks up scrollable: true — not one or the other.
+    const textareaEntry = textareaEntries[0];
+    expect(textareaEntry.ops).toEqual(["TYPE_TEXT"]);
+    expect(textareaEntry.scrollable).toBe(true);
+
+    // The DOM stamp must resolve back to the textarea itself, not to some
+    // other node whose index got overwritten.
+    const stampedTag = await snapshotPage.evaluate((idx) => {
+      const el = document.querySelector(`[data-pen-snap$=":${idx}"]`);
+      return el ? el.tagName.toLowerCase() : null;
+    }, textareaEntry.index);
+    expect(stampedTag).toBe("textarea");
+
+    // TYPE_TEXT by that interactive index must still resolve the element
+    // (the bug: the container-stamping pass overwrote the textarea's own
+    // data-pen-snap with a container index, so this used to fail with
+    // "No element matched").
+    const typeResult = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: textareaEntry.index,
+      operation: "TYPE_TEXT",
+      text: "hello textarea",
+    })) as { error?: string };
+    expect(typeResult.error).toBeUndefined();
+    await expect(snapshotPage.locator("#textarea-scrollable")).toHaveValue("hello textarea");
 
     await app.close();
   } finally {
@@ -2283,6 +2583,418 @@ test("browse_act hover: on a smooth-scroll page, the reported coordinates land o
     await expect
       .poll(() => fixturePage.locator("#hover-target").evaluate((el) => getComputedStyle(el).backgroundColor))
       .toBe("rgb(255, 0, 0)");
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+// Wave 2 reliability (docs/superpowers/specs/2026-09-24-browse-speed-contract.md):
+// only a real Electron/Chromium page can prove a click is genuinely trusted
+// (event.isTrusted), that a synthetic click can't fire pointerdown at all,
+// or that Input.insertText fires a real beforeinput event — none of that is
+// observable against the hermetic unit suite's fake page.
+test("Wave 2 reliability: trusted click fires event.isTrusted and a pointerdown-only menu opens", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === wave2Url }),
+      callBrowser(editorPage, "open", { url: wave2Url }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("wave2-ready");
+
+    const clickResult = (await callBrowser(editorPage, "act", {
+      action: "click",
+      target: "Trusted Click",
+    })) as { via?: string; error?: string };
+    expect(clickResult.error).toBeUndefined();
+    // The debugger session is attached for every real browser tab, so the
+    // hit-test should pass on this simple, unobstructed button and the
+    // trusted CDP path should be the one actually taken.
+    expect(clickResult.via).toBe("cdp");
+    await expect(fixturePage.locator("#trusted-result")).toHaveText("trusted-clicked");
+
+    // A synthetic el.click() (the DOM fallback) never fires "pointerdown" at
+    // all — this menu only opens for a real, OS-level mouse press, which is
+    // exactly what dispatchClick's CDP path sends.
+    const menuClick = (await callBrowser(editorPage, "act", { action: "click", target: "Menu" })) as {
+      via?: string;
+      error?: string;
+    };
+    expect(menuClick.error).toBeUndefined();
+    expect(menuClick.via).toBe("cdp");
+    await expect(fixturePage.locator("#menu")).toBeVisible();
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("Wave 2 reliability: trusted typing selects existing content, fires beforeinput (React-compatible), and reports via: \"cdp\"", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === wave2Url }),
+      callBrowser(editorPage, "open", { url: wave2Url }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("wave2-ready");
+
+    // Targeted by CSS selector, not the <label>'s visible text: findByText
+    // (used first for a text target) matches the <label for="react-input">
+    // element itself — a pre-existing, out-of-scope-for-this-wave quirk in
+    // how a bare <label> resolves — which is not editable, so a text target
+    // here would hit TYPE_JS's "not editable" error for the wrong reason.
+    const typeResult = (await callBrowser(editorPage, "act", {
+      action: "type",
+      target: "#react-input",
+      text: "new value",
+    })) as { via?: string; error?: string };
+    expect(typeResult.error).toBeUndefined();
+    expect(typeResult.via).toBe("cdp");
+
+    // Existing content was selected first, so the new text *replaced* it
+    // rather than being appended after "old value".
+    await expect(fixturePage.locator("#react-input")).toHaveValue("new value");
+    // Input.insertText fires a real beforeinput (like genuine typing/paste)
+    // — the legacy native-setter + synthetic Event("input") fallback this
+    // path is meant to avoid does not.
+    await expect(fixturePage.locator("#beforeinput-result")).toHaveText("beforeinput-fired");
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("Wave 2 reliability: act scroll / perform SCROLL scroll an inner container the window itself can't move", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === wave2Url }),
+      callBrowser(editorPage, "open", { url: wave2Url }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("wave2-ready");
+
+    // --- act scroll with an explicit CSS-selector target ---
+    const beforeScrollTop = await fixturePage.locator("#inner-scroll").evaluate((el) => el.scrollTop);
+    expect(beforeScrollTop).toBe(0);
+    const windowScrollBefore = await fixturePage.evaluate(() => window.scrollY);
+
+    const scrollResult = (await callBrowser(editorPage, "act", {
+      action: "scroll",
+      target: "#inner-scroll",
+      amount: 1,
+    })) as { error?: string };
+    expect(scrollResult.error).toBeUndefined();
+
+    await expect
+      .poll(() => fixturePage.locator("#inner-scroll").evaluate((el) => el.scrollTop))
+      .toBeGreaterThan(0);
+    // The window itself never moved — this container is inside a
+    // height:200px/overflow:hidden wrapper, so the document has nothing to
+    // scroll; only the inner container's own scrollTop changed.
+    expect(await fixturePage.evaluate(() => window.scrollY)).toBe(windowScrollBefore);
+
+    // --- snapshot marks the container, and perform SCROLL_DOWN by its index scrolls it further ---
+    const snapshotResult = (await callBrowser(editorPage, "snapshot")) as {
+      snapshotId: string;
+      elements: SnapshotElement[];
+    };
+    const containerEntry = snapshotResult.elements.find((e) => e.scrollable === true);
+    expect(containerEntry).toBeTruthy();
+    expect(containerEntry!.ops).toEqual([]);
+
+    const scrollTopAfterFirst = await fixturePage.locator("#inner-scroll").evaluate((el) => el.scrollTop);
+    const performResult = (await callBrowser(editorPage, "perform", {
+      snapshotId: snapshotResult.snapshotId,
+      index: containerEntry!.index,
+      operation: "SCROLL_DOWN",
+    })) as { error?: string };
+    expect(performResult.error).toBeUndefined();
+    await expect
+      .poll(() => fixturePage.locator("#inner-scroll").evaluate((el) => el.scrollTop))
+      .toBeGreaterThan(scrollTopAfterFirst);
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("code review finding 5: a hidden text match no longer short-circuits the selector fallback, and <style>/<script> text is never a click target", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === wave2Url }),
+      callBrowser(editorPage, "open", { url: wave2Url }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("wave2-ready");
+
+    // "Select" text-matches only the hidden #hidden-select-label button, but
+    // is also a valid CSS type selector for the real, visible <select> —
+    // the click must land on the <select>, not refuse with the hidden-
+    // element error.
+    const clickResult = (await callBrowser(editorPage, "act", {
+      action: "click",
+      target: "Select",
+    })) as { error?: string };
+    expect(clickResult.error).toBeUndefined();
+
+    // Text that exists ONLY inside a <style>/<script> element's own source
+    // must never resolve to a click target at all.
+    const styleOnlyResult = (await callBrowser(editorPage, "act", {
+      action: "click",
+      target: "pen-e2e-style-only-text",
+    })) as { error?: string };
+    expect(styleOnlyResult.error).toMatch(/No element matched/);
+
+    const scriptOnlyResult = (await callBrowser(editorPage, "act", {
+      action: "click",
+      target: "pen-e2e-script-only-text",
+    })) as { error?: string };
+    expect(scriptOnlyResult.error).toMatch(/No element matched/);
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+// Wave 3 reliability (2026-09-24): open shadow roots, iframes (same-origin
+// AND cross-origin/OOPIF), a console-error ring buffer, and the botCheck
+// heuristic — none of these are provable against the hermetic unit suite's
+// fake page (deepQueryAll's shadow-piercing, a real WebFrameMain subtree, a
+// real CDP Runtime.exceptionThrown, a real cross-origin renderer process).
+test("Wave 3 reliability: open shadow root — click a shadow button by index and read includes shadow text", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === wave3Url }),
+      callBrowser(editorPage, "open", { url: wave3Url }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("wave3-ready");
+
+    const snapshotResult = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const shadowEntry = snapshotResult.elements.find((e) => e.label === "Shadow Button");
+    expect(shadowEntry).toBeTruthy();
+
+    const clickResult = (await callBrowser(editorPage, "perform", {
+      snapshotId: snapshotResult.snapshotId,
+      index: shadowEntry!.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(clickResult.error).toBeUndefined();
+    await expect(fixturePage.locator("#shadow-host").locator("#shadow-result")).toHaveText("shadow-clicked");
+
+    const readResult = (await callBrowser(editorPage, "read", {})) as ReadResult;
+    expect(readResult.error).toBeUndefined();
+    expect(readResult.text).toContain("shadow root text digest");
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("Wave 3 reliability: same-origin iframe — click a frame button by index", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === wave3Url }),
+      callBrowser(editorPage, "open", { url: wave3Url }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("wave3-ready");
+
+    const snapshotResult = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const frameEntry = snapshotResult.elements.find((e) => e.label === "Frame Button");
+    expect(frameEntry).toBeTruthy();
+    expect(frameEntry!.frame).toBeTruthy();
+
+    const clickResult = (await callBrowser(editorPage, "perform", {
+      snapshotId: snapshotResult.snapshotId,
+      index: frameEntry!.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(clickResult.error).toBeUndefined();
+
+    const frame = fixturePage.frameLocator("#same-origin-frame");
+    await expect(frame.locator("#frame-result")).toHaveText("frame-clicked");
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("Wave 3 reliability: cross-origin (OOPIF) iframe — click a frame button by index and read includes its text", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === wave3Url }),
+      callBrowser(editorPage, "open", { url: wave3Url }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("wave3-ready");
+
+    const snapshotResult = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const crossEntry = snapshotResult.elements.find((e) => e.label === "Cross Button");
+    expect(crossEntry).toBeTruthy();
+
+    const clickResult = (await callBrowser(editorPage, "perform", {
+      snapshotId: snapshotResult.snapshotId,
+      index: crossEntry!.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(clickResult.error).toBeUndefined();
+
+    const frame = fixturePage.frameLocator("#cross-origin-frame");
+    await expect(frame.locator("#cross-result")).toHaveText("cross-clicked");
+
+    const readResult = (await callBrowser(editorPage, "read", {})) as ReadResult;
+    expect(readResult.error).toBeUndefined();
+    expect(readResult.text).toContain("cross-origin frame text digest");
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("Wave 3 reliability: a console error from a throwing click handler is surfaced on a command result", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === wave3Url }),
+      callBrowser(editorPage, "open", { url: wave3Url }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("wave3-ready");
+
+    // The click itself still succeeds (a page throwing in its own handler is
+    // not a bridge failure) — the exception surfaces as a *console* error,
+    // not a command error.
+    const clickResult = (await callBrowser(editorPage, "act", { action: "click", target: "Throw" })) as {
+      error?: string;
+      consoleErrors?: string[];
+    };
+    expect(clickResult.error).toBeUndefined();
+
+    // "New since the previous command" (the ring buffer is drained on every
+    // act/perform call): the exception is thrown synchronously as part of
+    // the click's own dispatch and settle, comfortably inside the click
+    // command's own round trip — so it typically lands on the CLICK result
+    // itself, not a later one. Accumulate across this command and a
+    // follow-up poll so the assertion holds either way, without assuming
+    // which exact command's drain window it fell into.
+    const seen = new Set<string>();
+    for (const e of clickResult.consoleErrors ?? []) seen.add(e);
+
+    await expect
+      .poll(async () => {
+        const waitResult = (await callBrowser(editorPage, "act", { action: "wait", ms: 100 })) as {
+          consoleErrors?: string[];
+        };
+        for (const e of waitResult.consoleErrors ?? []) seen.add(e);
+        return [...seen].some((e) => e.includes("wave3 console error fixture"));
+      })
+      .toBe(true);
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("Wave 3 reliability: botCheck is true on a page that looks like a challenge wall", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [fixturePage, openResult] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === botCheckUrl }),
+      callBrowser(editorPage, "open", { url: botCheckUrl }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("botcheck-ready");
+    expect(openResult).toMatchObject({ botCheck: true });
 
     await app.close();
   } finally {

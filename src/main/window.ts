@@ -16,6 +16,7 @@ import {
   attachBrowserTabPolicy,
   decideBrowserNavigation,
   shouldDropMcpRegistration,
+  shouldForwardNavigationEvent,
 } from "./navigation";
 import { BrowserController, type BrowserTarget, type BrowserPageHandle } from "./browser/controller";
 import { resolveBrowserCursorEnabled } from "./config";
@@ -53,6 +54,30 @@ function createMcpIpcGateway(): IpcListenerGateway {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Wave 3 reliability, item 2: electron/electron#5183 — `executeJavaScript`
+ * (main-frame or a child frame's own) only resolves once the frame stops
+ * loading, so a frame that never finishes loading (a slow/broken ad iframe,
+ * say) must not hang a whole `snapshot`/`read`/`findImages` call. Every
+ * per-frame script call is raced against this short, frame-scoped timeout —
+ * see `FRAME_SCRIPT_TIMEOUT_MS` in browser/controller.ts, which this mirrors
+ * for the call sites that live in this file (frame discovery itself doesn't
+ * run a script, but executeJavaScriptInFrame below does). */
+function withFrameTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Frame script timed out after ${ms}ms.`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
 }
 
 /**
@@ -253,6 +278,32 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       // aren't auto-handled — nothing else in this bridge depends on it.
       let debuggerAttached = false;
       const dialogQueue: { type: string; message: string }[] = [];
+      // Wave 1 speed (`2026-09-24-browse-speed-contract.md`): CDP
+      // network-quiet settle. `Network.enable`d alongside `Page.enable`
+      // below (browser tabs only) — `pendingNetworkRequests` tracks every
+      // still-in-flight request by CDP `requestId`, and `networkGeneration`
+      // increments once per *new* relevant request, so
+      // `browser/controller.ts`'s `waitForNetworkQuiet` can tell "something
+      // started since I last checked" without needing to keep dead history
+      // around for completed requests (which are deleted from the map the
+      // moment they finish — see the "message" listener below). WebSocket/
+      // EventSource/Ping (Chromium's own type for both a `navigator.
+      // sendBeacon()` call and a `<link rel=ping>`/ping-attribute request)
+      // are never counted at all: none of them are the kind of
+      // request-then-render a settle should wait on, and a WebSocket/
+      // EventSource connection in particular never "finishes" while the page
+      // is open, so counting it would make the page permanently non-quiet.
+      //
+      // Code review finding 2: each entry also carries the `networkGeneration`
+      // value *at the moment that request started* — `networkStats`'s
+      // optional `sinceGeneration` filters `pending` down to only requests
+      // whose own generation is greater than it, so a request already in
+      // flight before an action ran (a lazy-loading image grid still
+      // fetching from an earlier scroll, say) doesn't make a no-network
+      // action wait for it.
+      const pendingNetworkRequests = new Map<string, { startedAt: number; generation: number }>();
+      let networkGeneration = 0;
+      const isIgnoredNetworkType = (type: string) => type === "WebSocket" || type === "EventSource" || type === "Ping";
       // Second-pass review finding 1: the dialog currently open on this tab,
       // if any — set by `Page.javascriptDialogOpening`, cleared by
       // `Page.javascriptDialogClosed` (which fires however the dialog ends
@@ -261,6 +312,34 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       // (exposed on the returned handle) is what `onBrowserCommand` calls,
       // for every browser tab, right before dispatching each new command.
       let openDialog: { type: string; message: string } | null = null;
+      // Wave 3 reliability, item 3 (revised per code review finding 3): a
+      // ring buffer of console errors observed on this tab since the last
+      // drain. This used to be sourced from the CDP `Runtime` domain
+      // (`Runtime.enable` + `Runtime.exceptionThrown`/`Runtime.
+      // consoleAPICalled`) over the same debugger session `sendCdp`/
+      // `drainDialogs` use — but `Runtime.enable` is a well-known automation
+      // fingerprint (it's one of the first things anti-bot scripts check
+      // for, since a real user's tab never has it on), and this is the
+      // user's own real, logged-in browsing session, not a disposable
+      // scraping target. It's sourced instead from Electron's own
+      // `webContents.on("console-message", ...)` — no CDP `Runtime` domain
+      // involved at all, undetectable the same way viewing DevTools console
+      // output is. It fires for both an explicit `console.error(...)` call
+      // and an uncaught JS exception (Chromium reports both to the same
+      // console sink), with `details.level === "error"` covering either
+      // case — confirmed in `e2e/browser-tab.spec.ts`. Capped at 50 (oldest
+      // dropped first) so a page that spams errors between drains can't grow
+      // this unboundedly; each entry is truncated to 200 chars at capture
+      // time — "keep simple: truncate" per the design doc, rather than
+      // trying to redact anything that looks like a token/email.
+      // `drainConsoleErrors` (below) empties it, the same "drain on demand"
+      // shape as `drainDialogs`.
+      const CONSOLE_ERROR_BUFFER_CAP = 50;
+      const consoleErrorBuffer: string[] = [];
+      const pushConsoleError = (message: string) => {
+        consoleErrorBuffer.push(message.slice(0, 200));
+        if (consoleErrorBuffer.length > CONSOLE_ERROR_BUFFER_CAP) consoleErrorBuffer.shift();
+      };
       const applyDialogPolicy = () => {
         if (!openDialog) return;
         const { type, message } = openDialog;
@@ -286,27 +365,54 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
               openDialog = null;
               return;
             }
-            if (method !== "Page.javascriptDialogOpening") return;
-            const p = params as { type?: string; message?: string };
-            openDialog = { type: p.type ?? "alert", message: (p.message ?? "").slice(0, 200) };
-            // Review finding 3: only auto-handle immediately while an agent
-            // command is actually in flight — outside of one, the dialog is
-            // left open (but tracked in `openDialog`) for the user to see
-            // and answer themselves, the same as in any other browser.
-            // Second-pass review finding 1: if it's still open by the time
-            // the agent's *next* command starts, `onBrowserCommand`'s
-            // pre-dispatch sweep (via `applyDialogPolicy`) resolves it then
-            // instead — see this tab's own `applyDialogPolicy` above.
-            if (!isAgentCommandInFlight()) return;
-            applyDialogPolicy();
+            if (method === "Page.javascriptDialogOpening") {
+              const p = params as { type?: string; message?: string };
+              openDialog = { type: p.type ?? "alert", message: (p.message ?? "").slice(0, 200) };
+              // Review finding 3: only auto-handle immediately while an agent
+              // command is actually in flight — outside of one, the dialog is
+              // left open (but tracked in `openDialog`) for the user to see
+              // and answer themselves, the same as in any other browser.
+              // Second-pass review finding 1: if it's still open by the time
+              // the agent's *next* command starts, `onBrowserCommand`'s
+              // pre-dispatch sweep (via `applyDialogPolicy`) resolves it then
+              // instead — see this tab's own `applyDialogPolicy` above.
+              if (isAgentCommandInFlight()) applyDialogPolicy();
+              return;
+            }
+            // Wave 1 speed: network-quiet settle bookkeeping — see
+            // pendingNetworkRequests's doc comment above.
+            if (method === "Network.requestWillBeSent") {
+              const p = params as { requestId?: string; type?: string };
+              if (p.requestId && !isIgnoredNetworkType(p.type ?? "")) {
+                networkGeneration += 1;
+                pendingNetworkRequests.set(p.requestId, { startedAt: Date.now(), generation: networkGeneration });
+              }
+              return;
+            }
+            if (method === "Network.loadingFinished" || method === "Network.loadingFailed") {
+              const p = params as { requestId?: string };
+              if (p.requestId) pendingNetworkRequests.delete(p.requestId);
+            }
           });
           view.webContents.debugger
             .sendCommand("Page.enable")
             .catch((err) => console.error("browser tab: Page.enable failed", err));
+          view.webContents.debugger
+            .sendCommand("Network.enable")
+            .catch((err) => console.error("browser tab: Network.enable failed", err));
         } catch (err) {
           debuggerAttached = false;
           console.error("browser tab: debugger attach failed — press/hover/dialogs unavailable for this tab", err);
         }
+        // Code review finding 3: console error capture no longer goes
+        // through CDP's `Runtime` domain (see consoleErrorBuffer's doc
+        // comment above) — wired unconditionally for a browser tab,
+        // independent of whether the debugger attach above succeeded, since
+        // it needs no debugger session at all.
+        view.webContents.on("console-message", (details) => {
+          if (details.level !== "error") return;
+          pushConsoleError(details.message);
+        });
       }
 
       if (kind === "editor") {
@@ -396,6 +502,48 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       view.webContents.on("did-navigate-in-page", reportNavState);
       view.webContents.on("page-title-updated", reportNavState);
 
+      // Wave 1 speed: event-driven navigation detection
+      // (`browser/controller.ts`'s `armNavigationWatcher`), replacing a
+      // fixed-probe poll of `getURL()`/`isLoading()` with a subscription to
+      // this tab's actual navigation lifecycle. All four events are wired to
+      // the same broadcast — the caller only ever needs "did *something*
+      // just start", never which event fired (`did-start-loading` is what
+      // actually flips `isLoading()` true essentially synchronously with the
+      // triggering click, same signal `waitForNavigationStart`'s polling
+      // fallback already relies on; the other three cover same-document/
+      // already-committed navigations that never toggle `isLoading()` at
+      // all). Available for both tab kinds — cheap, and no reason to gate it
+      // to "browser" the way the CDP-only features are.
+      // Code review finding 1: `did-start-navigation`/`did-navigate-in-page`
+      // fire for ANY frame, not just the main one (both carry `isMainFrame`
+      // on their `details`/args) — an unfiltered forward meant a subframe
+      // navigation (an ad/embed iframe reloading itself, say) during the
+      // 80ms `NAV_START_GRACE_MS` grace window made an ordinary,
+      // non-navigating click wait for the full `CLICK_LOAD_SETTLE_TIMEOUT_MS`
+      // (8s) `isLoading()` settle — `isLoading()` reflects the whole tab,
+      // including subframes, so it looked exactly like a real main-frame
+      // navigation to `settleAfterClick`. `did-navigate` is always
+      // main-frame-only per Electron's own doc ("Emitted when a main frame
+      // navigation is done"), so it needs no filter. `did-start-loading`
+      // carries no frame info at all and reflects the tab's overall loading
+      // state (which *does* flip for a subframe load) — with nothing to
+      // filter on, it's dropped from this broadcast entirely rather than
+      // risk the same false-positive; `did-start-navigation` alone already
+      // covers "a main-frame navigation is about to start" essentially
+      // synchronously, and `did-navigate`/`did-navigate-in-page` cover
+      // "one just finished/happened in-page".
+      const navEventListeners = new Set<() => void>();
+      const broadcastNavEvent = () => {
+        for (const cb of navEventListeners) cb();
+      };
+      view.webContents.on("did-start-navigation", (details) => {
+        if (shouldForwardNavigationEvent(details)) broadcastNavEvent();
+      });
+      view.webContents.on("did-navigate", broadcastNavEvent);
+      view.webContents.on("did-navigate-in-page", (_event, _url, isMainFrame) => {
+        if (shouldForwardNavigationEvent({ isMainFrame })) broadcastNavEvent();
+      });
+
       return {
         loadURL: (url) => view.webContents.loadURL(url),
         setBounds: (b) => view.setBounds(b),
@@ -403,6 +551,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         destroy: () => {
           themeCallbacks.delete(viewId);
           titleCallbacks.delete(viewId);
+          navEventListeners.clear();
           if (kind === "editor") mcpService.unregisterTab(viewId);
           if (debuggerAttached) {
             try {
@@ -432,6 +581,28 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         canGoBack: () => view.webContents.navigationHistory.canGoBack(),
         canGoForward: () => view.webContents.navigationHistory.canGoForward(),
         executeJavaScript: (code) => view.webContents.executeJavaScript(code),
+        // Wave 3 reliability, item 2: WebFrameMain-based iframe support.
+        // `.frames` (not `.framesInSubtree`) is deliberately the DIRECT
+        // children of the main frame only — one level deep. Same-origin AND
+        // cross-origin/OOPIF child frames both show up here identically;
+        // Electron's WebFrameMain abstracts over the process boundary, and
+        // `executeJavaScript`/coordinates work the same way for either.
+        // `frameTreeNodeId` (not the deprecated `routingId`) is the stable
+        // per-frame id used as `frameId` throughout this bridge — fixed for
+        // the frame's lifetime, browser-global.
+        listFrames: () =>
+          view.webContents.mainFrame.frames.map((f) => ({
+            frameId: f.frameTreeNodeId,
+            url: f.url,
+            name: f.name,
+          })),
+        executeJavaScriptInFrame: async (frameId, code, timeoutMs) => {
+          const frame = view.webContents.mainFrame.frames.find((f) => f.frameTreeNodeId === frameId);
+          if (!frame || frame.isDestroyed()) {
+            throw new Error("Frame no longer exists.");
+          }
+          return await withFrameTimeout(frame.executeJavaScript(code), timeoutMs);
+        },
         isLoading: () => view.webContents.isLoading(),
         // View#getVisible() — "whether the view should be drawn", per
         // Electron's own doc comment for it (electron.d.ts) — is a real,
@@ -482,11 +653,44 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
           ? (method, params) => view.webContents.debugger.sendCommand(method, params)
           : undefined,
         drainDialogs: () => dialogQueue.splice(0, dialogQueue.length),
+        // Code review finding 3: console-error capture is wired off the
+        // `console-message` webContents event (see consoleErrorBuffer's doc
+        // comment above), not the CDP debugger session — so this is gated on
+        // `kind === "browser"` directly rather than `debuggerAttached`; it
+        // stays available even on a browser tab whose debugger attach
+        // failed (e.g. real DevTools already attached).
+        drainConsoleErrors:
+          kind === "browser" ? () => consoleErrorBuffer.splice(0, consoleErrorBuffer.length) : undefined,
         // Second-pass review finding 1: only meaningful for kind "browser"
         // (openDialog can only ever be set there) — harmless no-op call for
         // kind "editor" either way (`applyDialogPolicy` itself is a no-op
         // when `openDialog` is null, which it always is for an editor tab).
         applyDialogPolicy,
+        // Wave 1 speed: see navEventListeners's doc comment above.
+        onNavigationEvent: (cb: () => void) => {
+          navEventListeners.add(cb);
+          return () => navEventListeners.delete(cb);
+        },
+        // Only meaningful for kind "browser" (debuggerAttached is always
+        // false for kind "editor", same gate as sendCdp above).
+        networkStats: debuggerAttached
+          ? (dropAfterMs: number, sinceGeneration?: number) => {
+              const now = Date.now();
+              let pending = 0;
+              for (const [id, req] of pendingNetworkRequests) {
+                if (now - req.startedAt > dropAfterMs) {
+                  pendingNetworkRequests.delete(id);
+                  continue;
+                }
+                // Code review finding 2: when scoped, only count requests
+                // that started AFTER the caller's baseline generation — a
+                // request already in flight before that baseline was
+                // captured must not count as "pending" for it.
+                if (sinceGeneration === undefined || req.generation > sinceGeneration) pending += 1;
+              }
+              return { pending, generation: networkGeneration };
+            }
+          : undefined,
       };
     },
   });

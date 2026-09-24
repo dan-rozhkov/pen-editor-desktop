@@ -14,6 +14,64 @@
 export const ARGS_MARKER = "/*PEN_BROWSER_ARGS*/";
 
 /**
+ * Wave 3 reliability, item 1: a shadow-DOM-piercing `querySelectorAll`.
+ * `Element.querySelectorAll` never looks inside a shadow root (open or
+ * closed) — a growing share of real sites (design-system web components,
+ * `<script type="module">` custom elements) put their interactive content
+ * behind one, and every element-resolution path in this file
+ * (`findByText`, `findBySnapshot`, `SNAPSHOT_JS`'s candidate walk,
+ * `READ_JS`'s text/heading/link collection, `FIND_IMAGES_JS`'s image scan)
+ * used to simply never see it. `deepQueryAll(root, selector)` walks `root`,
+ * collects `root.querySelectorAll(selector)`, then recurses into every
+ * descendant's `.shadowRoot` — only ever `open` roots are reachable this
+ * way at all (a `closed` root's `shadowRoot` property is `null` from
+ * outside, so this is naturally scoped to "open" without any extra check).
+ * A closed shadow root is opaque to `document.elementFromPoint` too, so
+ * `CLICK_RESOLVE_JS`'s hit-test needs no equivalent change — it already
+ * pierces every open shadow root Chromium's own implementation does.
+ *
+ * Bounded so a huge page (or one with many/deep nested shadow trees) stays
+ * fast: `PEN_DEEP_QUERY_MAX_NODES` (5000) caps the total number of elements
+ * visited across the whole walk, `PEN_DEEP_QUERY_MAX_DEPTH` (30) caps
+ * shadow-root nesting depth (not plain DOM depth, which querySelectorAll
+ * already handles natively within one root). Once either bound is hit the
+ * walk simply stops descending further — a partial result (missing only
+ * what's past the cap) rather than an error, matching this file's existing
+ * "degrade, don't throw" posture for every other page script.
+ */
+const DEEP_QUERY_HELPER_JS = `
+  var PEN_DEEP_QUERY_MAX_NODES = 5000;
+  var PEN_DEEP_QUERY_MAX_DEPTH = 30;
+  function deepQueryAll(root, selector) {
+    var results = [];
+    var visited = 0;
+    function walk(node, depth) {
+      if (visited >= PEN_DEEP_QUERY_MAX_NODES || depth > PEN_DEEP_QUERY_MAX_DEPTH) return;
+      var matches;
+      try {
+        matches = node.querySelectorAll(selector);
+      } catch (err) {
+        matches = [];
+      }
+      for (var mi = 0; mi < matches.length; mi++) results.push(matches[mi]);
+      var all;
+      try {
+        all = node.querySelectorAll("*");
+      } catch (err) {
+        all = [];
+      }
+      for (var ai = 0; ai < all.length; ai++) {
+        visited++;
+        if (visited >= PEN_DEEP_QUERY_MAX_NODES) return;
+        if (all[ai].shadowRoot) walk(all[ai].shadowRoot, depth + 1);
+      }
+    }
+    walk(root, 0);
+    return results;
+  }
+`;
+
+/**
  * Shared `findByText` body, interpolated into both CLICK_JS and TYPE_JS
  * (kept as one TypeScript-side string so the two copies can't drift, even
  * though each is inlined into its own independent IIFE at runtime — there
@@ -32,7 +90,23 @@ export const ARGS_MARKER = "/*PEN_BROWSER_ARGS*/";
  * match (the one that contains none of the other candidates) over any
  * ancestor that merely encloses it.
  */
+/**
+ * Wave 2 reliability, item 3: prefers a VISIBLE match over a hidden one — a
+ * bench run found a bare word ("Details", say) matching a `display:none`
+ * menu item that happened to share the wanted text with the real, visible
+ * control, silently "succeeding" against an element nothing could actually
+ * see. `findByText` now searches every candidate set twice: once requiring
+ * `isVisible` (the same test SNAPSHOT_JS uses, minus its viewport-distance
+ * margin clause — a target below the fold is still fair game for a text
+ * search, just not a genuinely `display:none`/zero-size one), and only if
+ * that yields nothing does it fall back to a hidden match. The return shape
+ * is now `{ el, hidden } | null` instead of a bare element, so a caller can
+ * tell "found, but only hidden" apart from "found and visible" and refuse to
+ * act on the former (see CLICK_JS/TYPE_JS/LOCATE_TARGET_JS's own doc
+ * comments) instead of silently clicking/typing into it.
+ */
 const FIND_BY_TEXT_JS = `
+  ${DEEP_QUERY_HELPER_JS}
   function findByText(needle) {
     var wanted = needle.trim().toLowerCase();
     if (!wanted) return null;
@@ -57,12 +131,39 @@ const FIND_BY_TEXT_JS = `
       return null;
     }
 
-    function search(selector, matchFn) {
-      var all = document.querySelectorAll(selector);
+    // Same test SNAPSHOT_JS's isVisible uses, minus its viewport-distance
+    // margin clause (item 3: a text search should still find something
+    // below the fold, just not something the page itself hides).
+    function isVisibleForText(el) {
+      if (el.closest && (el.closest("[data-pen-cursor]") || el.closest("[data-pen-marks]"))) return false;
+      var rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      var style = getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+      if (parseFloat(style.opacity) === 0) return false;
+      return true;
+    }
+
+    // Code review finding 5: never match a <style>/<script>/<noscript>/
+    // <template> element itself — its "text" is CSS/JS/inert markup, not
+    // page content, but its raw source is still exposed via
+    // el.textContent like any other element, so a target string that
+    // happens to appear literally in a stylesheet or script body (a class
+    // name, a URL, a bit of JSON) could otherwise "match" one of these and
+    // report a false success against an element nothing could ever see or
+    // click.
+    var NON_TEXT_TAGS = { STYLE: true, SCRIPT: true, NOSCRIPT: true, TEMPLATE: true };
+
+    function search(selector, matchFn, requireVisible) {
+      // Wave 3 reliability, item 1: pierces open shadow roots.
+      var all = deepQueryAll(document, selector);
       var matches = [];
       for (var i = 0; i < all.length; i++) {
+        if (NON_TEXT_TAGS[all[i].tagName]) continue;
         var text = textOf(all[i]);
-        if (text && matchFn(text)) matches.push(all[i]);
+        if (!text || !matchFn(text)) continue;
+        if (requireVisible && !isVisibleForText(all[i])) continue;
+        matches.push(all[i]);
       }
       return innermost(matches);
     }
@@ -74,12 +175,20 @@ const FIND_BY_TEXT_JS = `
       return text.indexOf(wanted) !== -1;
     }
 
-    return (
-      search(clickableSelector, exact) ||
-      search(clickableSelector, partial) ||
-      search("body *", exact) ||
-      search("body *", partial)
-    );
+    var visibleMatch =
+      search(clickableSelector, exact, true) ||
+      search(clickableSelector, partial, true) ||
+      search("body *", exact, true) ||
+      search("body *", partial, true);
+    if (visibleMatch) return { el: visibleMatch, hidden: false };
+
+    var hiddenMatch =
+      search(clickableSelector, exact, false) ||
+      search(clickableSelector, partial, false) ||
+      search("body *", exact, false) ||
+      search("body *", partial, false);
+    if (hiddenMatch) return { el: hiddenMatch, hidden: true };
+    return null;
   }
 `;
 
@@ -98,14 +207,83 @@ const FIND_BY_TEXT_JS = `
  * can ever be anything other than a literal string compare.
  */
 const FIND_BY_SNAPSHOT_JS = `
+  ${DEEP_QUERY_HELPER_JS}
   function findBySnapshot(snapshotId, index) {
     if (snapshotId === undefined || snapshotId === null || index === undefined || index === null) return null;
     var stamp = String(snapshotId) + ":" + String(index);
-    var all = document.querySelectorAll("[data-pen-snap]");
+    // Wave 3 reliability, item 1: an element SNAPSHOT_JS stamped inside an
+    // open shadow root is only reachable via deepQueryAll — a plain
+    // document.querySelectorAll("[data-pen-snap]") never looks inside one.
+    var all = deepQueryAll(document, "[data-pen-snap]");
     for (var i = 0; i < all.length; i++) {
       if (all[i].getAttribute("data-pen-snap") === stamp) return all[i];
     }
     return null;
+  }
+`;
+
+/**
+ * Shared target-resolution + scroll-into-view helper for FOCUS_JS,
+ * HOVER_TARGET_JS, CLICK_RESOLVE_JS and SCROLL_JS (second-pass review finding
+ * 10 — before this, FOCUS_JS/HOVER_TARGET_JS each inlined an identical copy of
+ * this same resolution order, one that could silently drift between the two;
+ * Wave 2 reliability reuses it again rather than adding a third copy).
+ * Resolves by `snapshotId`+`index` (the exact `data-pen-snap` stamp, via
+ * FIND_BY_SNAPSHOT_JS — same as PERFORM_JS), else by visible text/selector
+ * (FIND_BY_TEXT_JS, same order as CLICK_JS/TYPE_JS), then scrolls the match
+ * into view.
+ *
+ * Wave 2 reliability, item 3: `locateTarget` now returns `{ el, hidden }`,
+ * not a bare element — `findByText` itself reports whether the match it
+ * found was only reachable as a hidden fallback (see FIND_BY_TEXT_JS's doc
+ * comment), and that has to survive through `locateTarget` for every caller
+ * (hover/focus/click/scroll) to refuse acting on it instead of silently
+ * proceeding. A hidden text match short-circuits before the scrollIntoView
+ * call — scrolling to reveal something the page itself is hiding is not
+ * "revealing" it.
+ *
+ * `behavior: "instant"` (second-pass review finding 4): the default
+ * ("auto", which follows the page's own `scroll-behavior`) is still
+ * animating on a page that sets `html { scroll-behavior: smooth }` at the
+ * moment the very next line reads `getBoundingClientRect()` — so
+ * HOVER_TARGET_JS's reported centre coordinates, and FOCUS_JS's focus call,
+ * would land on where the element WAS about to be, not where it actually is
+ * yet. An instant jump makes the scroll's own effect on layout observable
+ * before either script reads anything back.
+ */
+const LOCATE_TARGET_JS = `
+  ${FIND_BY_TEXT_JS}
+  ${FIND_BY_SNAPSHOT_JS}
+
+  function findBySelector(sel) {
+    try {
+      return document.querySelector(sel);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function locateTarget(args) {
+    var el = null;
+    var hidden = false;
+    if (args.snapshotId !== undefined && args.snapshotId !== null && args.index !== undefined && args.index !== null) {
+      el = findBySnapshot(args.snapshotId, args.index);
+    } else if (typeof args.target === "string" && args.target.trim() !== "") {
+      // Code review finding 5: visible text match → CSS selector → hidden
+      // text match's own refusal — a hidden-only text match used to
+      // short-circuit here without ever trying the selector fallback. Same
+      // order as CLICK_JS/TYPE_JS now use.
+      var found = findByText(args.target);
+      if (found && !found.hidden) {
+        el = found.el;
+      } else {
+        el = findBySelector(args.target);
+        if (!el && found && found.hidden) hidden = true;
+      }
+    }
+    if (hidden) return { el: null, hidden: true };
+    if (el) el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    return { el: el, hidden: false };
   }
 `;
 
@@ -152,6 +330,74 @@ const SCOPED_SIGNATURE_JS = `
       ariaSelected: el.getAttribute("aria-selected") || "",
       checked: "checked" in el ? !!el.checked : false,
     };
+  }
+`;
+
+/**
+ * Wave 2 reliability, item 4: shared scroll-container helpers, interpolated
+ * into SCROLL_JS, PERFORM_JS (its SCROLL_UP/SCROLL_DOWN branch) and
+ * SNAPSHOT_JS (to mark scrollable containers). `isScrollableContainer`
+ * intentionally excludes `<body>`/`<html>` — those are "the window", not an
+ * inner container — and requires a real overflow style (`auto`/`scroll`)
+ * plus actual overflow (`scrollHeight > clientHeight`), not just a style
+ * that *permits* scrolling. `pickLargestScrollableInCenter` is the "no
+ * target given, window itself can't scroll" fallback (a common SPA shape: a
+ * fixed-height shell with one big inner scroll pane) — largest by rendered
+ * area among containers that are both scrollable and actually intersect the
+ * viewport, deliberately excluding the cursor/marks overlays the same way
+ * every other page script here does.
+ */
+const SCROLL_CONTAINER_HELPER_JS = `
+  function isScrollableContainer(el) {
+    if (!el || el === document.body || el === document.documentElement) return false;
+    var style = getComputedStyle(el);
+    var overflowY = style.overflowY;
+    if (overflowY !== "auto" && overflowY !== "scroll") return false;
+    return el.scrollHeight > el.clientHeight + 2;
+  }
+
+  function nearestScrollableAncestor(el) {
+    var node = el ? el.parentElement : null;
+    while (node && node !== document.body && node !== document.documentElement) {
+      if (isScrollableContainer(node)) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function windowIsScrollable() {
+    var docEl = document.documentElement;
+    var bodyStyle = document.body ? getComputedStyle(document.body) : null;
+    if (bodyStyle && (bodyStyle.overflow === "hidden" || bodyStyle.overflowY === "hidden")) return false;
+    return docEl.scrollHeight > window.innerHeight + 2;
+  }
+
+  function isScrollVisible(el) {
+    var rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    var style = getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    return true;
+  }
+
+  function pickLargestScrollableInCenter() {
+    var all = document.querySelectorAll("*");
+    var best = null;
+    var bestArea = 0;
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el.closest && (el.closest("[data-pen-cursor]") || el.closest("[data-pen-marks]"))) continue;
+      if (!isScrollableContainer(el)) continue;
+      if (!isScrollVisible(el)) continue;
+      var rect = el.getBoundingClientRect();
+      if (rect.right < 0 || rect.left > window.innerWidth || rect.bottom < 0 || rect.top > window.innerHeight) continue;
+      var area = rect.width * rect.height;
+      if (area > bestArea) {
+        bestArea = area;
+        best = el;
+      }
+    }
+    return best;
   }
 `;
 
@@ -218,6 +464,7 @@ const SCOPED_SIGNATURE_JS = `
  * than reporting a number that describes the wrong image.
  */
 export const FIND_IMAGES_JS = `(() => {
+  ${DEEP_QUERY_HELPER_JS}
   var args = ${ARGS_MARKER};
   var minWidth = args.minWidth;
   var minHeight = args.minHeight;
@@ -333,7 +580,9 @@ export const FIND_IMAGES_JS = `(() => {
     found.push(entry);
   }
 
-  var imgs = document.images;
+  // Wave 3 reliability, item 1: document.images never looks inside an open
+  // shadow root — deepQueryAll does.
+  var imgs = deepQueryAll(document, "img");
   for (var i = 0; i < imgs.length; i++) {
     var img = imgs[i];
     // Skip the cursor overlay (pageScripts.ts's CURSOR_JS) and the
@@ -379,7 +628,8 @@ export const FIND_IMAGES_JS = `(() => {
     consider(chosenUrl, img.alt, Math.round(rect.width), Math.round(rect.height), naturalWidth, naturalHeight);
   }
 
-  var all = document.querySelectorAll("*");
+  // Wave 3 reliability, item 1: pierces open shadow roots.
+  var all = deepQueryAll(document, "*");
   for (var j = 0; j < all.length; j++) {
     var el = all[j];
     if (el.closest && (el.closest("[data-pen-cursor]") || el.closest("[data-pen-marks]"))) continue;
@@ -488,7 +738,23 @@ export const CLICK_JS = `(() => {
   // selector-shaped heuristic, and a real CSS selector essentially never
   // equals some element's trimmed textContent, so the fallback still fires
   // for genuine selectors.
-  var el = findByText(target) || findBySelector(target);
+  //
+  // Code review finding 5: a HIDDEN-only text match used to short-circuit
+  // straight to the hidden-element error, never even trying the selector
+  // fallback — a menu item's label matching some off-screen/display:none
+  // element elsewhere on the page (say, a closed dropdown's own copy of the
+  // same text) meant a perfectly good CSS selector for the real, visible
+  // target never got a chance to run at all. Order is now: visible text
+  // match, then selector, then (only if neither found anything) the hidden
+  // text match's own refusal.
+  var found = findByText(target);
+  var el = found && !found.hidden ? found.el : null;
+  if (!el) el = findBySelector(target);
+  if (!el && found && found.hidden) {
+    // Item 3: a text match that only exists hidden must never be clicked —
+    // see FIND_BY_TEXT_JS's doc comment.
+    return { error: "target is not visible (hidden element)" };
+  }
   if (!el) return { error: "No element matched: " + target };
 
   var staleTargets = document.querySelectorAll("[data-pen-sig-target]");
@@ -533,7 +799,15 @@ export const TYPE_JS = `(() => {
   ${TARGET_BUSY_HELPER_JS}
 
   // Text first, selector as fallback — see CLICK_JS's comment for why.
-  var el = findByText(target) || findBySelector(target);
+  // Code review finding 5: same visible-text → selector → hidden-text-
+  // error order as CLICK_JS — see its comment.
+  var found = findByText(target);
+  var el = found && !found.hidden ? found.el : null;
+  if (!el) el = findBySelector(target);
+  if (!el && found && found.hidden) {
+    // Item 3: see CLICK_JS's comment — a hidden-only text match is refused.
+    return { error: "target is not visible (hidden element)" };
+  }
   if (!el) return { error: "No element matched: " + target };
 
   var staleTargets = document.querySelectorAll("[data-pen-sig-target]");
@@ -565,11 +839,222 @@ export const TYPE_JS = `(() => {
   };
 })()`;
 
-/** Scrolls the page vertically by `amount` viewport heights (default 1). */
+/**
+ * Wave 2 reliability, item 1/2: resolves a click/type target — by `target`
+ * text/selector (LOCATE_TARGET_JS's text-first order, same as CLICK_JS/
+ * TYPE_JS) or by `index`+`snapshotId` (the existing PERFORM_JS lookup) —
+ * scrolls it into view, stamps it (same `data-pen-sig-target` +
+ * `scopedSignatureOf` every acting script already captures), and hit-tests
+ * its centre point via `document.elementFromPoint`, *without* performing any
+ * action itself. `controller.ts`'s `dispatchClick`/`dispatchType` use the
+ * returned centre point plus `hitOk` to decide whether a trusted CDP mouse
+ * event can safely land on this element, or whether to fall back to the
+ * existing `el.click()`/native-setter DOM path (CLICK_JS/TYPE_JS/PERFORM_JS)
+ * instead — the same "resolve once, act only if resolution looks sound"
+ * split `act`'s `hover`/`press` already use (HOVER_TARGET_JS/FOCUS_JS).
+ *
+ * `hitOk` is true when the point lands on the target element itself, one of
+ * its descendants, one of its ancestors (a click can legitimately land on a
+ * wrapper that bubbles to a listener further up — the same reason CLICK_JS's
+ * own `el.click()` fallback works at all), or an ancestor `<label>` whose
+ * `for` attribute (or containment) associates it with the target — a common
+ * "click the label to focus the input" shape. `elementFromPointDeep` walks
+ * into *open* shadow roots (`Element#shadowRoot`, only ever non-null for an
+ * open root) so a target inside one isn't falsely reported as covered by its
+ * own host; a closed shadow root is opaque to this check the same way it is
+ * to `elementFromPoint` itself, and simply hit-tests against the host.
+ * `hitOk` is also false outright when the element has zero rendered size or
+ * its centre point falls outside the current viewport — a trusted mouse
+ * event at an off-screen or invisible point is not meaningfully "a click on
+ * this element" even if some other element happens to occupy that point.
+ *
+ * Also reports `editable` (code review finding 4) — a read-only tag/
+ * `isContentEditable` check, the same one `SELECT_ALL_CONTENT_JS` uses —
+ * so `controller.ts`'s `dispatchType` can check it BEFORE sending any
+ * trusted CDP click: a trusted click landing on a non-editable target (a
+ * text match that's actually a link/button) would otherwise click it
+ * before the code ever discovered it wasn't a text field.
+ */
+export const CLICK_RESOLVE_JS = `(() => {
+  var args = ${ARGS_MARKER};
+
+  ${LOCATE_TARGET_JS}
+  ${SCOPED_SIGNATURE_JS}
+  ${TARGET_BUSY_HELPER_JS}
+
+  var located = locateTarget(args);
+  if (located.hidden) return { error: "target is not visible (hidden element)" };
+  var el = located.el;
+  if (!el) return { error: "No element matched: " + (args.target || "index " + args.index) };
+
+  var staleTargets = document.querySelectorAll("[data-pen-sig-target]");
+  for (var st = 0; st < staleTargets.length; st++) staleTargets[st].removeAttribute("data-pen-sig-target");
+  el.setAttribute("data-pen-sig-target", "1");
+  var scopedBefore = scopedSignatureOf(el);
+  var busyBefore = penTargetIsBusy(el);
+
+  var rect = el.getBoundingClientRect();
+  var x = rect.left + rect.width / 2;
+  var y = rect.top + rect.height / 2;
+
+  function elementFromPointDeep(px, py) {
+    var node = document.elementFromPoint(px, py);
+    var guard = 0;
+    while (node && node.shadowRoot && guard < 20) {
+      var inner = node.shadowRoot.elementFromPoint(px, py);
+      if (!inner || inner === node) break;
+      node = inner;
+      guard++;
+    }
+    return node;
+  }
+
+  var hitOk = false;
+  if (rect.width > 0 && rect.height > 0 && x >= 0 && y >= 0 && x <= window.innerWidth && y <= window.innerHeight) {
+    var hitEl = elementFromPointDeep(x, y);
+    if (hitEl) {
+      if (hitEl === el || (el.contains && el.contains(hitEl)) || (hitEl.contains && hitEl.contains(el))) {
+        hitOk = true;
+      } else {
+        var labelAncestor = hitEl.closest && hitEl.closest("label");
+        if (labelAncestor) {
+          if (labelAncestor.contains(el)) hitOk = true;
+          var forId = labelAncestor.getAttribute("for");
+          if (forId && el.id === forId) hitOk = true;
+        }
+      }
+    }
+  }
+
+  // Code review finding 4: computed here, ahead of any click, so
+  // \`controller.ts\`'s \`dispatchType\` can refuse a non-editable target
+  // (a text match that's actually a link/button, say) BEFORE sending a
+  // trusted CDP click to "focus" it — clicking first meant typing into a
+  // link/button clicked it. Mirrors SELECT_ALL_CONTENT_JS's own tag check,
+  // but read-only: no focus()/select() side effect here.
+  var tagForEditable = (el.tagName || "").toLowerCase();
+  var editable = tagForEditable === "input" || tagForEditable === "textarea" || el.isContentEditable === true;
+
+  var result = {
+    found: true,
+    x: x,
+    y: y,
+    hitOk: hitOk,
+    editable: editable,
+    __scopedBefore: scopedBefore,
+    __busyBefore: busyBefore,
+  };
+  if (typeof args.target === "string") result.matched = args.target;
+  return result;
+})()`;
+
+/**
+ * Wave 2 reliability, item 2: selects the *existing* content of the element
+ * `CLICK_RESOLVE_JS` stamped `data-pen-sig-target`, so the CDP-typed
+ * replacement text overwrites it instead of being inserted alongside it —
+ * the native "select all, then type" a real keyboard-driven fill does. An
+ * input/textarea uses `el.select()` (falling back to `setSelectionRange`,
+ * which some custom-element-wrapped inputs implement without `select()`); a
+ * `contenteditable` uses a DOM Range covering its full contents. Neither
+ * reads or returns the field's own value — only whether it *is* an editable
+ * field at all (`editable`), which `controller.ts`'s `dispatchType` uses to
+ * decide between proceeding with the trusted-input path and returning the
+ * same "Element is not editable" error TYPE_JS/PERFORM_JS already report.
+ */
+export const SELECT_ALL_CONTENT_JS = `(() => {
+  var el = document.querySelector("[data-pen-sig-target]");
+  if (!el) return { error: "Target element not found for typing." };
+  if (typeof el.focus === "function") el.focus();
+  var tag = (el.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea") {
+    try {
+      if (typeof el.select === "function") el.select();
+      else if (typeof el.setSelectionRange === "function") el.setSelectionRange(0, String(el.value || "").length);
+    } catch (e) {}
+    return { editable: true };
+  }
+  if (el.isContentEditable) {
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (e) {}
+    return { editable: true };
+  }
+  return { editable: false };
+})()`;
+
+/**
+ * Wave 2 reliability, item 2: verifies the element `CLICK_RESOLVE_JS`
+ * stamped `data-pen-sig-target` now holds exactly the text the trusted-input
+ * path (CDP \`Input.insertText\`) was asked to type — \`controller.ts\`'s
+ * \`dispatchType\` falls back to the existing native-setter path
+ * (TYPE_JS/PERFORM_JS) whenever this reports anything other than an exact
+ * match, e.g. a masked/formatted input that rewrote what was inserted. Never
+ * returns the field's own content — only the boolean comparison result — so
+ * a raw value never has to leave the page for this check, matching this
+ * file's existing value/hasValue privacy rules (see SNAPSHOT_JS's addendum
+ * D and SCOPED_SIGNATURE_JS's \`valueLength\`).
+ */
+export const READ_TARGET_VALUE_JS = `(() => {
+  var args = ${ARGS_MARKER};
+  var expected = args.text;
+  var el = document.querySelector("[data-pen-sig-target]");
+  if (!el) return { matches: false, present: false };
+  var tag = (el.tagName || "").toLowerCase();
+  var actual;
+  if (tag === "input" || tag === "textarea") actual = el.value;
+  else if (el.isContentEditable) actual = el.textContent;
+  else actual = null;
+  return { matches: actual === expected, present: true };
+})()`;
+
+/**
+ * Scrolls vertically by `amount` viewport heights (default 1) — the window,
+ * or, per Wave 2 reliability item 4, an inner scrollable container instead:
+ *
+ * - `target` (visible text/selector) or `index`+`snapshotId` given: resolves
+ *   that element (LOCATE_TARGET_JS) and scrolls it directly if it's itself
+ *   scrollable, else its nearest scrollable ancestor — that covers the
+ *   common case of a `target`/index that names a row or button *inside* a
+ *   scroll pane, not the pane itself. `{ error }` if nothing scrollable is
+ *   found for it (a hidden-only text match is also `{ error }` — see
+ *   LOCATE_TARGET_JS's doc comment).
+ * - No target/index: scrolls the window as before, unless the window itself
+ *   can't scroll (`!windowIsScrollable()` — a fixed-height app shell), in
+ *   which case the largest visible scrollable container near the viewport
+ *   centre is auto-picked (`pickLargestScrollableInCenter`, same helper
+ *   PERFORM_JS's SCROLL_UP/SCROLL_DOWN and SNAPSHOT_JS's container-picking
+ *   share) and scrolled instead.
+ */
 export const SCROLL_JS = `(() => {
   var args = ${ARGS_MARKER};
   var amount = args.amount;
-  window.scrollBy(0, window.innerHeight * amount);
+  var amountPx = window.innerHeight * amount;
+
+  ${LOCATE_TARGET_JS}
+  ${SCROLL_CONTAINER_HELPER_JS}
+
+  var hasTarget =
+    (typeof args.target === "string" && args.target.trim() !== "") ||
+    (args.index !== undefined && args.index !== null && args.snapshotId);
+
+  var el = null;
+  if (hasTarget) {
+    var located = locateTarget(args);
+    if (located.hidden) return { error: "target is not visible (hidden element)" };
+    if (!located.el) return { error: "No element matched: " + (args.target || "index " + args.index) };
+    el = isScrollableContainer(located.el) ? located.el : nearestScrollableAncestor(located.el);
+    if (!el) return { error: "No scrollable container found for that target." };
+  } else if (!windowIsScrollable()) {
+    el = pickLargestScrollableInCenter();
+  }
+
+  if (el) el.scrollBy(0, amountPx);
+  else window.scrollBy(0, amountPx);
+
   return { url: location.href, title: document.title };
 })()`;
 
@@ -600,6 +1085,9 @@ export const SNAPSHOT_JS = `(() => {
     "a[href], button, input, select, textarea, [role='button'], [role='link'], " +
     "[role='checkbox'], [role='radio'], [role='tab'], [role='menuitem'], " +
     "[role='combobox'], [onclick], [contenteditable='true']";
+
+  ${DEEP_QUERY_HELPER_JS}
+  ${SCROLL_CONTAINER_HELPER_JS}
 
   function isVisible(el) {
     // The cursor overlay (pageScripts.ts's CURSOR_JS) and the screenshot
@@ -773,7 +1261,8 @@ export const SNAPSHOT_JS = `(() => {
     return ["CLICK"];
   }
 
-  var candidates = document.querySelectorAll(INTERACTIVE_SELECTOR);
+  // Wave 3 reliability, item 1: pierces open shadow roots.
+  var candidates = deepQueryAll(document, INTERACTIVE_SELECTOR);
   var found = [];
   for (var i = 0; i < candidates.length; i++) {
     var el = candidates[i];
@@ -868,15 +1357,125 @@ export const SNAPSHOT_JS = `(() => {
     elements.push(out);
   }
 
+  // Wave 2 reliability, item 4/5: mark scrollable containers as their own
+  // element-table entries, so act scroll / perform SCROLL_* can be pointed
+  // at one by index — the same data-pen-snap stamping every other indexed
+  // action already relies on (see PERFORM_JS/SCROLL_JS's own lookups).
+  // ops: [], not ["SCROLL"]: pen-editor-backend's /api/browse/step zod
+  // schema enumerates ops as CLICK | TYPE_TEXT | SELECT with .min(1) —
+  // adding a fourth value there is a separate, backend-repo change (see the
+  // shared contract doc and this repo's CLAUDE.md); a container is instead
+  // recognizable purely by scrollable: true. Visible-only (SNAPSHOT_JS's own
+  // isVisible, same as every interactive element above), largest-by-
+  // rendered-area first.
+  //
+  // Code review finding 7: these used to be appended UNCONDITIONALLY on top
+  // of \`elements\` (already capped at \`maxElements\` interactive elements),
+  // so a busy page with both \`maxElements\` interactive elements AND up to
+  // 10 scroll containers could report more than \`maxElements\` elements
+  // total. \`controller.ts\`'s \`takeSnapshot\` computes its own frame budget as
+  // \`remaining = MAX_SNAPSHOT_ELEMENTS - elements.length\` straight off that
+  // count — a negative \`remaining\` made its \`if (remaining > 0)\` guard skip
+  // the whole child-frame merge outright, so a busy top document silently
+  // starved every iframe's elements out of the snapshot. The scroll-
+  // container slice is now capped to whatever budget is actually left after
+  // the interactive elements (min(10, maxElements - capped.length), never
+  // negative), so \`elements.length\` here can never exceed \`maxElements\` and
+  // \`remaining\` downstream can never go negative.
+  // Second-pass review: a scroll container that is ALSO an interactive
+  // element (e.g. a textarea with overflow:auto, a contenteditable editor,
+  // a combobox listbox) was already stamped data-pen-snap with its
+  // interactive index above. Re-stamping it here with a fresh container
+  // index would overwrite that stamp, so the interactive index no longer
+  // resolves ("No element matched") the next time a caller acts on it. Any
+  // element already carrying this snapshot's stamp — whether an interactive
+  // entry or (defensively) an earlier scroll-container entry — is skipped
+  // here; its existing element-table entry is flagged scrollable: true
+  // instead of getting a duplicate entry.
+  var scrollContainerBudget = Math.max(0, Math.min(10, maxElements - elements.length));
+  var scrollContainerCandidates = scrollContainerBudget > 0 ? deepQueryAll(document, "*") : [];
+  var scrollContainers = [];
+  var snapshotStampPrefix = snapshotId + ":";
+  for (var sci = 0; sci < scrollContainerCandidates.length; sci++) {
+    var candidate = scrollContainerCandidates[sci];
+    if (!isScrollableContainer(candidate)) continue;
+    if (!isVisible(candidate)) continue;
+    var existingStamp = candidate.getAttribute("data-pen-snap");
+    if (existingStamp && existingStamp.indexOf(snapshotStampPrefix) === 0) {
+      var existingIndex = parseInt(existingStamp.slice(snapshotStampPrefix.length), 10);
+      if (!isNaN(existingIndex) && elements[existingIndex]) {
+        elements[existingIndex].scrollable = true;
+      }
+      continue;
+    }
+    scrollContainers.push(candidate);
+  }
+  scrollContainers.sort(function (a, b) {
+    var ra = a.getBoundingClientRect();
+    var rb = b.getBoundingClientRect();
+    return rb.width * rb.height - ra.width * ra.height;
+  });
+  scrollContainers = scrollContainers.slice(0, scrollContainerBudget);
+
+  function containerLabelOf(el) {
+    var aria = el.getAttribute("aria-label");
+    if (aria && aria.trim()) return aria.trim().slice(0, 60);
+    var heading = el.querySelector("h1, h2, h3, h4, h5, h6");
+    if (heading) {
+      var headingText = (heading.textContent || "").trim().replace(/\\s+/g, " ");
+      if (headingText) return headingText.slice(0, 60);
+    }
+    var text = (el.textContent || "").trim().replace(/\\s+/g, " ");
+    if (text) return text.slice(0, 60);
+    return tagOf(el) + " (scrollable)";
+  }
+
+  for (var ci = 0; ci < scrollContainers.length; ci++) {
+    var containerEl = scrollContainers[ci];
+    var containerIndex = elements.length;
+    containerEl.setAttribute("data-pen-snap", snapshotId + ":" + containerIndex);
+    elements.push({
+      index: containerIndex,
+      tag: tagOf(containerEl),
+      label: containerLabelOf(containerEl),
+      ops: [],
+      scrollable: true,
+    });
+  }
+
+  var scrollInfo = {
+    y: window.scrollY,
+    height: document.documentElement.scrollHeight,
+    atBottom: window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2,
+  };
+  // Item 5: when the window itself can't scroll, also report scroll info for
+  // whichever container act scroll / perform SCROLL_* would auto-pick —
+  // otherwise a caller has no way to tell how much of that container is left
+  // to scroll without a wasted round trip.
+  if (!windowIsScrollable()) {
+    var autoContainer = pickLargestScrollableInCenter();
+    if (autoContainer) {
+      var autoIndex = -1;
+      for (var fi = 0; fi < scrollContainers.length; fi++) {
+        if (scrollContainers[fi] === autoContainer) {
+          autoIndex = elements.length - scrollContainers.length + fi;
+          break;
+        }
+      }
+      scrollInfo.container = {
+        index: autoIndex >= 0 ? autoIndex : undefined,
+        y: autoContainer.scrollTop,
+        height: autoContainer.scrollHeight,
+        atBottom: autoContainer.scrollTop + autoContainer.clientHeight >= autoContainer.scrollHeight - 2,
+      };
+    }
+  }
+
   return {
     url: location.href,
     title: document.title,
     elements: elements,
-    scroll: {
-      y: window.scrollY,
-      height: document.documentElement.scrollHeight,
-      atBottom: window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2,
-    },
+    scroll: scrollInfo,
   };
 })()`;
 
@@ -901,10 +1500,29 @@ export const PERFORM_JS = `(() => {
   ${SCOPED_SIGNATURE_JS}
   ${TARGET_BUSY_HELPER_JS}
   ${FIND_BY_SNAPSHOT_JS}
+  ${SCROLL_CONTAINER_HELPER_JS}
 
   if (operation === "SCROLL_UP" || operation === "SCROLL_DOWN") {
+    // Wave 2 reliability item 4: same auto-pick SCROLL_JS uses when the
+    // caller gave no target — an explicit index/snapshotId naming a scroll
+    // container (SNAPSHOT_JS's own ADD entries, or any indexed element)
+    // scrolls that container (or its nearest scrollable ancestor) directly;
+    // otherwise, if the window itself can't scroll, the largest visible
+    // scrollable container near the viewport centre is used instead.
     var amount = operation === "SCROLL_UP" ? -1 : 1;
-    window.scrollBy(0, window.innerHeight * amount);
+    var amountPx = window.innerHeight * amount;
+    var scrollEl = null;
+    if (index !== undefined && index !== null && snapshotId) {
+      var scrollTargetEl = findBySnapshot(snapshotId, index);
+      if (scrollTargetEl) {
+        scrollEl = isScrollableContainer(scrollTargetEl) ? scrollTargetEl : nearestScrollableAncestor(scrollTargetEl);
+      }
+    }
+    if (!scrollEl && !windowIsScrollable()) {
+      scrollEl = pickLargestScrollableInCenter();
+    }
+    if (scrollEl) scrollEl.scrollBy(0, amountPx);
+    else window.scrollBy(0, amountPx);
     return { url: location.href, title: document.title };
   }
 
@@ -1040,32 +1658,88 @@ export const SIGNATURE_JS = `(() => {
     for (var stg = 0; stg < staleTarget.length; stg++) staleTarget[stg].removeAttribute("data-pen-sig-target");
   }
 
-  // Review finding 10: reverted to the plain innerText-based measure —
-  // a prior pass had replaced this with a per-element
-  // getBoundingClientRect/getComputedStyle walk (collectVisibleText) to keep
-  // MARKS_JS's numeric labels out of textLength/textHash, duplicating (a
-  // simplified copy of) READ_JS's own collectText in the process for no
-  // real benefit: MARKS_JS's [data-pen-marks] overlay only ever exists for
-  // the single, synchronous duration of a browse_screenshot({annotate:true})
-  // capture — installed right before page.capture() and always removed in
-  // finally (see MARKS_JS/REMOVE_MARKS_JS's doc comments) — so it can never
-  // be present while SIGNATURE_JS runs; a before/after signature pair is
-  // only ever captured by an act/perform/press/hover call, none of which
-  // ever installs that overlay. The cursor overlay ([data-pen-cursor])
-  // carries no text of its own either way (an SVG arrow, no textContent), so
-  // plain innerText was never polluted by it. If a future change ever made
-  // the two capture types overlap, the cheap fix is to subtract
-  // [data-pen-marks]'s own innerText length from document.body's, not to
-  // bring back a full per-element visibility walk.
-  var rawText = (document.body ? document.body.innerText : "") || "";
-  var collapsed = rawText.replace(/\\s+/g, " ").trim();
-  var textLength = collapsed.length;
+  // Wave 1 speed (2026-09-24 browse-speed contract, "cheaper evidence"): the
+  // whole-document dom/text signal used to be a plain
+  // document.querySelectorAll("*").length + document.body.innerText scan,
+  // run once "before" and once "after" — the innerText read in particular
+  // forces a full layout/reflow, and this ran on every act/perform/press
+  // call whether or not anything actually changed. diffSignatures
+  // (controller.ts) only ever uses dom/text as report-only entries in
+  // "changes" — they never gate "changed" on their own (only
+  // url/title/main-image/scroll/value/the scoped target signature do, see
+  // its doc comment) — so a much cheaper boolean "did anything mutate the
+  // DOM/text" from a MutationObserver installed on "before" and read back on
+  // "after" is exactly as useful here as the exact node count/text hash ever
+  // was, for a fraction of the cost. nodeCount/textLength/textHash keep
+  // their original field names/types (numbers) purely so
+  // isPageSignature/diffSignatures on the controller.ts side need no changes
+  // at all: "before" always reports 0/0/0 (a fixed baseline, no scan
+  // needed), and "after" reports 1/1/1 only when the observer actually saw a
+  // relevant mutation — the inequality diffSignatures checks is exactly as
+  // meaningful as it was comparing two real scans, since only "did it
+  // change" was ever read out of it.
+  var penSigDomChanged = false;
+  var penSigTextChanged = false;
 
-  // A small, fast, non-cryptographic hash (djb2-ish) — good enough to
-  // detect "the visible text changed", not meant to be collision-proof.
+  function penSigProcessRecords(records) {
+    for (var r = 0; r < records.length; r++) {
+      var rec = records[r];
+      if (rec.type === "characterData") {
+        penSigTextChanged = true;
+        continue;
+      }
+      if (rec.type === "childList" && (rec.addedNodes.length || rec.removedNodes.length)) {
+        penSigDomChanged = true;
+        for (var an = 0; an < rec.addedNodes.length && !penSigTextChanged; an++) {
+          if (rec.addedNodes[an].nodeType === 3) penSigTextChanged = true;
+        }
+        for (var rn = 0; rn < rec.removedNodes.length && !penSigTextChanged; rn++) {
+          if (rec.removedNodes[rn].nodeType === 3) penSigTextChanged = true;
+        }
+      }
+    }
+  }
+
+  var textLength = 0;
   var hash = 0;
-  for (var i = 0; i < collapsed.length; i++) {
-    hash = (hash * 31 + collapsed.charCodeAt(i)) | 0;
+
+  if (phase === "before") {
+    // A previous action's observer (if the "after" phase somehow never ran —
+    // e.g. a prior command timed out mid-capture) is disconnected first, so
+    // observers never pile up on a long-lived page.
+    if (window.__penSigObserver) {
+      try {
+        window.__penSigObserver.disconnect();
+      } catch (e) {}
+    }
+    try {
+      var observer = new MutationObserver(penSigProcessRecords);
+      if (document.body) {
+        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      }
+      window.__penSigObserver = observer;
+    } catch (e) {
+      // No MutationObserver (shouldn't happen in Chromium) — "after" falls
+      // back to reporting no dom/text change at all, same as a page that
+      // genuinely didn't mutate; every other field is unaffected.
+      window.__penSigObserver = null;
+    }
+  } else {
+    var activeObserver = window.__penSigObserver;
+    if (activeObserver) {
+      try {
+        // takeRecords() both returns and flushes whatever the async
+        // callback hasn't been scheduled to see yet — combined with
+        // whatever the callback already processed (it may have already run
+        // by the time this executes), this can't miss a mutation regardless
+        // of microtask timing.
+        penSigProcessRecords(activeObserver.takeRecords());
+        activeObserver.disconnect();
+      } catch (e) {}
+      window.__penSigObserver = null;
+    }
+    textLength = penSigTextChanged ? 1 : 0;
+    hash = penSigTextChanged ? 1 : 0;
   }
 
   var mainImageSrc = "";
@@ -1106,7 +1780,7 @@ export const SIGNATURE_JS = `(() => {
   var result = {
     url: location.href,
     title: document.title,
-    nodeCount: document.querySelectorAll("*").length,
+    nodeCount: phase === "after" && penSigDomChanged ? 1 : 0,
     textLength: textLength,
     textHash: hash,
     mainImageSrc: mainImageSrc,
@@ -1317,7 +1991,15 @@ export const CURSOR_JS = `(() => {
           return null;
         }
       }
-      return findByText(args.target) || findBySelector(args.target);
+      // Item 3: findByText now returns { el, hidden } (a truthy object even
+      // when el is null), not a bare element — the cursor overlay just wants
+      // wherever the action will actually land, hidden or not (it's cosmetic
+      // guidance, not the thing deciding whether the action itself proceeds
+      // — that refusal happens in CLICK_JS/TYPE_JS/CLICK_RESOLVE_JS/
+      // LOCATE_TARGET_JS), so a hidden match is still an acceptable point to
+      // aim at here.
+      var textMatch = findByText(args.target);
+      return (textMatch && textMatch.el) || findBySelector(args.target);
     }
     return null;
   }
@@ -1375,6 +2057,21 @@ export const CURSOR_JS = `(() => {
 
       if (args.action === "scroll") {
         finish({ moved: false, x: startX, y: startY });
+        return;
+      }
+
+      // Wave 3 reliability, item 2: an explicit top-level-viewport point,
+      // used for an element routed to a child frame — the cursor overlay
+      // lives in the top document, so it can't resolve/scroll to an
+      // element that lives inside a frame's own document at all. The
+      // controller computes this point itself (the matched iframe's own
+      // content-box offset plus the element's local center, best effort —
+      // see resolveVisibleFrames/moveCursor's doc comments) and passes it
+      // as args.point instead of target/snapshotId+index.
+      if (args.point && typeof args.point.x === "number" && typeof args.point.y === "number") {
+        var px = clamp(args.point.x, 0, window.innerWidth);
+        var py = clamp(args.point.y, 0, window.innerHeight);
+        animateTo(px, py);
         return;
       }
 
@@ -1476,6 +2173,7 @@ export const CURSOR_JS = `(() => {
 })()`;
 
 export const READ_JS = `(() => {
+  ${DEEP_QUERY_HELPER_JS}
   var args = ${ARGS_MARKER};
   var selector = args.selector;
   var maxChars = args.maxChars;
@@ -1515,14 +2213,20 @@ export const READ_JS = `(() => {
   // Finding 9: root.querySelectorAll only matches descendants — when root
   // itself (not document) matches the selector, it must be included too,
   // the same way collectText already includes the root's own text.
+  // Wave 3 reliability, item 1: deepQueryAll additionally pierces open
+  // shadow roots, so headings/links inside a web component are no longer
+  // invisible to browse_read.
   function queryIncludingSelf(scopeRoot, sel) {
     var results = [];
     if (scopeRoot !== document && scopeRoot.matches && scopeRoot.matches(sel)) results.push(scopeRoot);
-    var descendants = scopeRoot.querySelectorAll(sel);
+    var descendants = deepQueryAll(scopeRoot, sel);
     for (var i = 0; i < descendants.length; i++) results.push(descendants[i]);
     return results;
   }
 
+  // Wave 3 reliability, item 1: also walks into every open shadow root
+  // (n.shadowRoot), so browse_read's text digest includes text rendered
+  // inside a web component instead of stopping at its host element.
   function collectText(node) {
     var parts = [];
     function walk(n) {
@@ -1530,11 +2234,22 @@ export const READ_JS = `(() => {
         if (n.nodeValue) parts.push(n.nodeValue);
         return;
       }
+      // A ShadowRoot itself is a DocumentFragment (nodeType 11), not an
+      // Element (nodeType 1) — recursing into it via a plain walk(n.shadowRoot)
+      // call would hit the nodeType!==1 guard above and return immediately,
+      // silently dropping every bit of shadow content. Its own childNodes are
+      // walked directly instead, the same way a plain element's are below.
+      if (n.nodeType === 11) {
+        var shadowChildren = n.childNodes;
+        for (var si = 0; si < shadowChildren.length; si++) walk(shadowChildren[si]);
+        return;
+      }
       if (n.nodeType !== 1) return;
       if (isChrome(n)) return;
       if (!isVisible(n)) return;
       var children = n.childNodes;
       for (var i = 0; i < children.length; i++) walk(children[i]);
+      if (n.shadowRoot) walk(n.shadowRoot);
     }
     walk(node);
     return parts.join(" ");
@@ -1675,48 +2390,6 @@ export const REMOVE_MARKS_JS = `(() => {
 })()`;
 
 /**
- * Shared target-resolution + scroll-into-view helper for FOCUS_JS and
- * HOVER_TARGET_JS (second-pass review finding 10 — before this, both scripts
- * inlined an identical copy of this same resolution order, one that could
- * silently drift between the two). Resolves by `snapshotId`+`index` (the
- * exact `data-pen-snap` stamp, via FIND_BY_SNAPSHOT_JS — same as PERFORM_JS),
- * else by visible text/selector (FIND_BY_TEXT_JS, same order as CLICK_JS/
- * TYPE_JS), then scrolls the match into view and returns it (or `null`).
- *
- * `behavior: "instant"` (second-pass review finding 4): the default
- * ("auto", which follows the page's own `scroll-behavior`) is still
- * animating on a page that sets `html { scroll-behavior: smooth }` at the
- * moment the very next line reads `getBoundingClientRect()` — so
- * HOVER_TARGET_JS's reported centre coordinates, and FOCUS_JS's focus call,
- * would land on where the element WAS about to be, not where it actually is
- * yet. An instant jump makes the scroll's own effect on layout observable
- * before either script reads anything back.
- */
-const LOCATE_TARGET_JS = `
-  ${FIND_BY_TEXT_JS}
-  ${FIND_BY_SNAPSHOT_JS}
-
-  function findBySelector(sel) {
-    try {
-      return document.querySelector(sel);
-    } catch (err) {
-      return null;
-    }
-  }
-
-  function locateTarget(args) {
-    var el = null;
-    if (args.snapshotId !== undefined && args.snapshotId !== null && args.index !== undefined && args.index !== null) {
-      el = findBySnapshot(args.snapshotId, args.index);
-    } else if (typeof args.target === "string" && args.target.trim() !== "") {
-      el = findByText(args.target) || findBySelector(args.target);
-    }
-    if (el) el.scrollIntoView({ block: "center", behavior: "instant" });
-    return el;
-  }
-`;
-
-/**
  * Locates an element the same way `act`'s `hover` resolves its target (see
  * LOCATE_TARGET_JS) and reports its viewport-relative centre.
  * `controller.ts`'s `runHover` dispatches the actual hover via CDP's
@@ -1730,8 +2403,9 @@ export const HOVER_TARGET_JS = `(() => {
 
   ${LOCATE_TARGET_JS}
 
-  var el = locateTarget(args);
-  if (!el) return { found: false };
+  var located = locateTarget(args);
+  var el = located.el;
+  if (!el) return { found: false, hidden: located.hidden === true };
   var rect = el.getBoundingClientRect();
   return {
     found: true,
@@ -1757,8 +2431,9 @@ export const FOCUS_JS = `(() => {
 
   ${LOCATE_TARGET_JS}
 
-  var el = locateTarget(args);
-  if (!el) return { focused: false };
+  var located = locateTarget(args);
+  var el = located.el;
+  if (!el) return { focused: false, hidden: located.hidden === true };
   if (typeof el.focus === "function") el.focus();
   return { focused: true };
 })()`;
@@ -1774,4 +2449,160 @@ export const WAIT_TEXT_JS = `(() => {
   var needle = String(args.text || "").toLowerCase();
   var body = (document.body && document.body.innerText) || "";
   return { found: body.toLowerCase().indexOf(needle) !== -1 };
+})()`;
+
+/**
+ * `act`'s `wait` action, when given no `text`: tracks DOM-mutation activity
+ * across a whole wait, alongside `controller.ts`'s own CDP network-activity
+ * tracking (`BrowserPageHandle.networkStats`) — the DOM half of the "wait
+ * for *something to happen, then settle*" rule (Wave 1 speed follow-up:
+ * `wait` must not return early just because nothing has started yet, only
+ * once something that *did* start has since gone quiet — see
+ * `runWait`'s doc comment).
+ *
+ * `action: "install"` (called once, at the very start of the wait, before
+ * the poll loop) creates a `MutationObserver` on `document.body`
+ * (`childList`/`subtree`/`characterData`) and stores it — along with the
+ * timestamp of the most recent mutation it has seen — on
+ * `window.__penWaitDom`, so state survives across the separate
+ * `executeJavaScript` calls the poll loop makes (same page realm, same
+ * pattern `SIGNATURE_JS`'s `window.__penSigObserver` already uses).
+ * `action: "check"` (called once per poll) flushes `takeRecords()` — which
+ * can't miss a mutation regardless of whether the observer's own async
+ * callback has run yet — and reports `{ mutated, ageMs }`: `mutated` is
+ * whether *any* relevant mutation has been seen since `install`, `ageMs` is
+ * how long ago the most recent one was (`null` when `mutated` is false).
+ * `action: "uninstall"` (called once, when the wait ends) disconnects the
+ * observer and clears the stored state, so it never lingers past the
+ * `browse_act` call that installed it.
+ */
+export const WAIT_DOM_ACTIVITY_JS = `(() => {
+  var args = ${ARGS_MARKER};
+  var action = args.action;
+
+  if (action === "install") {
+    if (window.__penWaitDom && window.__penWaitDom.observer) {
+      try {
+        window.__penWaitDom.observer.disconnect();
+      } catch (e) {}
+    }
+    var state = { observer: null, lastMutationAt: null };
+    try {
+      var observer = new MutationObserver(function (records) {
+        if (records.length > 0) state.lastMutationAt = Date.now();
+      });
+      if (document.body) {
+        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      }
+      state.observer = observer;
+    } catch (e) {
+      state.observer = null;
+    }
+    window.__penWaitDom = state;
+    return { installed: true };
+  }
+
+  if (action === "uninstall") {
+    if (window.__penWaitDom && window.__penWaitDom.observer) {
+      try {
+        window.__penWaitDom.observer.disconnect();
+      } catch (e) {}
+    }
+    window.__penWaitDom = null;
+    return { uninstalled: true };
+  }
+
+  // "check"
+  var st = window.__penWaitDom;
+  if (!st || !st.observer) return { mutated: false, ageMs: null };
+  try {
+    var pending = st.observer.takeRecords();
+    if (pending.length > 0) st.lastMutationAt = Date.now();
+  } catch (e) {}
+  if (st.lastMutationAt === null) return { mutated: false, ageMs: null };
+  return { mutated: true, ageMs: Date.now() - st.lastMutationAt };
+})()`;
+
+/**
+ * Wave 3 reliability, item 4: a cheap, best-effort "does this page look like
+ * a bot-check/CAPTCHA wall" heuristic, run once after `open` settles.
+ * Deliberately conservative — a false positive just tells the agent to hand
+ * off to the user instead of fighting a wall that doesn't actually exist,
+ * while a missed real one just means the agent keeps trying and eventually
+ * gives up on its own. Matches on the page's title or the first 2000 chars
+ * of its visible body text against a fixed set of common challenge phrases
+ * ("just a moment", "verify you are human", "captcha", "attention
+ * required", "access denied", "unusual traffic" — Cloudflare/Google/generic
+ * anti-bot copy), or the presence of an iframe whose `src` points at a
+ * known challenge host (Cloudflare Turnstile, Google/hCaptcha reCAPTCHA).
+ * Swallows its own failures — a botCheck script throwing must never turn a
+ * working `open` into an error.
+ */
+/**
+ * Wave 3 reliability, item 2: run against the TOP document only, to
+ * discover which of its `<iframe>` elements are actually worth descending
+ * into. Returns `{ url, name, x, y, width, height }` for every visible
+ * (non-zero-size, not `display:none`/`visibility:hidden`) iframe element —
+ * `x`/`y` are the iframe's own content-box origin in top-level viewport CSS
+ * px (border/padding excluded, since that's the same coordinate space a
+ * child frame's own `getBoundingClientRect()` calls report *within*, so
+ * `controller.ts` can add the two directly with no further conversion).
+ * `deepQueryAll` (not a plain `document.querySelectorAll`) so an iframe
+ * nested inside an open shadow root is still found. `controller.ts` matches
+ * each entry back to a `WebFrameMain` child frame by `url` first, falling
+ * back to `name` — see its own doc comment for why neither match is
+ * available from inside this script (a cross-origin iframe's `src` may
+ * differ from the frame's *current*, possibly-redirected `url`, and a
+ * `WebFrameMain` has no DOM-side identity a page script could read at all).
+ */
+export const IFRAME_RECTS_JS = `(() => {
+  ${DEEP_QUERY_HELPER_JS}
+  var out = [];
+  var frames = deepQueryAll(document, "iframe");
+  for (var i = 0; i < frames.length; i++) {
+    var el = frames[i];
+    if (el.closest && (el.closest("[data-pen-cursor]") || el.closest("[data-pen-marks]"))) continue;
+    var rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    var style = getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden") continue;
+    var cs = style;
+    var borderLeft = parseFloat(cs.borderLeftWidth) || 0;
+    var borderTop = parseFloat(cs.borderTopWidth) || 0;
+    var paddingLeft = parseFloat(cs.paddingLeft) || 0;
+    var paddingTop = parseFloat(cs.paddingTop) || 0;
+    out.push({
+      url: el.src || "",
+      name: el.getAttribute("name") || el.id || "",
+      x: rect.left + borderLeft + paddingLeft,
+      y: rect.top + borderTop + paddingTop,
+      width: rect.width,
+      height: rect.height,
+    });
+  }
+  return { frames: out };
+})()`;
+
+export const BOT_CHECK_JS = `(() => {
+  try {
+    var pattern = /just a moment|verify you are human|are you a robot|captcha|attention required|access denied|unusual traffic/i;
+    var title = document.title || "";
+    var bodyText = document.body && document.body.innerText ? document.body.innerText.slice(0, 2000) : "";
+    var textMatch = pattern.test(title) || pattern.test(bodyText);
+    var challengeHosts = ["challenges.cloudflare.com", "google.com/recaptcha", "hcaptcha.com"];
+    var iframeMatch = false;
+    var iframes = document.querySelectorAll("iframe");
+    for (var i = 0; i < iframes.length && !iframeMatch; i++) {
+      var src = iframes[i].getAttribute("src") || "";
+      for (var h = 0; h < challengeHosts.length; h++) {
+        if (src.indexOf(challengeHosts[h]) !== -1) {
+          iframeMatch = true;
+          break;
+        }
+      }
+    }
+    return { botCheck: textMatch || iframeMatch };
+  } catch (err) {
+    return { botCheck: false };
+  }
 })()`;
