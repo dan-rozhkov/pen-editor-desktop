@@ -1,6 +1,6 @@
 {
   "name": "pen-editor-desktop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Pineapple Editor desktop app",
   "main": "dist/main/index.js",
   "private": true,
@@ -39,7 +39,9 @@
         "dmg",
         "zip"
       ],
-      "category": "public.app-category.graphics-design"
+      "category": "public.app-category.graphics-design",
+      "identity": "-",
+      "hardenedRuntime": false
     }
   }
 }
