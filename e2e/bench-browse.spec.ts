@@ -4,6 +4,15 @@
 //   BENCH_MODE=task   — the whole job goes to ONE browse_task call (the Jev
 //                        loop drives every step; the main model only starts
 //                        it and reads the transcript) — the "ultrafast" shape.
+//   BENCH_MODE=taskexact — same task as `task`, but the prompt pins the
+//                        browse_task `goal` to an EXACT fixed string (the
+//                        base task sentence with the shop URL substituted
+//                        literally) instead of letting the main model phrase
+//                        it. Models "the user repeats the same task" —
+//                        useful for isolating cache-hit behavior from goal
+//                        phrasing drift between runs. Requires BENCH_SHOP_PORT
+//                        so the shop URL (and therefore the goal string) is
+//                        identical across runs.
 //   BENCH_MODE=jev    — the agent is told to use browse_task (the Jev-driven
 //                        multi-step loop hitting POST /api/browse/step) for
 //                        navigation, and browse_act's `element` field
@@ -22,8 +31,18 @@
 // panel, and send the same task prompt (plus a mode-specific instruction
 // suffix) against a local fixture shop (e2e/fixtures/bench-shop). Metrics —
 // wall time, success, per-request/tool-call counts, token usage, the actual
-// order POST — are written to test-results/bench/<mode>-<timestamp>.json and
-// printed.
+// order POST — are written to <BENCH_OUT_DIR ?? test-results/bench>/<mode>-<timestamp>.json
+// and printed.
+//
+// BENCH_SHARED_HOME=1 reuses one Electron profile dir across every run in
+// this invocation (instead of a fresh one per run), so localStorage — e.g.
+// a client-side action cache — survives between runs, letting a later run
+// come up warm. BENCH_SHOP_PORT=<n> binds the fixture shop to a fixed port
+// so its origin stays identical across runs too (a fresh server, and so a
+// fresh cart/orders state, still starts per run). BENCH_OUT_DIR points
+// metrics JSONs somewhere outside test-results/, which Playwright wipes at
+// the start of every invocation — needed to compare a cold-run invocation
+// against a later warm-run invocation.
 //
 // `element`/`POST /api/browse/locate` do not exist in this desktop repo yet
 // (backend-first rollout, still landing) — jev mode is included for when it
@@ -44,10 +63,39 @@ import { startBenchShopServer, type OrderRecord } from "./fixtures/bench-shop/se
 const PROD_EDITOR = process.env.PEN_LIVE_URL ?? "https://pen-editor.onrender.com/app";
 const editorOrigin = new URL(PROD_EDITOR).origin;
 
-type BenchMode = "jev" | "nojev" | "task";
+type BenchMode = "jev" | "nojev" | "task" | "taskexact";
 const BENCH_MODE: BenchMode =
-  process.env.BENCH_MODE === "jev" ? "jev" : process.env.BENCH_MODE === "task" ? "task" : "nojev";
+  process.env.BENCH_MODE === "jev"
+    ? "jev"
+    : process.env.BENCH_MODE === "task"
+    ? "task"
+    : process.env.BENCH_MODE === "taskexact"
+    ? "taskexact"
+    : "nojev";
 const BENCH_RUNS = Math.max(1, Number.parseInt(process.env.BENCH_RUNS ?? "1", 10) || 1);
+
+// BENCH_SHARED_HOME=1: reuse ONE Electron profile dir (under `HOME`) across
+// every run in this invocation instead of a fresh one per run, so whatever
+// the editor writes to localStorage (e.g. the client-side action cache)
+// survives between runs — letting a later run in the same invocation come
+// up "warm". Default (unset) keeps the old per-run fresh-profile behavior.
+const BENCH_SHARED_HOME = process.env.BENCH_SHARED_HOME === "1";
+
+// BENCH_SHOP_PORT=<n>: bind the bench shop to a fixed port so its origin
+// (and therefore any origin-keyed client cache) stays identical across
+// runs. Default (unset) keeps the old random-port-per-run behavior — each
+// run still gets a brand-new server instance either way, so cart/orders
+// state is always fresh per run regardless of this flag.
+const BENCH_SHOP_PORT = process.env.BENCH_SHOP_PORT ? Number.parseInt(process.env.BENCH_SHOP_PORT, 10) : undefined;
+
+// Where metrics JSONs are written. Defaults to test-results/bench (unchanged
+// behavior), but Playwright wipes test-results/ at the start of every
+// invocation — set BENCH_OUT_DIR to somewhere outside it (e.g. a
+// bench-results/ dir) to compare cold vs warm runs across separate
+// `npm run test:e2e:bench` invocations.
+const BENCH_OUT_DIR = process.env.BENCH_OUT_DIR
+  ? path.resolve(process.env.BENCH_OUT_DIR)
+  : path.join(process.cwd(), "test-results", "bench");
 
 // Wait this long with the "turn ended" signal continuously true before
 // trusting it — the AI SDK's tool loop auto-continues (see
@@ -58,14 +106,25 @@ const TURN_END_DEBOUNCE_MS = 2_500;
 const TURN_CAP_MS = 12 * 60_000;
 const BRAND = "AudioNova";
 
-function taskPrompt(fixtureUrl: string, mode: BenchMode): string {
-  const base =
+/** The base task sentence, with the shop URL substituted literally. Shared
+ * by every mode's prompt and, for `taskexact`, quoted verbatim as the fixed
+ * `browse_task` goal — so it must stay free of any per-run placeholder
+ * (BENCH_SHOP_PORT keeps the URL itself identical across runs). */
+function baseTaskSentence(fixtureUrl: string): string {
+  return (
     `Open ${fixtureUrl}. Accept cookies, search for headphones, keep only wireless ones from brand ` +
     `${BRAND} under $100, sort by rating, open the top result, add it to the cart and check out as ` +
-    `Test User, test@example.com, Germany, standard shipping, accept the terms. Reply with the order number.`;
+    `Test User, test@example.com, Germany, standard shipping, accept the terms. Reply with the order number.`
+  );
+}
+
+function taskPrompt(fixtureUrl: string, mode: BenchMode): string {
+  const base = baseTaskSentence(fixtureUrl);
   const suffix =
     mode === "task"
       ? " Hand the WHOLE browsing job to a single browse_task call with the full goal (the Jev loop drives every step). Only if it returns without finishing, continue from where it stopped with further browse_task calls or browse_act."
+      : mode === "taskexact"
+      ? ` Call browse_task exactly ONCE with goal set EXACTLY to this string, verbatim, with no paraphrasing or additions: "${base}" — and url set to "${fixtureUrl}". Only if it returns without finishing, continue manually from where it stopped with further browse_task calls or browse_act.`
       : mode === "jev"
       ? " Drive the browser with browse_task for multi-step navigation, and browse_act with the `element` field for single actions."
       : " Do NOT use browse_task and do NOT use the `element` field; use browse_snapshot / browse_screenshot and browse_act by index.";
@@ -113,6 +172,11 @@ interface RunMetrics {
   };
   chatRequestCount: number;
   toolCallCounts: Record<string, number>;
+  /** Every `browse_task` call's `goal` input, as the main model phrased it
+   * (truncated to 300 chars), in call order. Lets a report compare how the
+   * model words the goal across modes/runs — e.g. whether `taskexact`
+   * actually reproduces the fixed string verbatim. */
+  taskGoals: string[];
   browseStepRequests: { count: number; totalLatencyMs: number };
   browseLocateRequests: { count: number; totalLatencyMs: number };
   contextTokens: number | null;
@@ -130,6 +194,17 @@ interface RunMetrics {
      * loop stopped (status/reason) and what each step did. */
     taskTranscripts: unknown[];
   };
+  /** Sum of `transcript.cacheHits` across every browse_task transcript, for
+   * transcripts that carry it (the client-side action cache reports how
+   * many of its steps were served from cache; older/non-cache transcripts
+   * simply lack the field and contribute 0). */
+  cacheHits: number;
+  /** Per-step `via` counts aggregated across every browse_task transcript's
+   * `steps[]`. A step's `via` is one of "jev" (the default — the field is
+   * omitted on an ordinary Jev decision, counted here as "jev"), "cascade"
+   * (STRUCTURED_MODEL second opinion), "rule" (deterministic guard), or
+   * "cache" (served from the client-side action cache, once that lands). */
+  viaCounts: Record<string, number>;
 }
 
 interface UiToolPart {
@@ -183,6 +258,28 @@ function countBrowseToolResults(requestBody: string | null): RunMetrics["browseT
     }
   }
   return result;
+}
+
+/** Aggregates `cacheHits` and per-step `via` counts across every
+ * browse_task transcript collected in `countBrowseToolResults`. Tolerant of
+ * any transcript shape — a transcript that isn't an object, or whose
+ * `steps` isn't an array, simply contributes nothing rather than throwing. */
+function aggregateTranscripts(taskTranscripts: unknown[]): { cacheHits: number; viaCounts: Record<string, number> } {
+  let cacheHits = 0;
+  const viaCounts: Record<string, number> = {};
+  for (const transcript of taskTranscripts) {
+    if (!transcript || typeof transcript !== "object") continue;
+    const t = transcript as { cacheHits?: unknown; steps?: unknown };
+    if (typeof t.cacheHits === "number") cacheHits += t.cacheHits;
+    if (!Array.isArray(t.steps)) continue;
+    for (const step of t.steps as unknown[]) {
+      if (!step || typeof step !== "object") continue;
+      const via = (step as { via?: unknown }).via;
+      const key = typeof via === "string" && via.length > 0 ? via : "jev";
+      viaCounts[key] = (viaCounts[key] ?? 0) + 1;
+    }
+  }
+  return { cacheHits, viaCounts };
 }
 
 /** Tracks request start times keyed by Request identity so a matching
@@ -244,14 +341,17 @@ async function waitForTurnEnd(page: Page): Promise<void> {
   // (success will simply read false) instead of failing the whole bench run.
 }
 
-async function runOnce(runIndex: number): Promise<RunMetrics> {
-  const shop = await startBenchShopServer();
-  const home = path.join(
-    process.cwd(),
-    "test-results",
-    "bench",
-    `home-${BENCH_MODE}-${Date.now()}-${runIndex}`,
-  );
+/**
+ * @param sharedHome When set (BENCH_SHARED_HOME=1), this run reuses that ONE
+ * profile dir instead of creating its own — so whatever the editor wrote to
+ * localStorage on a previous run in this invocation (e.g. the action cache)
+ * is still there. When unset, a fresh dir is created per run, as before.
+ */
+async function runOnce(runIndex: number, sharedHome?: string): Promise<RunMetrics> {
+  const shop = await startBenchShopServer(BENCH_SHOP_PORT);
+  const home =
+    sharedHome ??
+    path.join(process.cwd(), "test-results", "bench", `home-${BENCH_MODE}-${Date.now()}-${runIndex}`);
   fs.mkdirSync(home, { recursive: true });
 
   const app = await electron.launch({
@@ -341,11 +441,16 @@ async function runOnce(runIndex: number): Promise<RunMetrics> {
     const wallMs = Date.now() - startMs;
 
     const toolCallCounts: Record<string, number> = {};
+    const taskGoals: string[] = [];
     let contextTokens: number | null = null;
     for (const body of chatRequestBodies) {
       for (const chunk of parseSseChunks(body)) {
         if (chunk.type === "tool-input-available" && typeof chunk.toolName === "string") {
           toolCallCounts[chunk.toolName] = (toolCallCounts[chunk.toolName] ?? 0) + 1;
+          if (chunk.toolName === "browse_task") {
+            const goal = (chunk.input as { goal?: unknown } | undefined)?.goal;
+            if (typeof goal === "string") taskGoals.push(goal.slice(0, 300));
+          }
         }
         if (chunk.type === "finish" && typeof chunk.messageMetadata?.contextTokens === "number") {
           contextTokens = chunk.messageMetadata.contextTokens;
@@ -370,6 +475,9 @@ async function runOnce(runIndex: number): Promise<RunMetrics> {
     const finalMessageContainsOrderNumber = order !== null && pageText.includes(order.orderNumber);
     const excerptMatch = order ? pageText.slice(Math.max(0, pageText.indexOf(order.orderNumber) - 80), pageText.indexOf(order.orderNumber) + 80) : "";
 
+    const browseToolResults = countBrowseToolResults(lastChatRequestPayload);
+    const { cacheHits, viaCounts } = aggregateTranscripts(browseToolResults.taskTranscripts);
+
     const metrics: RunMetrics = {
       mode: BENCH_MODE,
       runIndex,
@@ -378,12 +486,15 @@ async function runOnce(runIndex: number): Promise<RunMetrics> {
       success: { serverRecordedMatchingOrder, finalMessageContainsOrderNumber },
       chatRequestCount: chatRequestBodies.length,
       toolCallCounts,
+      taskGoals,
       browseStepRequests: { count: browseStep.count, totalLatencyMs: browseStep.totalLatencyMs },
       browseLocateRequests: { count: browseLocate.count, totalLatencyMs: browseLocate.totalLatencyMs },
       contextTokens,
       order,
       finalAssistantMessageExcerpt: excerptMatch,
-      browseToolResults: countBrowseToolResults(lastChatRequestPayload),
+      browseToolResults,
+      cacheHits,
+      viaCounts,
     };
     return metrics;
   } finally {
@@ -395,11 +506,19 @@ async function runOnce(runIndex: number): Promise<RunMetrics> {
 test.describe(`bench-browse (${BENCH_MODE})`, () => {
   test.setTimeout(TURN_CAP_MS + 5 * 60_000);
 
+  // Created once per invocation (not per run) when BENCH_SHARED_HOME=1, so
+  // every run's Electron profile — and therefore its localStorage — is the
+  // same directory across the whole `for` loop below.
+  const sharedHome = BENCH_SHARED_HOME
+    ? path.join(process.cwd(), "test-results", "bench", `home-${BENCH_MODE}-shared-${Date.now()}`)
+    : undefined;
+  if (sharedHome) fs.mkdirSync(sharedHome, { recursive: true });
+
   for (let i = 0; i < BENCH_RUNS; i++) {
     test(`run ${i + 1}/${BENCH_RUNS}`, async () => {
-      const metrics = await runOnce(i);
+      const metrics = await runOnce(i, sharedHome);
 
-      const outDir = path.join(process.cwd(), "test-results", "bench");
+      const outDir = BENCH_OUT_DIR;
       fs.mkdirSync(outDir, { recursive: true });
       const outPath = path.join(outDir, `${BENCH_MODE}-${Date.now()}.json`);
       fs.writeFileSync(outPath, JSON.stringify(metrics, null, 2));

@@ -333,7 +333,17 @@ function confirmPage(order: OrderRecord, consented: boolean): string {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-export async function startBenchShopServer(): Promise<BenchShopServer> {
+/**
+ * @param port Fixed port to bind (e.g. from `BENCH_SHOP_PORT`), so the shop
+ * origin stays identical across bench runs — useful for the client-side
+ * action cache, which keys on origin. Omit for a random free port (the
+ * default, and what every non-bench caller wants). Each call still starts a
+ * fresh server with empty session/order state — callers that want a fixed
+ * port across runs must close the previous server first (this bench's own
+ * `runOnce` already does, in its `finally`), which also gives every run a
+ * clean cart/orders slate.
+ */
+export async function startBenchShopServer(port = 0): Promise<BenchShopServer> {
   const sessions = new Map<string, Session>();
   const orders: OrderRecord[] = [];
   let orderCounter = 100000;
@@ -529,11 +539,26 @@ export async function startBenchShopServer(): Promise<BenchShopServer> {
     })();
   });
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
+  const boundPort = await new Promise<number>((resolve, reject) => {
+    const onError = (err: NodeJS.ErrnoException) => {
+      server.off("listening", onListening);
+      if (err.code === "EADDRINUSE") {
+        reject(new Error(`bench shop server: port ${port} is already in use (set BENCH_SHOP_PORT to a free port)`));
+      } else {
+        reject(err);
+      }
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve((server.address() as AddressInfo).port);
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, "127.0.0.1");
+  });
 
   return {
-    url: `http://127.0.0.1:${port}`,
+    url: `http://127.0.0.1:${boundPort}`,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
     getOrders: () => orders.slice(),
   };
