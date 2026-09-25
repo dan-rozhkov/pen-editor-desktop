@@ -109,6 +109,25 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       ? {
           titleBarStyle: "hiddenInset" as const,
           trafficLightPosition: { x: 14, y: 12 },
+          // macOS glass tab bar (like the Codex desktop app), 2026-09-25:
+          // a native frosted-glass blur of whatever is behind the window,
+          // showing through the tab bar's translucent CSS background below.
+          // "under-window" (not "sidebar" or "content") reads as a bar
+          // sitting *above* the desktop/other windows rather than a
+          // content-adjacent panel, which is the Codex look, and is the
+          // material Electron recommends when the vibrant view sits at the
+          // very top of the window rather than beside real window content.
+          // `visualEffectState: "active"` keeps it glassy even when the
+          // window loses focus — the default ("followWindow") would grey it
+          // out, which is not what Codex does. `backgroundColor:
+          // "#00000000"` (fully transparent) is required for the vibrancy
+          // material to actually show through the BaseWindow itself; the
+          // tab-bar view's own background is separately made transparent
+          // below, and the tab CONTENT views (editor/browser) are kept
+          // opaque so no glass ever bleeds through page content.
+          vibrancy: "under-window" as const,
+          visualEffectState: "active" as const,
+          backgroundColor: "#00000000",
         }
       : {}),
   });
@@ -124,9 +143,25 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
   });
   win.contentView.addChildView(tabbarView);
   attachLocalOnlyPolicy(tabbarView.webContents);
+  if (process.platform === "darwin") {
+    // Let the window's vibrancy material show through the tab bar's own
+    // translucent CSS background (tabbar.css's `--bar-glass`/`--chrome-glass`
+    // tokens) instead of painting over it with an opaque view background.
+    tabbarView.setBackgroundColor("#00000000");
+  }
   void tabbarView.webContents.loadFile(path.join(__dirname, "../tabbar/tabbar.html"));
 
   const systemTheme = (): UITheme => (nativeTheme.shouldUseDarkColors ? "dark" : "light");
+  // Tab CONTENT views (editor/browser) must stay opaque no matter what the
+  // glass tab bar above is doing — otherwise the desktop behind the window
+  // would show through actual page content. A WebContentsView defaults to a
+  // white background, which is a visible flash on a dark-theme tab before
+  // its real content paints; this picks the theme-appropriate opaque color
+  // instead, used both at view creation (best guess: system theme) and
+  // whenever a more accurate theme becomes known (an editor tab's own
+  // reported theme, or the resolved theme once a browser tab is active —
+  // see setBackgroundColor usages below).
+  const backgroundColorForTheme = (theme: UITheme): string => (theme === "dark" ? "#1a1a1a" : "#ffffff");
   // The last snapshot actually pushed — kept only so shouldFocusAddressBar
   // (tabManager.ts) has a "previous" to compare against. window.ts owns
   // this bit of bookkeeping so the pure predicate itself stays stateless;
@@ -158,8 +193,19 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
     const focusAddressBar = shouldFocusAddressBar(previousSnapshot, s);
     previousSnapshot = s;
     tabbarView.webContents.send("tabbar:state", { ...s, focusAddressBar });
-    tabbarView.webContents.send("tabbar:theme", s.activeTheme ?? systemTheme());
+    const resolvedTheme = s.activeTheme ?? systemTheme();
+    tabbarView.webContents.send("tabbar:theme", resolvedTheme);
     if (focusAddressBar) tabbarView.webContents.focus();
+    // Keep a visible browser tab's own blank-canvas background matching the
+    // theme the bar is now showing (glass tab bar work, 2026-09-25) — most
+    // relevant right after tabs.newTab("browser") creates one (its initial
+    // guess at creation time may be wrong) and whenever the editor theme
+    // that drives resolveActiveTheme changes while a browser tab is active.
+    // Editor tabs correct their own background directly off their own
+    // onThemeChanged callback (see createView below) and don't need this.
+    if (s.activeKind === "browser") {
+      tabs.activeBrowserHandle()?.setBackgroundColor?.(backgroundColorForTheme(resolvedTheme));
+    }
     // The active tab's kind can change (activating a browser tab, or an
     // editor tab) without a window resize — re-run layout every time the
     // snapshot changes so the address row's height tracks activeKind
@@ -266,6 +312,26 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       );
       win.contentView.addChildView(view);
       const viewId = view.webContents.id;
+      // Opaque by default for both kinds — see backgroundColorForTheme's doc
+      // comment above. Best guess (system theme) until something more
+      // accurate is known: an editor tab corrects this itself the moment it
+      // reports its own theme (onThemeChanged wiring below); a blank browser
+      // tab is corrected by pushState once the resolved theme is known.
+      view.setBackgroundColor(backgroundColorForTheme(systemTheme()));
+      // A view's background colour is the base behind every page it shows,
+      // not just a pre-paint placeholder — a site that sets no background of
+      // its own relies on Chromium's default white, and would render its
+      // default black text over #1a1a1a. So a browser tab is only themed
+      // while blank: its first main-frame navigation drops it back to white
+      // for good.
+      let browserTabBlank = kind === "browser";
+      if (kind === "browser") {
+        view.webContents.on("did-start-navigation", (details) => {
+          if (!browserTabBlank || !details.isMainFrame) return;
+          browserTabBlank = false;
+          view.setBackgroundColor("#ffffff");
+        });
+      }
 
       // Full browser use (design doc `2026-09-23-full-browser-use-design.md`):
       // a CDP session attached once per browser tab, backing `act`'s
@@ -568,7 +634,19 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         sendMenuCommand: (id) => view.webContents.send("menu:command", id),
         focus: () => view.webContents.focus(),
         onDocumentTitleChanged: (cb) => titleCallbacks.set(viewId, cb),
-        onThemeChanged: (cb) => themeCallbacks.set(viewId, cb),
+        // Editor tabs only correct their own opaque background here, the
+        // moment they report a real theme — see view.setBackgroundColor's
+        // initial call above and backgroundColorForTheme's doc comment.
+        onThemeChanged: (cb) =>
+          themeCallbacks.set(viewId, (theme) => {
+            view.setBackgroundColor(backgroundColorForTheme(theme));
+            cb(theme);
+          }),
+        // A no-op on a browser tab that has navigated — see browserTabBlank.
+        setBackgroundColor: (color) => {
+          if (kind === "browser" && !browserTabBlank) return;
+          view.setBackgroundColor(color);
+        },
         getWebContentsId: () => viewId,
         onNavigationStateChanged: (cb) => {
           navListener = cb;

@@ -7,6 +7,21 @@
   --border: #e0e0e0;
   --text: #666666;
   --text-active: rgba(0, 0, 0, 0.87);
+  /* Glass tab bar (macOS only, `:root[data-macos]` below) — a translucent
+     tint over the native `vibrancy: "under-window"` blur set in window.ts,
+     rather than the opaque --bar-bg. Alpha is tuned, not just "light" values
+     with transparency, because the OS vibrancy material's own appearance
+     follows the *system* light/dark setting while `data-theme` here follows
+     the editor's theme (tabManager.ts's `resolveActiveTheme`) — the two can
+     disagree (a dark-theme editor tab on a Mac set to light appearance, or
+     vice versa). A low-alpha dark tint over light vibrancy would read as
+     washed-out grey, not "dark bar" — so --bar-glass uses a
+     high enough alpha to read as their own theme's color regardless of
+     which appearance the vibrancy blur underneath happens to be.
+     The active tab and the address row stay on the opaque --tab-active-bg:
+     one solid surface flowing into the content below, glass everywhere else
+     — Codex's split (glass chrome, solid content). */
+  --bar-glass: rgba(246, 246, 246, 0.55);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -15,10 +30,14 @@
     --bar-bg: #1a1a1a;
     --tab-active-bg: #2a2a2a;
     --control-hover-bg: #383838;
-  --field-hover-bg: #333333;
+    --field-hover-bg: #333333;
     --border: #404040;
     --text: #888888;
     --text-active: rgba(255, 255, 255, 0.87);
+    /* Higher alpha than the light tint — see --bar-glass's comment above:
+       a dark tint needs more opacity to still read as dark over whatever
+       appearance the OS vibrancy blur is actually rendering. */
+    --bar-glass: rgba(26, 26, 26, 0.7);
   }
 }
 
@@ -31,6 +50,7 @@
   --border: #e0e0e0;
   --text: #666666;
   --text-active: rgba(0, 0, 0, 0.87);
+  --bar-glass: rgba(246, 246, 246, 0.55);
 }
 
 :root[data-theme="dark"] {
@@ -42,6 +62,7 @@
   --border: #404040;
   --text: #888888;
   --text-active: rgba(255, 255, 255, 0.87);
+  --bar-glass: rgba(26, 26, 26, 0.7);
 }
 
 body {
@@ -54,6 +75,13 @@ body {
   font: 12px -apple-system, BlinkMacSystemFont, sans-serif;
   user-select: none;
   overflow: hidden;
+}
+/* macOS: replace the opaque bar with a translucent tint over the window's
+   native vibrancy blur (window.ts's BaseWindow `vibrancy: "under-window"`)
+   — the frosted-glass look, matching the Codex desktop app. Non-macOS keeps
+   the opaque --bar-bg above; there is no vibrancy to show through there. */
+:root[data-macos] body {
+  background: var(--bar-glass);
 }
 
 /* --- tab strip (row 1, always visible) --- */
@@ -72,15 +100,23 @@ body {
   -webkit-app-region: drag;
 }
 :root[data-macos] .tab-row { padding-left: 88px; }
-#tabs { display: flex; align-items: center; gap: 4px; padding-left: 6px; overflow: hidden; flex: 1; }
+/* Edge-to-edge tab strip: tabs fill the row's full 38px height (no 28px
+   pill vertically centered by `margin: auto`), touch each other with no
+   gap, and #tabs itself carries no left inset — on macOS the row's own
+   88px traffic-light padding above is what pushes tabs clear of the
+   traffic lights, so #tabs needn't add its own. `align-items: stretch`
+   (rather than `.tab-row`'s inherited default) is what makes each `.tab`
+   fill the row's height without an explicit height on `.tab` itself. */
+#tabs { display: flex; align-items: stretch; overflow: hidden; flex: 1; }
 .tab {
   position: relative;
   display: flex; align-items: center; gap: 6px;
-  height: 28px; box-sizing: border-box;
+  box-sizing: border-box;
   padding: 0 4px 0 12px; max-width: 200px; min-width: 60px;
-  margin: auto 0;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  /* Tabs are separated by a 1px hairline instead of a gap — a border-radius
+     or per-tab background would look wrong touching edge-to-edge, so
+     neither is set here. */
+  border-right: 1px solid var(--border);
   cursor: default; white-space: nowrap;
   app-region: no-drag;
   -webkit-app-region: no-drag;
@@ -88,7 +124,15 @@ body {
 .tab .title { overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .tab:not(.active):hover { background: var(--control-hover-bg); color: var(--text-active); }
 .tab.active {
-  border-color: var(--border);
+  /* No border-color/border-radius override here (unlike the old pill) —
+     the active tab is exactly the same edge-to-edge rectangle as every
+     other tab, just with an opaque background. Because `.tab`
+     already fills `.tab-row`'s full height (including the row's own
+     1px bottom hairline, painted via `.tab-row`'s background gradient
+     underneath), this opaque background paints straight over that hairline
+     for the active tab's width — visually merging it with the content
+     below, with no extra pseudo-element needed. Inactive tabs stay
+     transparent, so the hairline still shows through under them. */
   background: var(--tab-active-bg);
   color: var(--text-active);
 }
@@ -106,17 +150,21 @@ body {
 }
 .tab .close::before { transform: rotate(45deg); }
 .tab .close::after { transform: rotate(-45deg); }
+/* Square and edge-to-edge like the tabs it sits next to (consistent with
+   the tab strip's new no-radius/no-gap look) — full row height instead of
+   a smaller centered 28px control. No margin and no border-left of its own:
+   every `.tab` (including the last one) already carries a `border-right`
+   hairline, which is what separates it from this button — an extra
+   border-left here would double that line. */
 #new-tab {
-  position: relative; flex: 0 0 28px; width: 28px; height: 28px;
-  margin: auto 6px;
+  position: relative; flex: 0 0 38px; width: 38px;
   border: 0; background: none; color: var(--text); cursor: pointer;
-  border-radius: 6px;
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
 #new-tab:hover { color: var(--text-active); background: var(--control-hover-bg); }
 #new-tab::before, #new-tab::after {
-  content: ""; position: absolute; left: 8px; top: 13.5px;
+  content: ""; position: absolute; left: 13px; top: 18.5px;
   width: 12px; height: 1px; border-radius: 1px; background: currentColor;
 }
 #new-tab::after { transform: rotate(90deg); }

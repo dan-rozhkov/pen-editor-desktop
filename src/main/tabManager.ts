@@ -52,6 +52,14 @@ export interface TabViewHandle {
    * McpService.registerTab/setActiveTab, both keyed by webContents.id).
    */
   getWebContentsId(): number;
+  /**
+   * Optional: sets the view's own background colour — used by window.ts's
+   * `pushState` to keep a *blank* browser tab matching the tab bar's theme
+   * instead of a white void. window.ts's implementation ignores it once a
+   * browser tab has navigated (a page with no background of its own must
+   * keep Chromium's default white under it).
+   */
+  setBackgroundColor?(color: string): void;
 
   // --- Browser tabs only below. Every real WebContentsView-backed
   // implementation trivially supports these (they are all thin wrappers
@@ -355,6 +363,12 @@ export class TabManager {
       view.onThemeChanged((theme) => {
         if (entry.theme === theme) return;
         entry.theme = theme;
+        // Deliberately unconditional, not gated on `id === this.activeId` —
+        // an inactive editor tab's theme changing (typically the tab last
+        // pointed to by `lastEditorWebContentsId`, while a browser tab is
+        // active) must still push a fresh snapshot, since
+        // `resolveActiveTheme` above re-derives the reported theme from that
+        // tab's live `entry.theme` on every `getSnapshot()` call.
         this.emit();
       });
       view.loadURL(this.opts.editorUrl).catch((err) => {
@@ -549,10 +563,36 @@ export class TabManager {
       })),
       activeId: this.activeId,
       activeKind: active?.kind ?? null,
-      activeTheme: active?.theme ?? null,
+      activeTheme: this.resolveActiveTheme(active),
       mcpStatus: this.mcpStatus,
       mcpActiveWebContentsId: resolveMcpActiveTab(active?.kind ?? null, activeWebContentsId, this.lastEditorWebContentsId),
     };
+  }
+
+  /**
+   * The theme the tab bar/chrome row should render for the currently active
+   * tab (glass tab bar work, 2026-09-25). An editor tab always reports its
+   * own theme directly. A browser tab has none of its own — falling back to
+   * `null` here used to mean "switching to a browser tab flips the bar to
+   * the system theme", which visibly clashed against a dark-theme editor tab
+   * right next to it. Instead: the theme of the most-recently-*active*
+   * editor tab (`lastEditorWebContentsId`, already tracked for the MCP
+   * routing above and kept live-accurate the same way — see `setActive`/
+   * `closeTab`), falling back to any other editor tab with a known theme,
+   * then finally `null` (window.ts falls back to the system theme from
+   * there). Looking the entry up fresh here (rather than caching a theme
+   * value) means a *theme change* on that editor tab — which can happen
+   * while a browser tab is active, `onThemeChanged` below emits regardless
+   * of which tab is active — is picked up by the very next snapshot.
+   */
+  private resolveActiveTheme(active: TabEntry | undefined): UITheme | null {
+    if (active?.kind === "editor") return active.theme;
+    const lastEditor = this.tabs.find(
+      (t) => t.kind === "editor" && t.view.getWebContentsId() === this.lastEditorWebContentsId,
+    );
+    if (lastEditor?.theme) return lastEditor.theme;
+    const anyEditorWithTheme = this.tabs.find((t) => t.kind === "editor" && t.theme !== null);
+    return anyEditorWithTheme?.theme ?? null;
   }
 
   /**

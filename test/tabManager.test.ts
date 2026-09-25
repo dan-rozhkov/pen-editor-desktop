@@ -182,6 +182,54 @@ describe("TabManager", () => {
     expect(tm.getSnapshot().activeTheme).toBe("light");
   });
 
+  // Glass tab bar work, 2026-09-25: a browser tab has no theme of its own
+  // (no preload, so no editor:theme IPC), and used to report `null` —
+  // falling back to the system theme in window.ts and visibly flipping the
+  // bar's color scheme relative to whatever editor tab is open elsewhere in
+  // the strip. `activeTheme` must instead inherit the last-active editor
+  // tab's theme.
+  it("a browser tab inherits the last-active editor tab's theme", () => {
+    const editor = tm.newTab("editor");
+    views[0].emitTheme("dark");
+    tm.newTab("browser");
+    expect(tm.getSnapshot().activeKind).toBe("browser");
+    expect(tm.getSnapshot().activeTheme).toBe("dark");
+    // Activating the editor tab directly still reports its own theme.
+    tm.activate(editor);
+    expect(tm.getSnapshot().activeTheme).toBe("dark");
+  });
+
+  it("updates the snapshot when the last-active editor tab's theme changes while a browser tab is active", () => {
+    tm.newTab("editor");
+    views[0].emitTheme("light");
+    tm.newTab("browser");
+    expect(tm.getSnapshot().activeTheme).toBe("light");
+
+    const before = states.length;
+    views[0].emitTheme("dark");
+    // The theme-change callback on an inactive editor tab must still push a
+    // fresh snapshot — not just update internal state silently.
+    expect(states.length).toBe(before + 1);
+    expect(tm.getSnapshot().activeTheme).toBe("dark");
+    expect(states[states.length - 1].activeTheme).toBe("dark");
+  });
+
+  it("falls back to any editor tab with a known theme when the last-active one has none yet", () => {
+    tm.newTab("editor"); // views[0]
+    views[0].emitTheme("dark");
+    tm.newTab("editor"); // views[1] — now the last-active editor, no theme yet
+    tm.newTab("browser");
+    expect(tm.getSnapshot().activeKind).toBe("browser");
+    expect(tm.getSnapshot().activeTheme).toBe("dark");
+  });
+
+  it("reports null when no editor tab has ever reported a theme", () => {
+    tm.newTab("editor");
+    tm.newTab("browser");
+    expect(tm.getSnapshot().activeKind).toBe("browser");
+    expect(tm.getSnapshot().activeTheme).toBeNull();
+  });
+
   it("defaults mcpStatus to off and reports it in the snapshot", () => {
     tm.newTab();
     expect(tm.getSnapshot().mcpStatus).toBe("off");
