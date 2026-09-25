@@ -1297,8 +1297,15 @@ export const SNAPSHOT_JS = `(() => {
         options.push(String(el.options[o].text || "").slice(0, 120));
       }
       entry.options = options;
+      // The chosen option's text, not just "something is selected": a
+      // "Select…" placeholder (empty option value) is the unset state, and
+      // without the real choice Jev can't tell Country is already Germany and
+      // re-selects it forever. Option texts already leave the page in
+      // \`options\`, so reporting which one is selected discloses nothing new.
       var selectedOpt = el.options[el.selectedIndex];
-      entry.hasValue = !!(selectedOpt && selectedOpt.text);
+      var chosenText = selectedOpt && selectedOpt.value !== "" ? String(selectedOpt.text || "").trim() : "";
+      if (chosenText) entry.value = chosenText.slice(0, 100);
+      entry.hasValue = !!chosenText;
     } else if (tag === "input" || tag === "textarea") {
       // Addendum D: only a non-password input[type=text], input[type=search]
       // or textarea reports its live "value" — and only when "autocomplete"
@@ -1320,7 +1327,10 @@ export const SNAPSHOT_JS = `(() => {
       var rawValue = el.value || "";
       if (valueEligible) {
         entry.value = String(rawValue).slice(0, 100);
-      } else {
+      } else if (inputType !== "checkbox" && inputType !== "radio") {
+        // A checkbox/radio's value is its submit token ("on" by default),
+        // never user input — "hasValue" made every unchecked box read as
+        // filled. Its state is \`checked\`, set above.
         entry.hasValue = rawValue.length > 0;
       }
     }
@@ -1471,11 +1481,38 @@ export const SNAPSHOT_JS = `(() => {
     }
   }
 
+  // Visible text inside the viewport, in document order, capped at 6000
+  // chars — jev-ultrafast's snapshot.js: the decision model needs the words a
+  // user sees (a validation error, "Account created", a result's price), not
+  // just the controls. Overlay text (cursor, set-of-marks) and inert source
+  // (script/style/noscript/template) never count.
+  var textParts = [];
+  var textLength = 0;
+  if (document.body) {
+    var textWalker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    var textRange = document.createRange();
+    var textNode;
+    while ((textNode = textWalker.nextNode()) && textLength < 6000) {
+      var piece = (textNode.textContent || "").replace(/\\s+/g, " ").trim();
+      var holder = textNode.parentElement;
+      if (!piece || !holder) continue;
+      if (holder.closest("script,style,noscript,template,[data-pen-cursor],[data-pen-marks],[aria-hidden='true']")) continue;
+      textRange.selectNodeContents(textNode);
+      var tr = textRange.getBoundingClientRect();
+      if (tr.width <= 0 || tr.height <= 0 || tr.bottom <= 0 || tr.top >= window.innerHeight || tr.right <= 0 || tr.left >= window.innerWidth) continue;
+      var holderStyle = getComputedStyle(holder);
+      if (holderStyle.visibility === "hidden" || parseFloat(holderStyle.opacity) === 0) continue;
+      textParts.push(piece);
+      textLength += piece.length + 1;
+    }
+  }
+
   return {
     url: location.href,
     title: document.title,
     elements: elements,
     scroll: scrollInfo,
+    text: textParts.join("\\n").slice(0, 6000),
   };
 })()`;
 

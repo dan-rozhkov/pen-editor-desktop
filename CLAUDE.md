@@ -486,7 +486,15 @@ live `value` at all; every other element (a password input included)
 reports `hasValue: true|false` instead, never the content. The original
 rule guarded only `type=password`, so an autofilled card number in a
 `type=text` field, an email, or a phone number left the page in the element
-table under `value`. `options` on a `<select>` is capped at 100 entries,
+table under `value`. Two exceptions to "everything else reports `hasValue`": a
+`<select>` also reports its chosen option's text as `value` (the option texts
+already leave the page in `options`; a `Select…` placeholder with an empty
+option value is unset, `hasValue: false`), and a checkbox/radio reports only
+`checked` — its `value` is a submit token (`on`), never user input, and
+reading it as `hasValue` made every unchecked box look filled. The snapshot
+also returns `text`: visible text inside the viewport (≤6000 chars, overlays
+and `script`/`style` excluded) for pen-editor-backend's jev-ultrafast step
+policy, which otherwise sees only the controls. `options` on a `<select>` is capped at 100 entries,
 each truncated to 120 chars, in the page script itself — the payload must
 be valid by construction, not rely on the backend to reject an oversized
 country dropdown. `SNAPSHOT_JS` also stamps each surviving element with a

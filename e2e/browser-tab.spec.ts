@@ -247,6 +247,11 @@ line seven
 line eight
 line nine
 line ten</textarea>
+<!-- A "Select…" placeholder is the unset state of a <select>, and a
+checkbox's value is its submit token ("on"), never user input — neither may
+read as filled. -->
+<select id="sel-country"><option value="">Select…</option><option>Germany</option></select>
+<label><input id="chk-terms" type="checkbox"> Accept the terms</label>
 <div id="click-result"></div>
 <script>
   document.getElementById('btn-aria').addEventListener('click', function () {
@@ -788,8 +793,11 @@ interface SnapshotElement {
   /** Addendum D: only present for a non-password input[type=text],
    * input[type=search], or textarea whose autocomplete isn't sensitive. */
   value?: string;
-  /** Addendum D: present instead of `value` for every other input/select. */
+  /** Addendum D: present instead of `value` for every other input (and a
+   * <select>, which also reports its chosen option as `value`). */
   hasValue?: boolean;
+  /** A checkbox/radio's state — reported instead of `hasValue`. */
+  checked?: boolean;
   ops: string[];
   options?: string[];
   /** Only ever present, and only ever true, for a password input. */
@@ -808,6 +816,8 @@ interface SnapshotResult {
   elements: SnapshotElement[];
   scroll: { y: number; height: number; atBottom: boolean };
   snapshotId: string;
+  /** Visible viewport text, ≤6000 chars. */
+  text?: string;
 }
 
 interface FoundImage {
@@ -1433,14 +1443,30 @@ test("browser snapshot: visibility filtering, labels, ops, and password values a
     expect(textInput).toBeTruthy();
     expect(textInput?.isPassword).toBeUndefined();
 
-    // --- select: SELECT ops and options list. A <select> is never eligible
-    // for `value` (addendum D lists only input[type=text],
-    // input[type=search], and textarea) — it reports `hasValue` instead. ---
-    const select = snap.elements.find((e) => e.tag === "select");
+    // --- select: SELECT ops, options list, and the CHOSEN option as
+    // `value` — the option texts already leave the page in `options`, and
+    // without the choice Jev re-selects a field it cannot see is set. A
+    // "Select…" placeholder (empty option value) is unset, not filled. ---
+    const select = snap.elements.find((e) => e.tag === "select" && e.options?.[0] === "Red");
     expect(select?.ops).toEqual(["SELECT"]);
     expect(select?.options).toEqual(["Red", "Green", "Blue"]);
-    expect(select?.value).toBeUndefined();
+    expect(select?.value).toBe("Green");
     expect(select?.hasValue).toBe(true);
+    const placeholderSelect = snap.elements.find((e) => e.tag === "select" && e.options?.[1] === "Germany");
+    expect(placeholderSelect?.value).toBeUndefined();
+    expect(placeholderSelect?.hasValue).toBe(false);
+
+    // --- a checkbox reports `checked`, never `hasValue` (its value is "on"). ---
+    const terms = snap.elements.find((e) => e.label === "Accept the terms");
+    expect(terms?.checked).toBe(false);
+    expect(terms?.hasValue).toBeUndefined();
+
+    // --- visible viewport text rides along for the step policy; hidden and
+    // off-screen text does not. ---
+    expect(snap.text).toContain("snapshot-ready");
+    expect(snap.text).toContain("Different Visible Text");
+    expect(snap.text).not.toContain("Far Away");
+    expect(snap.text).not.toMatch(/\bHidden\b/);
 
     // --- Addendum D / finding 3: an autofilled type=tel or type=email
     // value must never leave the page under any key, not even in the raw
@@ -1455,7 +1481,9 @@ test("browser snapshot: visibility filtering, labels, ops, and password values a
     // case that *does* still hit the positional fallback (a machine-looking
     // id must be skipped). Either way they must report hasValue rather than
     // value.
-    const inputsWithoutValue = snap.elements.filter((e) => e.tag === "input" && e.value === undefined);
+    const inputsWithoutValue = snap.elements.filter(
+      (e) => e.tag === "input" && e.value === undefined && e.checked === undefined,
+    );
     expect(inputsWithoutValue.length).toBeGreaterThanOrEqual(3); // password, tel, email at least
     expect(inputsWithoutValue.every((e) => typeof e.hasValue === "boolean")).toBe(true);
 
@@ -1668,7 +1696,7 @@ test("browser perform: acts by index, and rejects a snapshotId superseded by a n
 
     // --- SELECT by index against a fresh snapshot. ---
     const selectSnapshot = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
-    const selectIndex = selectSnapshot.elements.find((e) => e.tag === "select")?.index;
+    const selectIndex = selectSnapshot.elements.find((e) => e.tag === "select" && e.options?.includes("Blue"))?.index;
     expect(selectIndex).not.toBeUndefined();
     const selectResult = (await callBrowser(editorPage, "perform", {
       snapshotId: selectSnapshot.snapshotId,
