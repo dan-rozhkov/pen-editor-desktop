@@ -119,15 +119,17 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
           // very top of the window rather than beside real window content.
           // `visualEffectState: "active"` keeps it glassy even when the
           // window loses focus — the default ("followWindow") would grey it
-          // out, which is not what Codex does. `backgroundColor:
-          // "#00000000"` (fully transparent) is required for the vibrancy
-          // material to actually show through the BaseWindow itself; the
-          // tab-bar view's own background is separately made transparent
-          // below, and the tab CONTENT views (editor/browser) are kept
-          // opaque so no glass ever bleeds through page content.
+          // out, which is not what Codex does. The window itself keeps its
+          // default background — a transparent one makes macOS draw a dark
+          // frame around the whole window; vibrancy shows through the
+          // tab-bar view, made transparent below, on its own. The tab
+          // CONTENT views (editor/browser) are kept opaque so no glass ever
+          // bleeds through page content.
           vibrancy: "under-window" as const,
           visualEffectState: "active" as const,
-          backgroundColor: "#00000000",
+          // The vibrant window otherwise gets a dark 1px frame around its
+          // whole edge; it is part of the window shadow, so it goes with it.
+          hasShadow: false,
         }
       : {}),
   });

@@ -21,7 +21,7 @@
      The active tab and the address row stay on the opaque --tab-active-bg:
      one solid surface flowing into the content below, glass everywhere else
      — Codex's split (glass chrome, solid content). */
-  --bar-glass: rgba(246, 246, 246, 0.55);
+  --bar-glass: rgba(246, 246, 246, 0.78);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -37,7 +37,7 @@
     /* Higher alpha than the light tint — see --bar-glass's comment above:
        a dark tint needs more opacity to still read as dark over whatever
        appearance the OS vibrancy blur is actually rendering. */
-    --bar-glass: rgba(26, 26, 26, 0.7);
+    --bar-glass: rgba(26, 26, 26, 0.85);
   }
 }
 
@@ -50,7 +50,7 @@
   --border: #e0e0e0;
   --text: #666666;
   --text-active: rgba(0, 0, 0, 0.87);
-  --bar-glass: rgba(246, 246, 246, 0.55);
+  --bar-glass: rgba(246, 246, 246, 0.78);
 }
 
 :root[data-theme="dark"] {
@@ -62,7 +62,7 @@
   --border: #404040;
   --text: #888888;
   --text-active: rgba(255, 255, 255, 0.87);
-  --bar-glass: rgba(26, 26, 26, 0.7);
+  --bar-glass: rgba(26, 26, 26, 0.85);
 }
 
 body {
