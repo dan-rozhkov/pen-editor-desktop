@@ -252,6 +252,12 @@ describe("TabManager", () => {
     expect(states.length).toBe(before);
   });
 
+  it("layout insets tab views from the left/right/bottom window edges by `edge`", () => {
+    tm.newTab();
+    tm.layout({ width: 1200, height: 800 }, 38, 1);
+    expect(views[0].setBounds).toHaveBeenLastCalledWith({ x: 1, y: 38, width: 1198, height: 761 });
+  });
+
   it("layout positions all tab views below the tab bar", () => {
     tm.newTab();
     tm.newTab();

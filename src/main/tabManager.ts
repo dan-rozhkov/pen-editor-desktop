@@ -314,7 +314,7 @@ export class TabManager {
    * is ever destroyed — see the doc comment on `TabsSnapshot.mcpActiveWebContentsId`.
    */
   private lastEditorWebContentsId: number | null = null;
-  private lastLayout: { content: { width: number; height: number }; tabbarHeight: number } | null =
+  private lastLayout: { content: { width: number; height: number }; tabbarHeight: number; edge: number } | null =
     null;
   /**
    * Full browser use (design doc `2026-09-23-full-browser-use-design.md`):
@@ -608,8 +608,10 @@ export class TabManager {
     this.emit();
   }
 
-  layout(content: { width: number; height: number }, tabbarHeight: number): void {
-    this.lastLayout = { content, tabbarHeight };
+  /** `edge` insets tab views from the window's left/right/bottom edges —
+   * window.ts uses it on macOS to leave room for its 1px window rim. */
+  layout(content: { width: number; height: number }, tabbarHeight: number, edge = 0): void {
+    this.lastLayout = { content, tabbarHeight, edge };
     for (const tab of this.tabs) this.applyLayout(tab);
   }
 
@@ -637,12 +639,12 @@ export class TabManager {
 
   private applyLayout(tab: TabEntry): void {
     if (!this.lastLayout) return;
-    const { content, tabbarHeight } = this.lastLayout;
+    const { content, tabbarHeight, edge } = this.lastLayout;
     tab.view.setBounds({
-      x: 0,
+      x: edge,
       y: tabbarHeight,
-      width: content.width,
-      height: Math.max(0, content.height - tabbarHeight),
+      width: Math.max(0, content.width - 2 * edge),
+      height: Math.max(0, content.height - tabbarHeight - edge),
     });
   }
 

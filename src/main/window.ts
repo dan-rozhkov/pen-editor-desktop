@@ -1,5 +1,5 @@
 import path from "node:path";
-import { BaseWindow, WebContentsView, Menu, ipcMain, nativeTheme, shell } from "electron";
+import { BaseWindow, View, WebContentsView, Menu, ipcMain, nativeTheme, shell } from "electron";
 import {
   TabManager,
   shouldFocusAddressBar,
@@ -119,17 +119,14 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
           // very top of the window rather than beside real window content.
           // `visualEffectState: "active"` keeps it glassy even when the
           // window loses focus — the default ("followWindow") would grey it
-          // out, which is not what Codex does. The window itself keeps its
-          // default background — a transparent one makes macOS draw a dark
-          // frame around the whole window; vibrancy shows through the
-          // tab-bar view, made transparent below, on its own. The tab
+          // out, which is not what Codex does. A vibrant window is
+          // non-opaque, so macOS edges it with a dark 1px line (it comes
+          // with the shadow, which we keep); `windowRim` below paints a
+          // light-grey rim just inside it, as Codex has. The tab
           // CONTENT views (editor/browser) are kept opaque so no glass ever
           // bleeds through page content.
           vibrancy: "under-window" as const,
           visualEffectState: "active" as const,
-          // The vibrant window otherwise gets a dark 1px frame around its
-          // whole edge; it is part of the window shadow, so it goes with it.
-          hasShadow: false,
         }
       : {}),
   });
@@ -143,6 +140,14 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       sandbox: true,
     },
   });
+  // macOS window rim (see the BaseWindow options above): a light-grey 1px
+  // line just inside the window edge. Around the content area it is this
+  // backing view showing through the 1px gap `tabs.layout(..., WINDOW_EDGE)`
+  // leaves at the left/right/bottom; across the tab bar, tabbar.css draws
+  // it (`--window-rim`). Added first so it sits below every other view.
+  const WINDOW_EDGE = process.platform === "darwin" ? 1 : 0;
+  const windowRim = WINDOW_EDGE ? new View() : null;
+  if (windowRim) win.contentView.addChildView(windowRim);
   win.contentView.addChildView(tabbarView);
   attachLocalOnlyPolicy(tabbarView.webContents);
   if (process.platform === "darwin") {
@@ -196,6 +201,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
     previousSnapshot = s;
     tabbarView.webContents.send("tabbar:state", { ...s, focusAddressBar });
     const resolvedTheme = s.activeTheme ?? systemTheme();
+    // Keep in sync with tabbar.css's --window-rim.
+    windowRim?.setBackgroundColor(resolvedTheme === "dark" ? "#4d4d4d" : "#ececec");
     tabbarView.webContents.send("tabbar:theme", resolvedTheme);
     if (focusAddressBar) tabbarView.webContents.focus();
     // Keep a visible browser tab's own blank-canvas background matching the
@@ -914,7 +921,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
     const activeKind = tabs.getSnapshot().activeKind;
     const tabbarHeight = TABBAR_HEIGHT + (activeKind === "browser" ? CHROME_HEIGHT : 0);
     tabbarView.setBounds({ x: 0, y: 0, width, height: tabbarHeight });
-    tabs.layout({ width, height }, tabbarHeight);
+    windowRim?.setBounds({ x: 0, y: tabbarHeight, width, height: Math.max(0, height - tabbarHeight) });
+    tabs.layout({ width, height }, tabbarHeight, WINDOW_EDGE);
   };
   win.on("resize", layout);
   layout();
