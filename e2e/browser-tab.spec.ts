@@ -31,6 +31,14 @@ let autoAlertUrl: string;
 let smoothScrollUrl: string;
 let wave2Url: string;
 let wave3Url: string;
+let reachModalUrl: string;
+let reachOverlayUrl: string;
+let reachCheckboxUrl: string;
+let reachBarUrl: string;
+let reachPortalUrl: string;
+let reachToastUrl: string;
+let reachStaleUrl: string;
+let reachBannerUrl: string;
 let wave3FrameUrl: string;
 let botCheckUrl: string;
 // Wave 3 reliability item 2: a SECOND http server on a different port,
@@ -682,6 +690,129 @@ read as filled. -->
 </script>`);
       return;
     }
+    if (req.url && req.url.startsWith("/reach-modal")) {
+      // Reachability (booking.com Genius-popup finding): an aria-modal dialog
+      // over a full-viewport fixed backdrop. SNAPSHOT_JS must list only the
+      // dialog's controls, report `modal`, and go back to the page's own
+      // controls once the dialog is closed.
+      res.end(`<!doctype html>
+<title>Reach Modal</title>
+<h1 id="ready">reach-modal-ready</h1>
+<button id="page-a">Page Button A</button>
+<button id="page-b">Page Button B</button>
+<div id="backdrop" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10">
+  <div role="dialog" aria-modal="true" aria-label="Sign in offer" style="position:fixed;top:80px;left:80px;width:300px;height:160px;background:#fff;z-index:11">
+    <p>Get discounts</p>
+    <button id="dlg-close">Close</button>
+  </div>
+</div>
+<script>
+  document.getElementById('dlg-close').addEventListener('click', function () {
+    document.getElementById('backdrop').remove();
+  });
+</script>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/reach-overlay")) {
+      // A fixed full-width overlay covering 90% of the viewport (a WALL: >= 85%) that is
+      // NOT aria-modal covers one button; nothing can scroll it clear.
+      res.end(`<!doctype html>
+<title>Reach Overlay</title>
+<h1 id="ready">reach-overlay-ready</h1>
+<button id="covered-btn" style="position:absolute;top:10px;left:10px;width:120px;height:40px">Covered Button</button>
+<button id="free-btn" style="position:absolute;top:92vh;left:10px;width:120px;height:30px">Free Button</button>
+<div style="position:fixed;top:0;left:0;right:0;height:90vh;background:#eee;z-index:10"></div>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/reach-bar")) {
+      // A PARTIAL fixed bar (booking.com OneTrust cookie banner shape: fixed,
+      // bottom, full width, ~30% of the viewport, not aria-modal) covers a
+      // button near the bottom of the viewport. Not a wall: the button must
+      // stay in the snapshot, and a click must scroll it clear and land as a
+      // trusted (cdp) click.
+      res.end(`<!doctype html>
+<title>Reach Bar</title>
+<h1 id="ready">reach-bar-ready</h1>
+<button id="bar-btn" style="position:absolute;top:88vh;left:10px;width:140px;height:40px">Under Bar</button>
+<div id="bar-result">not-clicked</div>
+<div style="height:3000px"></div>
+<div style="position:fixed;left:0;right:0;bottom:0;height:30vh;background:#ddd;z-index:10">cookie bar</div>
+<script>
+  document.getElementById('bar-btn').addEventListener('click', function (e) {
+    document.getElementById('bar-result').textContent = e.isTrusted ? 'bar-clicked-trusted' : 'bar-clicked-synthetic';
+  });
+</script>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/reach-portal")) {
+      // A modal dialog whose datepicker-style popup is portalled to the end of
+      // <body>, OUTSIDE the aria-modal element (many UI libraries do this),
+      // above the backdrop. The popup's option must stay listed; a page
+      // button under the backdrop must not.
+      res.end(`<!doctype html>
+<title>Reach Portal</title>
+<h1 id="ready">reach-portal-ready</h1>
+<button id="behind" style="position:absolute;top:20px;left:20px;width:140px;height:40px">Behind Button</button>
+<div style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10">
+  <div role="dialog" aria-modal="true" aria-label="Pick a date" style="position:fixed;top:80px;left:80px;width:300px;height:160px;background:#fff;z-index:11">
+    <button id="open-picker">Open picker</button>
+  </div>
+</div>
+<div id="portal" style="position:fixed;top:200px;left:420px;width:200px;height:120px;overflow-y:auto;background:#fff;z-index:20">
+  <button id="opt-jan" style="width:180px;height:40px">Option Jan</button>
+  <div style="height:400px">More options below</div>
+</div>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/reach-toast")) {
+      // A toast container (sonner / react-hot-toast shape): fixed, viewport-
+      // sized, pointer-events:none, holding a small pointer-events:auto toast
+      // over a button. The container is not the occluder; the button stays.
+      res.end(`<!doctype html>
+<title>Reach Toast</title>
+<h1 id="ready">reach-toast-ready</h1>
+<button id="under-toast" style="position:absolute;top:110px;left:10px;width:120px;height:40px">Under Toast</button>
+<div style="position:fixed;inset:0;pointer-events:none;z-index:10">
+  <div style="position:absolute;top:100px;left:10px;width:200px;height:60px;background:#333;color:#fff;pointer-events:auto">Saved!</div>
+</div>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/reach-stale")) {
+      // A stale aria-modal left mounted inside an opacity:0; pointer-events:none
+      // wrapper (exit-transition pattern) must not scope the table: nothing
+      // hit-tests onto it, so page controls stay listed and no `modal` shows.
+      res.end(`<!doctype html>
+<title>Reach Stale</title>
+<h1 id="ready">reach-stale-ready</h1>
+<button id="live-btn">Live Page Button</button>
+<div style="opacity:0;pointer-events:none;position:fixed;top:0;left:0;width:100%;height:100%">
+  <div role="dialog" aria-modal="true" aria-label="Stale modal" style="position:absolute;top:200px;left:200px;width:300px;height:160px;background:#fff">
+    <button id="stale-close">Stale Close</button>
+  </div>
+</div>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/reach-checkbox")) {
+      // A custom checkbox: the real <input> sits under a sibling styled span
+      // (no <label>, nothing fixed). Reachable through its wrapper, so it
+      // must NOT be dropped by the covered-by-overlay rule.
+      res.end(`<!doctype html>
+<title>Reach Checkbox</title>
+<h1 id="ready">reach-checkbox-ready</h1>
+<div style="position:relative;width:40px;height:40px"><input type="checkbox" id="c" aria-label="Custom check" style="position:absolute;inset:0;margin:0"><span style="position:absolute;inset:0;background:#ccc"></span></div>
+<button id="other-btn">Other Button</button>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/reach-banner")) {
+      // A non-modal role=dialog cookie banner (no aria-modal, static) must
+      // not scope the snapshot.
+      res.end(`<!doctype html>
+<title>Reach Banner</title>
+<h1 id="ready">reach-banner-ready</h1>
+<button id="main-btn">Main Page Button</button>
+<div role="dialog" aria-label="Cookie banner"><button id="cookie-ok">Accept cookies</button></div>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/botcheck")) {
       // Wave 3 reliability item 4: title + body text matching the botCheck
       // heuristic's regex.
@@ -741,6 +872,14 @@ read as filled. -->
   smoothScrollUrl = `${baseUrl}/smooth-scroll`;
   wave2Url = `${baseUrl}/wave2`;
   wave3Url = `${baseUrl}/wave3`;
+  reachModalUrl = `${baseUrl}/reach-modal`;
+  reachOverlayUrl = `${baseUrl}/reach-overlay`;
+  reachCheckboxUrl = `${baseUrl}/reach-checkbox`;
+  reachBarUrl = `${baseUrl}/reach-bar`;
+  reachPortalUrl = `${baseUrl}/reach-portal`;
+  reachToastUrl = `${baseUrl}/reach-toast`;
+  reachStaleUrl = `${baseUrl}/reach-stale`;
+  reachBannerUrl = `${baseUrl}/reach-banner`;
   wave3FrameUrl = `${baseUrl}/wave3-frame`;
   botCheckUrl = `${baseUrl}/botcheck`;
 });
@@ -816,6 +955,8 @@ interface SnapshotResult {
   elements: SnapshotElement[];
   scroll: { y: number; height: number; atBottom: boolean };
   snapshotId: string;
+  /** Present only when SNAPSHOT_JS scoped the table to a modal layer. */
+  modal?: string;
   /** Visible viewport text, ≤6000 chars. */
   text?: string;
 }
@@ -1558,6 +1699,161 @@ test("browser act click: a bare word matching both a real element tag and a butt
     );
 
     await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+async function openReachFixture(url: string, readyText: string) {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+  const editorPage = await app.waitForEvent("window", {
+    predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+  });
+  await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+  const [page] = await Promise.all([
+    app.waitForEvent("window", { predicate: (p) => p.url() === url }),
+    callBrowser(editorPage, "open", { url }),
+  ]);
+  await expect(page.locator("#ready")).toHaveText(readyText);
+  return { app, editorPage, page };
+}
+
+test("browser snapshot: an aria-modal dialog scopes the table to its own controls, and lifts once closed", async () => {
+  const { app, editorPage } = await openReachFixture(reachModalUrl, "reach-modal-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(snap.modal).toBe("Sign in offer");
+    expect(snap.elements.map((e) => e.label)).toEqual(["Close"]);
+    // Indices stay contiguous from 0.
+    expect(snap.elements.map((e) => e.index)).toEqual([0]);
+
+    const closeIndex = snap.elements.find((e) => e.label === "Close")?.index;
+    const clickResult = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: closeIndex,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(clickResult.error).toBeUndefined();
+
+    const after = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(after.modal).toBeUndefined();
+    const labels = after.elements.map((e) => e.label);
+    expect(labels).toContain("Page Button A");
+    expect(labels).toContain("Page Button B");
+    expect(labels).not.toContain("Close");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: a control covered by a fixed non-ARIA overlay is dropped, an uncovered one stays", async () => {
+  const { app, editorPage } = await openReachFixture(reachOverlayUrl, "reach-overlay-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(snap.modal).toBeUndefined();
+    const labels = snap.elements.map((e) => e.label);
+    expect(labels).not.toContain("Covered Button");
+    expect(labels).toContain("Free Button");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: a control under a partial fixed bar stays listed, and a click scrolls it clear and lands via cdp", async () => {
+  const { app, editorPage, page } = await openReachFixture(reachBarUrl, "reach-bar-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const idx = snap.elements.find((e) => e.label === "Under Bar")?.index;
+    expect(idx).not.toBeUndefined();
+
+    const performResult = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: idx,
+      operation: "CLICK",
+    })) as { error?: string; via?: string };
+    expect(performResult.error).toBeUndefined();
+    expect(performResult.via).toBe("cdp");
+    await expect(page.locator("#bar-result")).toHaveText("bar-clicked-trusted");
+
+    // Same through act-by-text, after resetting the page state.
+    await page.evaluate(() => {
+      document.getElementById("bar-result")!.textContent = "not-clicked";
+      window.scrollTo(0, 0);
+    });
+    const actResult = (await callBrowser(editorPage, "act", { action: "click", target: "Under Bar" })) as {
+      error?: string;
+      via?: string;
+    };
+    expect(actResult.error).toBeUndefined();
+    expect(actResult.via).toBe("cdp");
+    await expect(page.locator("#bar-result")).toHaveText("bar-clicked-trusted");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: modal scope keeps a portalled popup that sits above the backdrop, and drops a page control under it", async () => {
+  const { app, editorPage } = await openReachFixture(reachPortalUrl, "reach-portal-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(snap.modal).toBe("Pick a date");
+    const labels = snap.elements.map((e) => e.label);
+    expect(labels).toContain("Open picker");
+    expect(labels).toContain("Option Jan");
+    expect(labels).not.toContain("Behind Button");
+    // The portalled popup is also a scroll container OUTSIDE the modal: it is
+    // kept, flagged scrollable, because a sample point lands on it.
+    const portalScroll = snap.elements.find((e) => e.scrollable === true && e.label.includes("More options below"));
+    expect(portalScroll).toBeTruthy();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: a pointer-events:none fixed toast container is not the occluder, its control target stays listed", async () => {
+  const { app, editorPage } = await openReachFixture(reachToastUrl, "reach-toast-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(snap.elements.map((e) => e.label)).toContain("Under Toast");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: a stale aria-modal inside an opacity:0 pointer-events:none wrapper does not scope the table", async () => {
+  const { app, editorPage } = await openReachFixture(reachStaleUrl, "reach-stale-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(snap.modal).toBeUndefined();
+    expect(snap.elements.map((e) => e.label)).toContain("Live Page Button");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: a custom checkbox under a sibling styled span (nothing fixed) is not treated as covered", async () => {
+  const { app, editorPage } = await openReachFixture(reachCheckboxUrl, "reach-checkbox-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const labels = snap.elements.map((e) => e.label);
+    expect(labels).toContain("Custom check");
+    expect(labels).toContain("Other Button");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: a non-modal role=dialog banner does not scope the table", async () => {
+  const { app, editorPage } = await openReachFixture(reachBannerUrl, "reach-banner-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(snap.modal).toBeUndefined();
+    const labels = snap.elements.map((e) => e.label);
+    expect(labels).toContain("Main Page Button");
+    expect(labels).toContain("Accept cookies");
   } finally {
     await app.close().catch(() => {});
   }

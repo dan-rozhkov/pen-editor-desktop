@@ -840,6 +840,132 @@ export const TYPE_JS = `(() => {
 })()`;
 
 /**
+ * Composed hit-test + "related" test, shared by CLICK_RESOLVE_JS (is the
+ * click point really on the target?) and SNAPSHOT_JS (is a candidate covered
+ * by an overlay a user couldn't click through?) so the two can never drift —
+ * a control SNAPSHOT_JS offers must be one CLICK_RESOLVE_JS would accept.
+ *
+ * `elementFromPointDeep` walks into *open* shadow roots (a closed root is
+ * opaque, same as `elementFromPoint` itself). `penHitIsRelated(el, hit)`
+ * is true when the hit is el, a descendant, an ancestor (a click landing on a
+ * wrapper still bubbles to the target's listener), or a <label> that
+ * contains el / whose `for` equals el.id. `penOverlayLayerFor` / `penIsWall`
+ * classify what is on top of an element (see their comments).
+ */
+const HIT_TEST_HELPER_JS = `
+  function elementFromPointDeep(px, py) {
+    var node = document.elementFromPoint(px, py);
+    var guard = 0;
+    while (node && node.shadowRoot && guard < 20) {
+      var inner = node.shadowRoot.elementFromPoint(px, py);
+      if (!inner || inner === node) break;
+      node = inner;
+      guard++;
+    }
+    return node;
+  }
+
+  function penComposedParent(node) {
+    var parent = node.parentNode;
+    if (parent && parent.nodeType === 11 && parent.host) return parent.host; // ShadowRoot -> host
+    return parent;
+  }
+
+  function penComposedContains(container, node) {
+    var guard = 0;
+    while (node && guard < 500) {
+      if (node === container) return true;
+      node = penComposedParent(node);
+      guard++;
+    }
+    return false;
+  }
+
+  // The nearest fixed/sticky ancestor of hitEl that does NOT also contain el —
+  // an overlay layer (modal backdrop, cookie banner, sticky header) sitting on
+  // top of el rather than el's own positioned wrapper, skipping
+  // pointer-events:none layers. null if there is none (the hit is then not
+  // treated as a wall: the element stays listed).
+  // Cached per node: a page has few distinct layers but many candidates.
+  var penLayerCache = new Map();
+  function penOverlayLayerFor(hitEl, el) {
+    var node = hitEl;
+    var guard = 0;
+    while (node && node.nodeType === 1 && guard < 500) {
+      var info = penLayerCache.get(node);
+      if (info === undefined) {
+        var cs = getComputedStyle(node);
+        info = { pos: cs.position, none: cs.pointerEvents === "none" };
+        penLayerCache.set(node, info);
+      }
+      // pointer-events:none layers (toast containers: sonner, react-hot-toast
+      // — fixed, near viewport-sized) never receive the click, so they are
+      // never the occluder; keep walking to the next layer that does.
+      if ((info.pos === "fixed" || info.pos === "sticky") && !info.none && !penComposedContains(node, el)) return node;
+      node = penComposedParent(node);
+      guard++;
+    }
+    return null;
+  }
+
+  // A "wall" is an overlay layer covering at least 85% of the viewport (a
+  // modal backdrop, a full-page cookie wall): nothing behind it can be
+  // scrolled clear, so those controls really are unreachable. A partial bar
+  // (booking.com's OneTrust banner, div.otFlat: fixed, bottom, full width,
+  // ~200px of an 800px viewport, NOT aria-modal) is not a wall — the element
+  // under it can be scrolled out from beneath it, and a calendar popup's day
+  // cells can sit exactly there. An earlier version dropped anything under
+  // ANY fixed layer and hid every calendar day, so Jev kept re-toggling the
+  // date field. Area is the layer's rect clipped to the viewport.
+  function penIsWall(layer) {
+    var lr = layer.getBoundingClientRect();
+    var w = Math.min(lr.right, window.innerWidth) - Math.max(lr.left, 0);
+    var h = Math.min(lr.bottom, window.innerHeight) - Math.max(lr.top, 0);
+    if (w <= 0 || h <= 0) return false;
+    return (w * h) / (window.innerWidth * window.innerHeight) >= 0.85;
+  }
+
+  // Samples up to 5 viewport-clipped points of el (centre + the 25%/75%
+  // corners) through the shared hit-test. Returns how many were testable,
+  // whether any hit was related to el, and how many unrelated hits sit under
+  // a WALL layer. Elements outside the viewport have nothing testable.
+  function penProbe(el) {
+    var out = { testable: 0, related: false, walled: 0 };
+    var r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return out;
+    if (r.bottom <= 0 || r.top >= window.innerHeight || r.right <= 0 || r.left >= window.innerWidth) return out;
+    var fracs = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
+    for (var pi = 0; pi < fracs.length; pi++) {
+      var px = r.left + r.width * fracs[pi][0];
+      var py = r.top + r.height * fracs[pi][1];
+      if (px < 0 || py < 0 || px >= window.innerWidth || py >= window.innerHeight) continue;
+      var hit = elementFromPointDeep(px, py);
+      if (!hit) continue;
+      out.testable++;
+      if (penHitIsRelated(el, hit)) {
+        out.related = true;
+        return out;
+      }
+      var layer = penOverlayLayerFor(hit, el);
+      if (layer && penIsWall(layer)) out.walled++;
+    }
+    return out;
+  }
+
+  function penHitIsRelated(el, hitEl) {
+    if (!hitEl) return false;
+    if (hitEl === el || (el.contains && el.contains(hitEl)) || (hitEl.contains && hitEl.contains(el))) return true;
+    var labelAncestor = hitEl.closest && hitEl.closest("label");
+    if (labelAncestor) {
+      if (labelAncestor.contains(el)) return true;
+      var forId = labelAncestor.getAttribute("for");
+      if (forId && el.id === forId) return true;
+    }
+    return false;
+  }
+`;
+
+/**
  * Wave 2 reliability, item 1/2: resolves a click/type target — by `target`
  * text/selector (LOCATE_TARGET_JS's text-first order, same as CLICK_JS/
  * TYPE_JS) or by `index`+`snapshotId` (the existing PERFORM_JS lookup) —
@@ -881,6 +1007,7 @@ export const CLICK_RESOLVE_JS = `(() => {
   ${LOCATE_TARGET_JS}
   ${SCOPED_SIGNATURE_JS}
   ${TARGET_BUSY_HELPER_JS}
+  ${HIT_TEST_HELPER_JS}
 
   var located = locateTarget(args);
   if (located.hidden) return { error: "target is not visible (hidden element)" };
@@ -890,41 +1017,29 @@ export const CLICK_RESOLVE_JS = `(() => {
   var staleTargets = document.querySelectorAll("[data-pen-sig-target]");
   for (var st = 0; st < staleTargets.length; st++) staleTargets[st].removeAttribute("data-pen-sig-target");
   el.setAttribute("data-pen-sig-target", "1");
+
+  var rect, x, y, hitOk;
+  function hitTestTarget() {
+    rect = el.getBoundingClientRect();
+    x = rect.left + rect.width / 2;
+    y = rect.top + rect.height / 2;
+    hitOk = false;
+    var hitEl = null;
+    if (rect.width > 0 && rect.height > 0 && x >= 0 && y >= 0 && x <= window.innerWidth && y <= window.innerHeight) {
+      hitEl = elementFromPointDeep(x, y);
+      hitOk = penHitIsRelated(el, hitEl);
+    }
+    return hitEl;
+  }
+
+  // No reveal-scroll here: any scroll must happen BEFORE the controller's
+  // before-signature capture, so it lives in REVEAL_TARGET_JS, which the
+  // controller runs ahead of it (locateTarget's own scrollIntoView below is
+  // then already a no-op).
+  hitTestTarget();
+
   var scopedBefore = scopedSignatureOf(el);
   var busyBefore = penTargetIsBusy(el);
-
-  var rect = el.getBoundingClientRect();
-  var x = rect.left + rect.width / 2;
-  var y = rect.top + rect.height / 2;
-
-  function elementFromPointDeep(px, py) {
-    var node = document.elementFromPoint(px, py);
-    var guard = 0;
-    while (node && node.shadowRoot && guard < 20) {
-      var inner = node.shadowRoot.elementFromPoint(px, py);
-      if (!inner || inner === node) break;
-      node = inner;
-      guard++;
-    }
-    return node;
-  }
-
-  var hitOk = false;
-  if (rect.width > 0 && rect.height > 0 && x >= 0 && y >= 0 && x <= window.innerWidth && y <= window.innerHeight) {
-    var hitEl = elementFromPointDeep(x, y);
-    if (hitEl) {
-      if (hitEl === el || (el.contains && el.contains(hitEl)) || (hitEl.contains && hitEl.contains(el))) {
-        hitOk = true;
-      } else {
-        var labelAncestor = hitEl.closest && hitEl.closest("label");
-        if (labelAncestor) {
-          if (labelAncestor.contains(el)) hitOk = true;
-          var forId = labelAncestor.getAttribute("for");
-          if (forId && el.id === forId) hitOk = true;
-        }
-      }
-    }
-  }
 
   // Code review finding 4: computed here, ahead of any click, so
   // \`controller.ts\`'s \`dispatchType\` can refuse a non-editable target
@@ -946,6 +1061,43 @@ export const CLICK_RESOLVE_JS = `(() => {
   };
   if (typeof args.target === "string") result.matched = args.target;
   return result;
+})()`;
+
+/**
+ * Runs BEFORE the controller's before-signature capture on every path that
+ * goes through dispatchClick/dispatchType (target-based act click/type,
+ * perform CLICK/TYPE_TEXT), so scrolling the target into view is never
+ * counted as the action's own effect (a click that did nothing used to report
+ * changed: true, changes: ["scroll"] — false progress that makes loops). The
+ * same ordering rule runHover follows (review finding 8): reveal/locate
+ * first, then the cursor overlay move, then the before-capture, then act.
+ *
+ * Resolves the target exactly like CLICK_RESOLVE_JS (LOCATE_TARGET_JS, whose
+ * `locateTarget` scrolls the element to the viewport centre — that scroll is
+ * the reveal; CLICK_RESOLVE_JS's own locate afterwards is then a no-op), and
+ * reports whether the click point now passes the shared hit-test. Read-only
+ * otherwise: no stamping, no signatures. Never an error the controller acts
+ * on — a miss is left for CLICK_RESOLVE_JS to report. `__penReveal` is the
+ * marker the unit tests use to tell this call from the action scripts.
+ * Top document only (frame-routed targets skip it).
+ */
+export const REVEAL_TARGET_JS = `(() => {
+  var __penReveal = true;
+  var args = ${ARGS_MARKER};
+
+  ${LOCATE_TARGET_JS}
+  ${HIT_TEST_HELPER_JS}
+
+  var located = locateTarget(args);
+  if (!located.el) return { found: false, hidden: located.hidden === true };
+  var rect = located.el.getBoundingClientRect();
+  var x = rect.left + rect.width / 2;
+  var y = rect.top + rect.height / 2;
+  var hitOk =
+    rect.width > 0 && rect.height > 0 && x >= 0 && y >= 0 && x <= window.innerWidth && y <= window.innerHeight
+      ? penHitIsRelated(located.el, elementFromPointDeep(x, y))
+      : false;
+  return { found: true, hitOk: hitOk };
 })()`;
 
 /**
@@ -1088,6 +1240,7 @@ export const SNAPSHOT_JS = `(() => {
 
   ${DEEP_QUERY_HELPER_JS}
   ${SCROLL_CONTAINER_HELPER_JS}
+  ${HIT_TEST_HELPER_JS}
 
   function isVisible(el) {
     // The cursor overlay (pageScripts.ts's CURSOR_JS) and the screenshot
@@ -1337,13 +1490,158 @@ export const SNAPSHOT_JS = `(() => {
     found.push(entry);
   }
 
+  // Reachability (booking.com finding). The table used to list every control
+  // in the DOM, including ones a user cannot touch. Live on booking.com, a
+  // Genius sign-in modal (role=dialog aria-modal=true inside a full-viewport
+  // [data-bui-trap-root] backdrop) was open; the table reported the "Select
+  // dates" button and "Search" BEHIND it, mixed with the modal's own
+  // "Dismiss" button. Jev clicked the date field, CLICK_RESOLVE_JS's hit-test
+  // failed (the backdrop covers it), the controller fell back to a DOM
+  // el.click() straight through the modal, the focus trap swallowed it, and
+  // the calendar never opened — Jev then repeated the click (and, on the
+  // results page, "Search" eight times) without ever seeing calendar days.
+  // Two rules, applied to the candidates before sort/cap so the cap is spent
+  // on reachable controls only:
+  //
+  // 1. Modal scope. The topmost visible modal layer ([aria-modal=true], or a
+  //    <dialog> that is open :modal) restricts the table to controls inside
+  //    it — but only when it has at least one interactive candidate, so this
+  //    rule can never produce an empty table. A non-modal role=dialog (a
+  //    cookie banner) does not scope; neither do a calendar / autocomplete
+  //    popup that lives outside any aria-modal.
+  // 2. Covered by an overlay (see penIsCovered below).
+  function penModalIsVisible(m) {
+    var mr = m.getBoundingClientRect();
+    if (mr.width <= 0 || mr.height <= 0) return false;
+    if (mr.bottom <= 0 || mr.top >= window.innerHeight || mr.right <= 0 || mr.left >= window.innerWidth) return false;
+    var ms = getComputedStyle(m);
+    if (ms.display === "none" || ms.visibility === "hidden") return false;
+    if (parseFloat(ms.opacity) === 0) return false;
+    return true;
+  }
+
+  // True when a hit-test at one of container's sample points (centre + the
+  // 25%/75% corners, viewport-clipped) lands on container or a descendant
+  // (composed). Distinguishes a modal/popup that is actually on top from one
+  // left mounted but inert: an exit-transition leftover inside an
+  // opacity:0; pointer-events:none wrapper lets the click through to
+  // whatever is beneath, so nothing lands on it.
+  function penHitsWithin(container) {
+    var r = container.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    var fracs = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
+    for (var pi = 0; pi < fracs.length; pi++) {
+      var px = r.left + r.width * fracs[pi][0];
+      var py = r.top + r.height * fracs[pi][1];
+      if (px < 0 || py < 0 || px >= window.innerWidth || py >= window.innerHeight) continue;
+      var hit = elementFromPointDeep(px, py);
+      if (hit && penComposedContains(container, hit)) return true;
+    }
+    return false;
+  }
+
+  function penFindTopModal() {
+    var modalCandidates = deepQueryAll(document, "[aria-modal='true'], dialog");
+    var top = null;
+    for (var mi = 0; mi < modalCandidates.length; mi++) {
+      var m = modalCandidates[mi];
+      var isModal = m.getAttribute("aria-modal") === "true";
+      if (!isModal && tagOf(m) === "dialog") {
+        try {
+          isModal = m.matches(":modal");
+        } catch (err) {
+          isModal = false;
+        }
+      }
+      // Last in document order wins — among modals that are genuinely on
+      // top (penHitsWithin): a stale one left mounted after its exit
+      // transition must not outrank the open one.
+      if (isModal && penModalIsVisible(m) && penHitsWithin(m)) top = m;
+    }
+    return top;
+  }
+
+  function penModalLabel(m) {
+    var text = "";
+    var aria = m.getAttribute("aria-label");
+    if (aria && aria.trim()) text = aria.trim();
+    if (!text) {
+      var lb = m.getAttribute("aria-labelledby");
+      if (lb) {
+        var lbIds = lb.split(/\\s+/);
+        var lbParts = [];
+        for (var lbi = 0; lbi < lbIds.length; lbi++) {
+          var lbRef = lbIds[lbi] ? document.getElementById(lbIds[lbi]) : null;
+          var lbText = lbRef ? (lbRef.textContent || "").trim().replace(/\\s+/g, " ") : "";
+          if (lbText) lbParts.push(lbText);
+        }
+        text = lbParts.join(" ");
+      }
+    }
+    if (!text) {
+      var heading = m.querySelector("h1, h2, h3, h4, h5, h6");
+      if (heading) text = (heading.textContent || "").trim().replace(/\\s+/g, " ");
+    }
+    return text.slice(0, 80);
+  }
+
+  // Portals: libraries often render a dialog's datepicker / listbox /
+  // autocomplete at the end of <body>, OUTSIDE the aria-modal element. A
+  // candidate outside the modal is therefore kept when it is visibly on top
+  // of the backdrop: in the viewport with at least one sample point whose
+  // hit-test lands on it or a related node. Outside candidates that are
+  // covered (the backdrop hits them) or wholly off-screen are dropped.
+  var modalEl = penFindTopModal();
+  var modalScoped = false;
+  if (modalEl) {
+    var inModal = [];
+    var outsideOnTop = [];
+    var insideCount = 0;
+    for (var fm = 0; fm < found.length; fm++) {
+      if (penComposedContains(modalEl, found[fm].el)) {
+        inModal.push(found[fm]);
+        insideCount++;
+      } else if (penProbe(found[fm].el).related) {
+        outsideOnTop.push(found[fm]);
+      }
+    }
+    if (insideCount > 0) {
+      found = inModal.concat(outsideOnTop);
+      modalScoped = true;
+    }
+  }
+
+  // 2. Covered by an overlay layer. A candidate whose sampled points (centre
+  // plus the 25%/75% corners, viewport-clipped) all hit something unrelated
+  // (same test as CLICK_RESOLVE_JS) that sits inside a fixed/sticky wall layer not
+  // containing the candidate is unreachable — a cookie wall, a sticky header,
+  // a modal-ish backdrop that isn't marked aria-modal. Only a WALL counts
+  // (layer covers >= 85% of the viewport, see penIsWall): a partial bar such
+  // as booking.com's bottom OneTrust banner covered the calendar day cells
+  // and dropping them made Jev toggle the date field forever; those elements
+  // stay listed and REVEAL_TARGET_JS scrolls them into view before the click. The fixed/sticky
+  // restriction is deliberate: a custom checkbox whose real <input> sits under
+  // a sibling styled <span> (not inside a <label>) is also "unrelated" by the
+  // hit-test, yet perfectly reachable through its wrapper, so only genuine
+  // overlays count. Elements wholly outside the viewport are never dropped
+  // (nothing can be hit-tested there; they're the infinite-scroll margin).
+  function penIsCovered(el) {
+    var probe = penProbe(el);
+    return probe.testable > 0 && !probe.related && probe.walled === probe.testable;
+  }
+
   // Nearest-to-viewport first, then capped — the element table is the whole
   // request payload for /api/browse/step, so an uncapped one on a big page
-  // is both slow and expensive.
+  // is both slow and expensive. The covered check runs lazily in that order,
+  // stopping once maxElements survivors are found, so it never hit-tests the
+  // long tail that would be capped away anyway.
   found.sort(function (a, b) {
     return a.distance - b.distance;
   });
-  var capped = found.slice(0, maxElements);
+  var capped = [];
+  for (var cf = 0; cf < found.length && capped.length < maxElements; cf++) {
+    if (!penIsCovered(found[cf].el)) capped.push(found[cf]);
+  }
 
   var elements = [];
   for (var idx = 0; idx < capped.length; idx++) {
@@ -1410,6 +1708,12 @@ export const SNAPSHOT_JS = `(() => {
     var candidate = scrollContainerCandidates[sci];
     if (!isScrollableContainer(candidate)) continue;
     if (!isVisible(candidate)) continue;
+    // Modal scope applies to scroll containers too (a page-behind list is as
+    // unreachable as a page-behind button).
+    // A portalled scroll container (a datepicker / listbox appended to
+    // <body>) outside the modal is kept when it is visibly on top: a sample
+    // point hits it or a descendant (same rule as portal candidates above).
+    if (modalScoped && !penComposedContains(modalEl, candidate) && !penHitsWithin(candidate)) continue;
     var existingStamp = candidate.getAttribute("data-pen-snap");
     if (existingStamp && existingStamp.indexOf(snapshotStampPrefix) === 0) {
       var existingIndex = parseInt(existingStamp.slice(snapshotStampPrefix.length), 10);
@@ -1507,13 +1811,30 @@ export const SNAPSHOT_JS = `(() => {
     }
   }
 
-  return {
+  var snapshotResult = {
     url: location.href,
     title: document.title,
     elements: elements,
     scroll: scrollInfo,
     text: textParts.join("\\n").slice(0, 6000),
   };
+  // Present only when rule 1 actually scoped the table, so a caller can tell
+  // "these are the modal's controls" from "this page has nothing else".
+  if (modalScoped) {
+    snapshotResult.modal = penModalLabel(modalEl) || "modal dialog";
+    // Which <iframe>s live inside the modal (identified like IFRAME_RECTS_JS:
+    // src, name/id) so controller.ts's takeSnapshot merges only those child
+    // frames. Internal — stripped from the result before it reaches callers.
+    var modalFrames = [];
+    var allFrames = deepQueryAll(document, 'iframe');
+    for (var mf = 0; mf < allFrames.length; mf++) {
+      if (penComposedContains(modalEl, allFrames[mf])) {
+        modalFrames.push({ url: allFrames[mf].src || "", name: allFrames[mf].getAttribute("name") || allFrames[mf].id || "" });
+      }
+    }
+    snapshotResult.__modalFrames = modalFrames;
+  }
+  return snapshotResult;
 })()`;
 
 /**

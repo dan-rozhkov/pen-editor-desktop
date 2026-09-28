@@ -37,11 +37,21 @@ function isCursorCall(code: unknown): boolean {
   return typeof code === "string" && code.includes("__penCursor");
 }
 
+/** REVEAL_TARGET_JS (controller.ts's revealTarget) runs before the cursor
+ * move and the before-signature capture on every click/type path, and is
+ * marked by its own `__penReveal` local. Excluded from the action-script
+ * helpers below exactly like the cursor call, so the existing call-count /
+ * script-lookup assertions keep describing the action scripts themselves;
+ * the ordering tests further down look at it explicitly. */
+function isRevealCall(code: unknown): boolean {
+  return typeof code === "string" && code.includes("__penReveal");
+}
+
 /** Finds the one non-signature, non-cursor executeJavaScript call whose code
  * contains `needle` — the action script's call, not one of the SIGNATURE_JS
  * calls bracketing it or the CURSOR_JS call preceding all of them. */
 function findScriptCall(mock: ReturnType<typeof vi.fn>, needle: string): string {
-  const call = mock.mock.calls.find((c) => !isSignatureCall(c[0]) && !isCursorCall(c[0]) && (c[0] as string).includes(needle));
+  const call = mock.mock.calls.find((c) => !isSignatureCall(c[0]) && !isCursorCall(c[0]) && !isRevealCall(c[0]) && (c[0] as string).includes(needle));
   expect(call, `no executeJavaScript call contained ${JSON.stringify(needle)}`).toBeTruthy();
   return call![0] as string;
 }
@@ -50,7 +60,7 @@ function findScriptCall(mock: ReturnType<typeof vi.fn>, needle: string): string 
  * assertions written before the cursor overlay existed that count the
  * action-script-plus-signature-capture calls only. */
 function nonCursorCallCount(mock: ReturnType<typeof vi.fn>): number {
-  return mock.mock.calls.filter((c) => !isCursorCall(c[0])).length;
+  return mock.mock.calls.filter((c) => !isCursorCall(c[0]) && !isRevealCall(c[0])).length;
 }
 
 // A real goBack()/goForward() is fire-and-forget but the URL does change —
@@ -1568,9 +1578,9 @@ describe("BrowserController", () => {
     });
 
     it("surfaces a page-reported error (element not found) as the result", async () => {
-      // Four executeJavaScript calls before PERFORM_JS's error is reached:
-      // snapshot()'s SNAPSHOT_JS, perform()'s cursor call, its
-      // before-signature capture, then PERFORM_JS itself — an error result
+      // Five executeJavaScript calls before PERFORM_JS's error is reached:
+      // snapshot()'s SNAPSHOT_JS, perform()'s reveal call, its cursor call,
+      // its before-signature capture, then PERFORM_JS itself — an error result
       // short-circuits before the after-signature capture, so no fifth
       // call/entry is needed.
       const executeJavaScript = vi
@@ -1581,6 +1591,7 @@ describe("BrowserController", () => {
           elements: [],
           scroll: { y: 0, height: 0, atBottom: true },
         })
+        .mockResolvedValueOnce({ found: false }) // REVEAL_TARGET_JS (best-effort; harmless)
         .mockResolvedValueOnce({ moved: false }) // cursor call (no valid x/y; harmless)
         .mockResolvedValueOnce({ url: "https://example.com/", title: "Example" }) // before-signature (not a valid one; harmless)
         .mockResolvedValueOnce({ error: "No element at index 0 for this snapshot." });
@@ -1861,6 +1872,82 @@ describe("self-disabling control", () => {
   });
 });
 
+// Reveal-scroll ordering (code review): scrolling the target into view must
+// never land between the before- and after-signature captures, or a click
+// that did nothing reports changed: true, changes: ["scroll"].
+describe("reveal-scroll ordering", () => {
+  function orderedPage() {
+    const order: string[] = [];
+    const page = makeFakePage({
+      executeJavaScript: vi.fn((code: string) => {
+        if (isRevealCall(code)) {
+          order.push("reveal");
+          return Promise.resolve({ found: true, hitOk: true });
+        }
+        if (isCursorCall(code)) order.push("cursor");
+        else if (isSignatureCall(code)) {
+          order.push("signature");
+          return Promise.resolve({
+            url: "https://example.com/",
+            title: "Example",
+            nodeCount: 1,
+            textLength: 0,
+            textHash: 0,
+            mainImageSrc: "",
+            scrollY: 0,
+            focusedValueLength: 0,
+          });
+        } else order.push("action");
+        return Promise.resolve({ url: "https://example.com/", title: "Example", matched: "x" });
+      }),
+    });
+    return { order, page };
+  }
+
+  function expectRevealFirst(order: string[]) {
+    expect(order.indexOf("reveal")).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("reveal")).toBeLessThan(order.indexOf("signature"));
+    // Exactly one reveal, and none after the before-capture.
+    expect(order.filter((o) => o === "reveal")).toHaveLength(1);
+  }
+
+  it("act click (by text) reveals before the before-signature capture", async () => {
+    const { order, page } = orderedPage();
+    await new BrowserController(makeFakeTarget(page)).act({ action: "click", target: "Buy now" });
+    expectRevealFirst(order);
+  });
+
+  it("act type (by text) reveals before the before-signature capture", async () => {
+    const { order, page } = orderedPage();
+    await new BrowserController(makeFakeTarget(page)).act({ action: "type", target: "Search", text: "hi" });
+    expectRevealFirst(order);
+  });
+
+  it("perform CLICK and TYPE_TEXT reveal before the before-signature capture, carrying index + snapshotId", async () => {
+    for (const operation of ["CLICK", "TYPE_TEXT"] as const) {
+      const { order, page } = orderedPage();
+      const controller = new BrowserController(makeFakeTarget(page));
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      order.length = 0;
+      await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation, text: "hi" });
+      expectRevealFirst(order);
+      const revealCall = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls.find((c) => isRevealCall(c[0]));
+      expect(revealCall![0] as string).toContain(JSON.stringify({ index: 0, snapshotId: snapshot.snapshotId }));
+    }
+  });
+
+  it("a rejecting reveal script never fails the action", async () => {
+    const page = makeFakePage({
+      executeJavaScript: vi.fn((code: string) => {
+        if (isRevealCall(code)) return Promise.reject(new Error("boom"));
+        return Promise.resolve({ url: "https://example.com/", title: "Example", matched: "x" });
+      }),
+    });
+    const result = await new BrowserController(makeFakeTarget(page)).act({ action: "click", target: "Buy now" });
+    expect(result).not.toHaveProperty("error");
+  });
+});
+
 // The visible cursor overlay (design: a human watching the browser tab must
 // see the agent's clicks/typing land somewhere, not appear instantly and
 // invisibly). CURSOR_JS runs before every click/type/scroll/perform action's
@@ -1871,6 +1958,7 @@ describe("human cursor", () => {
     const page = makeFakePage({
       executeJavaScript: vi.fn((code: string) => {
         if (isCursorCall(code)) order.push("cursor");
+        else if (isRevealCall(code)) order.push("reveal");
         else if (isSignatureCall(code)) order.push("signature");
         else order.push("action");
         return Promise.resolve({ url: "https://example.com/", title: "Example", matched: "Buy now" });
@@ -1879,7 +1967,10 @@ describe("human cursor", () => {
     const controller = new BrowserController(makeFakeTarget(page));
     await controller.act({ action: "click", target: "Buy now" });
 
-    expect(order[0]).toBe("cursor");
+    // The reveal-scroll runs first (before the cursor move and the
+    // before-signature capture), then the cursor, then the signature.
+    expect(order[0]).toBe("reveal");
+    expect(order[1]).toBe("cursor");
     expect(order.indexOf("cursor")).toBeLessThan(order.indexOf("signature"));
 
     const cursorCall = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
@@ -4105,6 +4196,51 @@ describe("BrowserController — Wave 3 reliability", () => {
       const result = (await controller.snapshot()) as { elements: { index: number; frame?: string; label: string }[] };
       expect(result.elements).toHaveLength(1);
       expect(result.elements[0]).toMatchObject({ index: 0, frame: "Checkout Frame", label: "Pay" });
+    });
+
+    it("a modal snapshot merges only the child frames whose <iframe> is inside the modal", async () => {
+      const inFrame = { frameId: 7, url: "https://in.example/", name: "inside" };
+      const outFrame = { frameId: 8, url: "https://out.example/", name: "outside" };
+      const executeJavaScriptInFrame = vi.fn((frameId: number) =>
+        Promise.resolve({
+          url: frameId === 7 ? inFrame.url : outFrame.url,
+          title: frameId === 7 ? "In" : "Out",
+          elements: [{ index: 0, tag: "button", label: frameId === 7 ? "InsideBtn" : "OutsideBtn", ops: ["CLICK"] }],
+        }),
+      );
+      const page = makeFakePage({
+        listFrames: vi.fn(() => [inFrame, outFrame]),
+        executeJavaScriptInFrame,
+        executeJavaScript: vi.fn((code: string) => {
+          if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+          if (isIframeRectsCall(code)) {
+            return Promise.resolve({
+              frames: [
+                { ...frameRect, url: inFrame.url, name: inFrame.name },
+                { ...frameRect, url: outFrame.url, name: outFrame.name, y: 400 },
+              ],
+            });
+          }
+          if (isSnapshotCall(code)) {
+            return Promise.resolve({
+              url: "https://example.com/",
+              title: "Top",
+              modal: "Sign in offer",
+              __modalFrames: [{ url: inFrame.url, name: inFrame.name }],
+              elements: [{ index: 0, tag: "button", label: "Close", ops: ["CLICK"] }],
+              scroll: { y: 0, height: 100, atBottom: true },
+            });
+          }
+          return Promise.resolve({ ok: true });
+        }),
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const result = (await controller.snapshot()) as Record<string, unknown> & { elements: { label: string }[] };
+      expect(result.modal).toBe("Sign in offer");
+      expect(result.elements.map((e) => e.label)).toEqual(["Close", "InsideBtn"]);
+      expect(executeJavaScriptInFrame.mock.calls.map((c) => c[0])).toEqual([7]);
+      // Internal plumbing never reaches callers.
+      expect(result).not.toHaveProperty("__modalFrames");
     });
 
     it("code review finding 7: a top document reporting the full MAX_SNAPSHOT_ELEMENTS never drives a negative frame budget", async () => {

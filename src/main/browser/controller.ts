@@ -38,6 +38,7 @@ import {
   WAIT_TEXT_JS,
   WAIT_DOM_ACTIVITY_JS,
   CLICK_RESOLVE_JS,
+  REVEAL_TARGET_JS,
   SELECT_ALL_CONTENT_JS,
   READ_TARGET_VALUE_JS,
   BOT_CHECK_JS,
@@ -61,6 +62,7 @@ const SCRIPT_TEMPLATES = {
   WAIT_TEXT_JS,
   WAIT_DOM_ACTIVITY_JS,
   CLICK_RESOLVE_JS,
+  REVEAL_TARGET_JS,
   SELECT_ALL_CONTENT_JS,
   READ_TARGET_VALUE_JS,
   BOT_CHECK_JS,
@@ -1412,6 +1414,21 @@ export class BrowserController {
     return { ...result, via: "dom" };
   }
 
+  /** Scrolls the click/type target into view (REVEAL_TARGET_JS) BEFORE the
+   * caller's before-signature capture — see that script's doc comment and
+   * runHover's finding 8. Best-effort: a failure here is never an error (the
+   * action script reports a genuinely missing target itself). */
+  private async revealTarget(
+    page: BrowserPageHandle,
+    locateArgs: { target?: string; index?: number; snapshotId?: string },
+  ): Promise<void> {
+    try {
+      await this.executeScript(page, "REVEAL_TARGET_JS", locateArgs);
+    } catch {
+      // Best-effort.
+    }
+  }
+
   private async dispatchClick(
     page: BrowserPageHandle,
     locateArgs: { target?: string; index?: number; snapshotId?: string },
@@ -1678,6 +1695,7 @@ export class BrowserController {
     // Before the before-signature capture, deliberately — see CURSOR_JS's
     // doc comment (pageScripts.ts) for why the overlay's own DOM/scroll
     // footprint must never land between the two evidence-of-effect captures.
+    await this.revealTarget(page, { target });
     await this.moveCursor(page, { action: "click", target });
     const before = await this.captureSignature(page, "before");
     // Armed/captured before CLICK_JS runs — Wave 1 speed: a navigation, or a
@@ -2232,8 +2250,17 @@ export class BrowserController {
     }
 
     let remaining = MAX_SNAPSHOT_ELEMENTS - elements.length;
+    // A modal scope on the top document (`result.modal`) makes child frames
+    // outside the modal unreachable too — SNAPSHOT_JS scopes only its own
+    // document, so only frames whose <iframe> is inside the modal are merged
+    // (it reports them as `__modalFrames`, identified by src/name the way
+    // IFRAME_RECTS_JS does; matched below the way resolveVisibleFrames does).
+    const modalFrames = extractModalFrames(result);
     if (remaining > 0) {
-      const frames = await this.resolveVisibleFrames(page);
+      const frames = (await this.resolveVisibleFrames(page)).filter(
+        (f) =>
+          !modalFrames || modalFrames.some((m) => (m.url !== "" && m.url === f.url) || (m.name !== "" && m.name === f.name)),
+      );
       for (const frame of frames) {
         frameRects.set(frame.frameId, { x: frame.x, y: frame.y, width: frame.width, height: frame.height });
         if (remaining <= 0) break;
@@ -2263,7 +2290,9 @@ export class BrowserController {
     }
 
     this.lastSnapshot = { id: snapshotId, page, frameMap, frameRects };
-    return { ...result, elements, snapshotId };
+    const { __modalFrames: _internal, ...publicResult } = result;
+    void _internal;
+    return { ...publicResult, elements, snapshotId };
   }
 
   /** Full browser use: a downscaled JPEG of the current viewport —
@@ -2506,6 +2535,7 @@ export class BrowserController {
         // the same treatment as a target-based one.
         const tabsBefore = await this.listPagesSafe();
         // Before the before-signature capture — see runClick's comment.
+        if (frameRoute.frameId === null) await this.revealTarget(page, { index, snapshotId });
         await this.moveCursor(page, { action: "click", snapshotId, index, point: cursorPoint });
         const before = await this.captureSignature(page, "before");
         // Armed/captured before the click runs — see runClick's comment.
@@ -2549,6 +2579,7 @@ export class BrowserController {
 
       if (operation === "TYPE_TEXT") {
         // Before the before-signature capture — see runClick's comment.
+        if (frameRoute.frameId === null) await this.revealTarget(page, { index, snapshotId });
         await this.moveCursor(page, { action: "type", snapshotId, index, point: cursorPoint });
         const before = await this.captureSignature(page, "before");
         // Wave 2 reliability item 2: trusted CDP typing, falling back to
@@ -2656,6 +2687,7 @@ export class BrowserController {
   ): Promise<BrowserCommandResult> {
     const page = this.target.currentPage();
     if (!page) return errorResult("No browser tab is open — call browse_open first.");
+    await this.revealTarget(page, locateArgs);
     await this.moveCursor(page, { action: "type", target: locateArgs.target, index: locateArgs.index, snapshotId: locateArgs.snapshotId });
     const before = await this.captureSignature(page, "before");
     const result = await this.dispatchType(page, locateArgs, text);
@@ -3301,6 +3333,19 @@ function extractScopedBefore(result: BrowserCommandResult): ScopedSignature | nu
   const raw = result.__scopedBefore;
   delete result.__scopedBefore;
   return isScopedSignature(raw) ? raw : null;
+}
+
+/** SNAPSHOT_JS's internal `__modalFrames` (only present when it scoped to a
+ * modal): the `{ url, name }` of each iframe inside that modal. `null` when
+ * the snapshot wasn't modal-scoped (merge every frame as usual). */
+function extractModalFrames(result: BrowserCommandResult): { url: string; name: string }[] | null {
+  if (typeof result.modal !== "string") return null;
+  const raw = result.__modalFrames;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(isRecord).map((r) => ({
+    url: typeof r.url === "string" ? r.url : "",
+    name: typeof r.name === "string" ? r.name : "",
+  }));
 }
 
 /** Wave 2 reliability: CLICK_RESOLVE_JS reports the resolved element's busy

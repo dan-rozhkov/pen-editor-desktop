@@ -497,7 +497,38 @@ and `script`/`style` excluded) for pen-editor-backend's jev-ultrafast step
 policy, which otherwise sees only the controls. `options` on a `<select>` is capped at 100 entries,
 each truncated to 120 chars, in the page script itself — the payload must
 be valid by construction, not rely on the backend to reject an oversized
-country dropdown. `SNAPSHOT_JS` also stamps each surviving element with a
+country dropdown. `SNAPSHOT_JS` only offers controls a user can reach
+(booking.com finding: a Genius sign-in `role=dialog aria-modal=true` popup
+sat over a full-viewport backdrop while the table listed every control behind
+it; Jev's date-field click hit the backdrop, `CLICK_RESOLVE_JS` fell back to a
+DOM `el.click()` through the modal, the focus trap ate it, and Jev looped).
+Two rules run before the sort/cap: (1) **modal scope** — the topmost visible
+`[aria-modal="true"]` / `dialog:modal` layer restricts the table (and the
+scroll-container entries) to what is inside it, but only if it contains at
+least one interactive candidate (never an empty table); the result then
+carries `modal` (≤80 chars, aria-label / aria-labelledby / first heading);
+a non-modal `role=dialog` cookie banner does not scope; candidates OUTSIDE the modal are kept only if visibly on top of the backdrop (in the viewport, a sample point hits them or a related node) — a portalled datepicker/listbox appended to `<body>` survives, a page control under the backdrop does not; a modal only counts if a hit-test at one of its sample points lands on it or a descendant (a stale modal left mounted inside an `opacity:0; pointer-events:none` exit-transition wrapper is ignored); a scroll container outside the modal is kept under the same rule as portal candidates; when `modal` is reported `takeSnapshot` merges only child frames whose `<iframe>` is inside the modal (SNAPSHOT_JS reports them as internal `__modalFrames` by src/name, stripped before the result reaches callers; matched like `resolveVisibleFrames`); (2) **covered by an
+overlay** — up to 5 viewport-clipped sample points per candidate go through
+the same composed hit-test as `CLICK_RESOLVE_JS` (shared `HIT_TEST_HELPER_JS`
+so they can't drift); a candidate is dropped only if no point is "related"
+AND every unrelated hit sits in a `position: fixed|sticky` **wall** — a layer
+not containing the candidate whose rect covers ≥85% of the viewport
+(`pointer-events:none` layers, e.g. toast containers, are skipped — never the
+occluder). A
+*partial* bar is not a wall: booking.com's OneTrust cookie banner
+(`div.otFlat`, fixed, bottom, full width, ~200px of 800, not aria-modal)
+covered the calendar's day cells, the first version of this rule dropped every
+day, and Jev kept re-toggling the date field. Elements under a partial bar
+stay listed, and the click path scrolls them into view first:
+`REVEAL_TARGET_JS` (same target resolution as `CLICK_RESOLVE_JS`; `locateTarget`
+centres the element) runs via `revealTarget` **before** the cursor move and
+the before-signature capture on every `dispatchClick`/`dispatchType` path
+(target-based act click/type, perform CLICK/TYPE_TEXT; top document only) —
+the same ordering as `runHover` (finding 8), so the scroll is never counted as
+the action's effect (a click that did nothing used to report
+`changes: ["scroll"]`). `CLICK_RESOLVE_JS` no longer scrolls. A custom checkbox under a sibling styled span stays,
+and off-screen elements are never dropped. `takeSnapshot` passes `modal`
+through untouched (top document only). It also stamps each surviving element with a
 `data-pen-snap="<snapshotId>:<index>"` attribute. **Invariant:** `perform`
 only ever acts against the *same* snapshot its index came from, taken
 against the *same* browser tab. `BrowserController` keeps `{ id, page }` for
