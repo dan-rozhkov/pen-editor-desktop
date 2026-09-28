@@ -1539,6 +1539,76 @@ describe("BrowserController", () => {
       expect(code).toContain(JSON.stringify({ snapshotId: snapshot.snapshotId, index: 3, operation: "CLICK" }));
     });
 
+    it("passes the snapshot fingerprint in CLICK's resolve/perform script args — none for a positional-label or scroll-container entry", async () => {
+      const snapshotResult = {
+        url: "https://x/",
+        title: "X",
+        elements: [
+          { index: 0, tag: "button", label: "Find", ops: ["CLICK"], role: "button" },
+          { index: 1, tag: "div", label: "div #1", ops: ["CLICK"] },
+          { index: 2, tag: "div", label: "Results list", ops: [], scrollable: true },
+        ],
+        scroll: { y: 0, height: 1000, atBottom: false },
+      };
+      let snapshotId = "";
+      const exec = vi.fn((code: string) =>
+        Promise.resolve(code.includes("scrollContainerBudget") ? snapshotResult : { url: "https://x/", title: "X" }),
+      );
+      const page = makeFakePage({
+        getURL: vi.fn(() => "https://x/"),
+        getTitle: vi.fn(() => "X"),
+        executeJavaScript: exec as unknown as BrowserPageHandle["executeJavaScript"],
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      snapshotId = ((await controller.snapshot()) as { snapshotId: string }).snapshotId;
+      const fpJson = '"fingerprint":{"tag":"button","label":"Find","role":"button"}';
+      const callsFor = (index: number) =>
+        exec.mock.calls.map((c) => c[0] as string).filter((c) => c.includes(`"index":${index}`) && c.includes('"snapshotId"'));
+
+      await controller.perform({ snapshotId, index: 0, operation: "CLICK" });
+      const zero = callsFor(0);
+      // Both the resolve step (CLICK_RESOLVE_JS) and the DOM fallback (PERFORM_JS) carry it.
+      expect(zero.filter((c) => c.includes(fpJson)).length).toBeGreaterThanOrEqual(2);
+
+      exec.mockClear();
+      await controller.perform({ snapshotId, index: 1, operation: "CLICK" });
+      await controller.perform({ snapshotId, index: 2, operation: "CLICK" });
+      const later = [...callsFor(1), ...callsFor(2)];
+      expect(later.length).toBeGreaterThan(0);
+      expect(later.every((c) => !c.includes('"fingerprint":'))).toBe(true);
+    });
+
+    it("stores no fingerprint for entries whose tag/label/role occurs more than once in the snapshot", async () => {
+      const snapshotResult = {
+        url: "https://x/",
+        title: "X",
+        elements: [
+          { index: 0, tag: "button", label: "Remove", ops: ["CLICK"] },
+          { index: 1, tag: "button", label: "Remove", ops: ["CLICK"] },
+          { index: 2, tag: "button", label: "Save", ops: ["CLICK"] },
+        ],
+        scroll: { y: 0, height: 1000, atBottom: false },
+      };
+      const exec = vi.fn((code: string) =>
+        Promise.resolve(code.includes("scrollContainerBudget") ? snapshotResult : { url: "https://x/", title: "X" }),
+      );
+      const page = makeFakePage({
+        getURL: vi.fn(() => "https://x/"),
+        getTitle: vi.fn(() => "X"),
+        executeJavaScript: exec as unknown as BrowserPageHandle["executeJavaScript"],
+      });
+      const controller = new BrowserController(makeFakeTarget(page));
+      const { snapshotId } = (await controller.snapshot()) as { snapshotId: string };
+      await controller.perform({ snapshotId, index: 0, operation: "CLICK" });
+      await controller.perform({ snapshotId, index: 1, operation: "CLICK" });
+      const withIdx = (i: number) =>
+        exec.mock.calls.map((c) => c[0] as string).filter((c) => c.includes(`"index":${i}`) && c.includes('"snapshotId"'));
+      expect(withIdx(0).length + withIdx(1).length).toBeGreaterThan(0);
+      expect([...withIdx(0), ...withIdx(1)].every((c) => !c.includes('"fingerprint":'))).toBe(true);
+      await controller.perform({ snapshotId, index: 2, operation: "CLICK" });
+      expect(withIdx(2).some((c) => c.includes('"fingerprint":{"tag":"button","label":"Save"}'))).toBe(true);
+    });
+
     it("CLICK reuses the click-settle wait: trusts the post-navigation url/title over the script's stale pre-navigation read", async () => {
       vi.useFakeTimers();
       try {
@@ -2125,7 +2195,7 @@ describe("human cursor", () => {
             if (isSignatureCall(code)) return Promise.resolve({ ok: true });
             // SNAPSHOT_JS itself must resolve normally (its own budget carries
             // no cursor step) — only the subsequent PERFORM_JS call hangs.
-            if (code.includes("INTERACTIVE_SELECTOR")) return Promise.resolve({ elements: [] });
+            if (code.includes("scrollContainerBudget")) return Promise.resolve({ elements: [] });
             return new Promise(() => {}); // PERFORM_JS hangs
           }),
         });
@@ -4104,7 +4174,7 @@ describe("BrowserController — Wave 3 reliability", () => {
     return typeof code === "string" && code.includes("just a moment");
   }
   function isSnapshotCall(code: unknown): boolean {
-    return typeof code === "string" && code.includes("INTERACTIVE_SELECTOR");
+    return typeof code === "string" && code.includes("scrollContainerBudget");
   }
   function isReadCall(code: unknown): boolean {
     return typeof code === "string" && code.includes("headingsTruncated");
@@ -4311,7 +4381,7 @@ describe("BrowserController — Wave 3 reliability", () => {
 
     it("act scroll on a frame-routed index runs SCROLL_JS inside that frame, not the top page", async () => {
       const frameScript = vi.fn((code: string) => {
-        if (code.includes("INTERACTIVE_SELECTOR")) {
+        if (code.includes("scrollContainerBudget")) {
           return {
             url: frameRect.url,
             title: "Checkout Frame",
@@ -4338,7 +4408,7 @@ describe("BrowserController — Wave 3 reliability", () => {
     it("act hover on a frame-routed index runs HOVER_TARGET_JS inside that frame, and adds the frame's own viewport offset to the trusted mouseMoved coordinates", async () => {
       const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
       const frameScript = vi.fn((code: string) => {
-        if (code.includes("INTERACTIVE_SELECTOR")) {
+        if (code.includes("scrollContainerBudget")) {
           return {
             url: frameRect.url,
             title: "Checkout Frame",
@@ -4375,7 +4445,7 @@ describe("BrowserController — Wave 3 reliability", () => {
     it("act press with a frame-routed focus index focuses FOCUS_JS inside that frame before dispatching the key", async () => {
       const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
       const frameScript = vi.fn((code: string) => {
-        if (code.includes("INTERACTIVE_SELECTOR")) {
+        if (code.includes("scrollContainerBudget")) {
           return {
             url: frameRect.url,
             title: "Checkout Frame",

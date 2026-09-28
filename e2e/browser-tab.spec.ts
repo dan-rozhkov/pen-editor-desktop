@@ -38,6 +38,8 @@ let reachBarUrl: string;
 let reachPortalUrl: string;
 let reachToastUrl: string;
 let reachStaleUrl: string;
+let remountUrl: string;
+let remountDupUrl: string;
 let reachBannerUrl: string;
 let wave3FrameUrl: string;
 let botCheckUrl: string;
@@ -777,6 +779,53 @@ read as filled. -->
 </div>`);
       return;
     }
+    if (req.url && req.url.startsWith("/remount")) {
+      // Re-mount recovery fixture (booking.com finding): ~300ms after the
+      // snapshot stamps the buttons, the page replaces them with FRESH nodes
+      // (createElement, not cloneNode — a clone would carry data-pen-snap
+      // over and defeat the point). `?dup=1` renders two buttons sharing a
+      // label, so a fingerprint match is ambiguous.
+      const dup = req.url.includes("dup=1");
+      res.end(`<!doctype html>
+<title>Remount</title>
+<h1 id="ready">remount-ready</h1>
+<div id="host"></div>
+<div id="clicks">0</div>
+<script>
+  window.__clicks = 0;
+  var params = new URLSearchParams(location.search);
+  var labels = ${dup ? '["Find", "Find"]' : '["Other", "Find"]'};
+  if (params.get("rm") === "1") labels = ["Remove", "Remove"];
+  function mount() {
+    var host = document.getElementById("host");
+    host.textContent = "";
+    labels.forEach(function (label) {
+      var b = document.createElement("button");
+      b.textContent = label;
+      b.style.cssText = "display:block;margin:8px;padding:8px 16px";
+      b.addEventListener("click", function () {
+        window.__clicks++;
+        document.getElementById("clicks").textContent = String(window.__clicks);
+      });
+      host.appendChild(b);
+    });
+  }
+  mount();
+  var seen = false;
+  new MutationObserver(function () {
+    if (seen || !document.querySelector("[data-pen-snap]")) return;
+    seen = true;
+    setTimeout(function () {
+      // ?rm=1: the first "Remove" row is gone after the re-render.
+      if (params.get("rm") === "1") labels = ["Remove"];
+      // ?spa=1: an SPA route change — same window, new href — plus a re-render.
+      if (params.get("spa") === "1") history.pushState({}, "", "/remount?spa=1#next");
+      mount();
+    }, 300);
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-pen-snap"], subtree: true });
+</script>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/reach-stale")) {
       // A stale aria-modal left mounted inside an opacity:0; pointer-events:none
       // wrapper (exit-transition pattern) must not scope the table: nothing
@@ -879,6 +928,8 @@ read as filled. -->
   reachPortalUrl = `${baseUrl}/reach-portal`;
   reachToastUrl = `${baseUrl}/reach-toast`;
   reachStaleUrl = `${baseUrl}/reach-stale`;
+  remountUrl = `${baseUrl}/remount`;
+  remountDupUrl = `${baseUrl}/remount?dup=1`;
   reachBannerUrl = `${baseUrl}/reach-banner`;
   wave3FrameUrl = `${baseUrl}/wave3-frame`;
   botCheckUrl = `${baseUrl}/botcheck`;
@@ -1818,6 +1869,104 @@ test("browser snapshot: a pointer-events:none fixed toast container is not the o
   try {
     const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
     expect(snap.elements.map((e) => e.label)).toContain("Under Toast");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser perform: a target re-mounted after the snapshot is re-found by its unique fingerprint", async () => {
+  const { app, editorPage, page } = await openReachFixture(remountUrl, "remount-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const findIndex = snap.elements.find((e) => e.label === "Find")?.index;
+    expect(findIndex).not.toBeUndefined();
+    // The page re-mounts its buttons ~300ms after they were stamped.
+    await page.waitForTimeout(600);
+    expect(await page.locator("[data-pen-snap]").count()).toBe(0);
+
+    const result = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: findIndex,
+      operation: "CLICK",
+    })) as { error?: string; relocated?: boolean };
+    expect(result.error).toBeUndefined();
+    expect(result.relocated).toBe(true);
+    await expect(page.locator("#clicks")).toHaveText("1");
+    expect(await page.evaluate(() => (window as unknown as { __clicks: number }).__clicks)).toBe(1);
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser perform: a re-mounted target whose label is shared by another button is NOT relocated", async () => {
+  const { app, editorPage, page } = await openReachFixture(remountDupUrl, "remount-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const findIndex = snap.elements.find((e) => e.label === "Find")?.index;
+    expect(findIndex).not.toBeUndefined();
+    await page.waitForTimeout(600);
+
+    const result = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: findIndex,
+      operation: "CLICK",
+    })) as { error?: string; relocated?: boolean };
+    expect(result.error).toMatch(/No element matched/);
+    expect(result.relocated).toBeUndefined();
+    await expect(page.locator("#clicks")).toHaveText("0");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser perform: relocation never crosses documents (SPA route change or hard navigation)", async () => {
+  const { app, editorPage, page } = await openReachFixture(`${remountUrl}?spa=1`, "remount-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const findIndex = snap.elements.find((e) => e.label === "Find")?.index;
+    expect(findIndex).not.toBeUndefined();
+    await page.waitForTimeout(600);
+    expect(page.url()).toContain("#next");
+    const spa = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: findIndex,
+      operation: "CLICK",
+    })) as { error?: string; relocated?: boolean };
+    expect(spa.error).toMatch(/No element/);
+    await expect(page.locator("#clicks")).toHaveText("0");
+
+    // Hard navigation in the same tab: the new document has no snapshot token.
+    const snap2 = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const idx2 = snap2.elements.find((e) => e.label === "Find")?.index;
+    await page.waitForTimeout(100);
+    await page.evaluate((u) => location.assign(u), remountUrl);
+    await expect(page.locator("#ready")).toHaveText("remount-ready");
+    const hard = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap2.snapshotId,
+      index: idx2,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(hard.error).toBeTruthy();
+    await expect(page.locator("#clicks")).toHaveText("0");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser perform: a removed duplicate-label button's index never relocates onto its sibling", async () => {
+  const { app, editorPage, page } = await openReachFixture(`${remountUrl}?rm=1`, "remount-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const removeIdx = snap.elements.filter((e) => e.label === "Remove").map((e) => e.index);
+    expect(removeIdx.length).toBe(2);
+    await page.waitForTimeout(600);
+    const result = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: removeIdx[0],
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(result.error).toMatch(/No element/);
+    await expect(page.locator("#clicks")).toHaveText("0");
   } finally {
     await app.close().catch(() => {});
   }

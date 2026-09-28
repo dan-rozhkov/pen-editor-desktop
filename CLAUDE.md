@@ -549,7 +549,41 @@ wrong tab's DOM with a misleading "no element at index N" message, instead
 of an accurate cross-tab error. This is deliberate either way: a page that
 re-rendered — or a browser tab that changed — between `snapshot` and
 `perform` must never be acted on silently — that would be the one way the
-indexed design goes quietly wrong. `perform`'s argument shape (addendum A):
+indexed design goes quietly wrong. **Re-mounted targets (booking.com finding) are the one
+exception, and only by a unique exact fingerprint.** Live on booking.com's
+results page the search form is re-mounted (React replaces the nodes)
+~0.8-1.5 s after load, so the stamp `SNAPSHOT_JS` set was gone by the time the
+~1 s-later `perform` CLICK ran — "No element matched: index 23" ("Найти"),
+alternating 5-8 times as each fresh results page did it again. So
+`lastSnapshot.fingerprints` keeps, per TOP-document interactive element,
+`{ tag, label, role? }` exactly as the element table reported it (label
+already truncated to 120 chars); positional-fallback labels (`"<tag> #<n>"`),
+scroll-container entries and frame-routed elements get none.
+`executeScript` adds it as `fingerprint` to every page-script call whose args
+carry the CURRENT snapshotId + an index on the snapshot's own tab (perform,
+act hover/press/scroll by index, `CLICK_RESOLVE_JS`, `REVEAL_TARGET_JS`,
+cursor). When the stamp lookup in `FIND_BY_SNAPSHOT_JS` misses, it re-collects
+visible candidates (`INTERACTIVE_SELECTOR`, visibility minus the viewport
+margin) and accepts a node only if tag and role match and its label —
+computed by the SAME shared `LABEL_HELPER_JS` snippet `SNAPSHOT_JS` uses, so
+they cannot drift — equals the fingerprint label exactly, AND it is the only
+such node. It then restamps it with the same `data-pen-snap` and the result
+carries `relocated: true` (surfaced on the `act`/`perform` result via
+`relocatedThisCommand`). Zero or several matches keep the original "No
+element matched" error: an ambiguous re-mount must never be guessed at.
+Password inputs are never relocated (the fingerprint has no input type). Relocation is
+also tied to the snapshot's document: `SNAPSHOT_JS` sets
+`window.__penSnapDoc = { id, href }`, and `FIND_BY_SNAPSHOT_JS` relocates only
+while that id equals the requested snapshotId and `href` equals the current
+`location.href` (a new document loses the token; an SPA route change alters
+href) — otherwise an old index could click the next page's unique lookalike.
+Nodes already stamped for any index of the same snapshot are excluded as
+candidates, and the controller stores no fingerprint for an entry whose
+`{tag,label,role}` repeats in the table (two "Remove" buttons), so a retry of
+one can never take its sibling. The
+controller-level snapshotId + same-tab check above is unchanged — relocation
+only ever happens inside the same snapshot on the same tab. `perform`'s
+argument shape (addendum A):
 `index` is required only for `CLICK`/`TYPE_TEXT`/`SELECT` — `SCROLL_UP` and
 `SCROLL_DOWN` act on the page itself and are accepted with no `index` at
 all (an unconditional requirement used to make scrolling always fail at the

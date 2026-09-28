@@ -193,6 +193,164 @@ const FIND_BY_TEXT_JS = `
 `;
 
 /**
+ * The candidate selector SNAPSHOT_JS walks, shared with FIND_BY_SNAPSHOT_JS's
+ * fingerprint relocation so both look at exactly the same set of elements.
+ */
+const INTERACTIVE_SELECTOR_JS = `
+  var INTERACTIVE_SELECTOR =
+    "a[href], button, input, select, textarea, [role='button'], [role='link'], " +
+    "[role='checkbox'], [role='radio'], [role='tab'], [role='menuitem'], " +
+    "[role='combobox'], [onclick], [contenteditable='true']";
+`;
+
+/**
+ * Shared label algorithm (`looksGenerated` + `accessibleNameOf` + `labelOf`),
+ * interpolated into SNAPSHOT_JS (which reports the label in the element
+ * table) AND FIND_BY_SNAPSHOT_JS (which recomputes it to re-find a
+ * re-mounted node by fingerprint). One copy on purpose: if the two ever
+ * drifted, a relocation would compare against a label the snapshot never
+ * reported and silently never match.
+ */
+const LABEL_HELPER_JS = `
+  // Review finding 7: a machine-generated id (React useId's ":r3:", Ember's
+  // "ember123", Amazon's "a-autoid-1-announce") makes a worse label than the
+  // honest positional fallback — it reads as plausible to a decision model,
+  // which both defeats MIN_STEP_CONFIDENCE's ability to refuse a bad guess
+  // and actively invites a wrong one. A real, hand-authored id ("inp-search",
+  // "btn-checkout") is still a legitimate label source and is left alone;
+  // only ids that *look* generated are skipped, falling through to whatever
+  // label source comes next (and ultimately to the positional fallback).
+  function looksGenerated(id) {
+    var trimmed = (id || "").trim();
+    if (!trimmed) return true;
+    if (/^\\d+$/.test(trimmed)) return true; // digits-only, e.g. "123"
+    if (/^:.*:$/.test(trimmed)) return true; // React useId, e.g. ":r3:"
+    if (/^(react-select|radix-|headlessui-|mui-|chakra-|css-)/i.test(trimmed)) return true; // known framework prefixes
+    if (/\\d{2,}$/.test(trimmed)) return true; // digit-suffixed, e.g. "ember123"
+    if (/-\\d+(-|$)/.test(trimmed)) return true; // hyphen-digit segment, e.g. "a-autoid-1-announce"
+    return false;
+  }
+
+  // BROWSE-02 (jev-loop design doc, "Addendum 2, 2026-09-19"): a live
+  // Amazon run degraded to a run of unlabelled "div #6"/"input #7" entries
+  // whenever the real accessible name lived one level away from the
+  // element itself — a descendant icon ("<div role=button><svg
+  // aria-label=Save>"), an aria-labelledby reference, or an enclosing
+  // <a>/<button> wrapping a plain element. Every step below is tried, in
+  // order, before the positional "tag #index" fallback in the caller —
+  // which stays last on purpose: dropping an unlabelled element entirely is
+  // worse, since cookie banners are made of exactly these.
+  function accessibleNameOf(el) {
+    var aria = el.getAttribute("aria-label");
+    if (aria && aria.trim()) return aria.trim();
+    var text = (el.textContent || "").trim().replace(/\\s+/g, " ");
+    if (text) return text;
+    var title = el.getAttribute("title");
+    if (title && title.trim()) return title.trim();
+    return "";
+  }
+
+  function labelOf(el) {
+    var aria = el.getAttribute("aria-label");
+    if (aria && aria.trim()) return aria.trim();
+
+    var labelledBy = el.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      var ids = labelledBy.split(/\\s+/);
+      var combined = [];
+      for (var i = 0; i < ids.length; i++) {
+        if (!ids[i]) continue;
+        var ref = document.getElementById(ids[i]);
+        if (!ref) continue;
+        var refText = (ref.textContent || "").trim().replace(/\\s+/g, " ");
+        if (refText) combined.push(refText);
+      }
+      var joined = combined.join(" ").trim();
+      if (joined) return joined;
+    }
+
+    // An associated <label> (for= or wrapping) — the ONLY name a plain radio
+    // or checkbox has. Without this step both shipping radios of a checkout
+    // form fell through to their shared name="shipping" and were
+    // indistinguishable in the element table: the bench run picked
+    // "express" when asked for "standard" in two runs out of three. Read
+    // from a clone with the form controls removed, so a wrapping
+    // <label>Country <select>…</select></label> doesn't glue every option's
+    // text onto the name.
+    if (el.labels && el.labels.length) {
+      var labelTexts = [];
+      for (var li = 0; li < el.labels.length; li++) {
+        var clone = el.labels[li].cloneNode(true);
+        var controls = clone.querySelectorAll("input, select, textarea, button");
+        for (var ci = 0; ci < controls.length; ci++) controls[ci].remove();
+        var labelText = (clone.textContent || "").trim().replace(/\\s+/g, " ");
+        if (labelText) labelTexts.push(labelText);
+      }
+      var labelJoined = labelTexts.join(" ").trim();
+      if (labelJoined) return labelJoined;
+    }
+
+    var text = (el.textContent || "").trim().replace(/\\s+/g, " ");
+    if (text) return text;
+
+    var placeholder = el.getAttribute("placeholder");
+    if (placeholder && placeholder.trim()) return placeholder.trim();
+
+    var alt = el.getAttribute("alt");
+    if (alt && alt.trim()) return alt.trim();
+
+    var title = el.getAttribute("title");
+    if (title && title.trim()) return title.trim();
+
+    // Review finding 6: a descendant's aria-label/title/alt — the common
+    // icon-button shape, e.g. <div role="button"><img alt=""><svg
+    // aria-label="Save"></svg></div>. The *first* element matching
+    // [aria-label],[title],[alt] is not necessarily the labelled one (an
+    // empty-alt <img> placed before the real svg[aria-label] used to make
+    // this whole step yield nothing) — every match is tried, in document
+    // order, until one actually has a non-empty value.
+    var descendants = el.querySelectorAll("[aria-label], [title], [alt]");
+    for (var di = 0; di < descendants.length; di++) {
+      var d = descendants[di];
+      var dAria = d.getAttribute("aria-label");
+      if (dAria && dAria.trim()) return dAria.trim();
+      var dTitle = d.getAttribute("title");
+      if (dTitle && dTitle.trim()) return dTitle.trim();
+      var dAlt = d.getAttribute("alt");
+      if (dAlt && dAlt.trim()) return dAlt.trim();
+    }
+
+    // The accessible name of the nearest enclosing <a>/<button> — for an
+    // element that is itself unlabelled but sits inside a labelled control
+    // (a plain <input> wrapped by an <a aria-label="…">, say). Guarded
+    // against matching el itself, which every earlier step already
+    // covered.
+    var enclosing = el.closest("a, button");
+    if (enclosing && enclosing !== el) {
+      var enclosingName = accessibleNameOf(enclosing);
+      if (enclosingName) return enclosingName;
+    }
+
+    var name = el.getAttribute("name");
+    if (name && name.trim()) return name.trim();
+
+    var id = el.id;
+    if (id && id.trim() && !looksGenerated(id)) return id.trim();
+
+    return "";
+  }
+
+  var PEN_LABEL_MAX = 120;
+  // The label exactly as the element table reports it (truncated), or "" when
+  // labelOf found nothing (SNAPSHOT_JS then falls back to a positional
+  // "<tag> #<n>" label, which is never a fingerprint).
+  function truncatedLabelOf(el) {
+    var full = labelOf(el);
+    return full ? full.slice(0, PEN_LABEL_MAX) : "";
+  }
+`;
+
+/**
  * Shared `findBySnapshot` body, interpolated into FOCUS_JS/HOVER_TARGET_JS
  * (review finding 5). Both used to embed `args.snapshotId` straight into a
  * `[data-pen-snap="' + snapshotId + ":" + index + '"]'` selector string —
@@ -208,7 +366,66 @@ const FIND_BY_TEXT_JS = `
  */
 const FIND_BY_SNAPSHOT_JS = `
   ${DEEP_QUERY_HELPER_JS}
-  function findBySnapshot(snapshotId, index) {
+  ${INTERACTIVE_SELECTOR_JS}
+  ${LABEL_HELPER_JS}
+
+  // Set true when findBySnapshot re-found a re-mounted node by fingerprint
+  // (see below); read by the script that interpolated this snippet so it can
+  // report \`relocated: true\`. Per-script: each script is its own IIFE.
+  var penRelocated = false;
+
+  // Same visibility test as SNAPSHOT_JS's isVisible, minus its viewport
+  // margin clause (like FIND_BY_TEXT_JS's isVisibleForText): the node we want
+  // may be below the fold; it just must not be hidden.
+  function penFingerprintVisible(el) {
+    if (el.closest && (el.closest("[data-pen-cursor]") || el.closest("[data-pen-marks]"))) return false;
+    var rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    var style = getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    if (parseFloat(style.opacity) === 0) return false;
+    return true;
+  }
+
+  // Re-finds a node the page re-mounted between snapshot and action
+  // (booking.com replaces its search form ~1s after load, so the stamped
+  // node is gone). Only a UNIQUE exact match on tag + role + label — the
+  // same fields the element table reported — is accepted; zero or several
+  // matches return null (fail closed, exactly as before). Password inputs are
+  // never relocated: the fingerprint carries no input type, so a re-mounted
+  // field could differ from the one the snapshot flagged isPassword.
+  function relocateByFingerprint(fingerprint, snapshotId) {
+    if (!fingerprint || typeof fingerprint.tag !== "string" || typeof fingerprint.label !== "string" || !fingerprint.label) {
+      return null;
+    }
+    // Only within the document the snapshot was taken in: SNAPSHOT_JS records
+    // { id, href } on this window (a new document loses it; an SPA route
+    // change keeps window but changes href). Without it, a same-tab
+    // navigation would let an old index click the NEW page's unique lookalike.
+    var snapDoc = window.__penSnapDoc;
+    if (!snapDoc || snapDoc.id !== String(snapshotId) || snapDoc.href !== location.href) return null;
+    var ownPrefix = String(snapshotId) + ":";
+    var wantedRole = fingerprint.role || "";
+    var candidates = deepQueryAll(document, INTERACTIVE_SELECTOR);
+    var match = null;
+    for (var ri = 0; ri < candidates.length; ri++) {
+      var cand = candidates[ri];
+      if ((cand.tagName || "").toLowerCase() !== fingerprint.tag) continue;
+      if ((cand.getAttribute("role") || "") !== wantedRole) continue;
+      if (fingerprint.tag === "input" && (cand.getAttribute("type") || "").toLowerCase() === "password") continue;
+      // Never take a node stamped for another index of this snapshot (two
+      // "Remove" buttons: a retry of a removed one must not hit its sibling).
+      var candStamp = cand.getAttribute("data-pen-snap");
+      if (candStamp && candStamp.indexOf(ownPrefix) === 0) continue;
+      if (!penFingerprintVisible(cand)) continue;
+      if (truncatedLabelOf(cand) !== fingerprint.label) continue;
+      if (match) return null; // ambiguous
+      match = cand;
+    }
+    return match;
+  }
+
+  function findBySnapshot(snapshotId, index, fingerprint) {
     if (snapshotId === undefined || snapshotId === null || index === undefined || index === null) return null;
     var stamp = String(snapshotId) + ":" + String(index);
     // Wave 3 reliability, item 1: an element SNAPSHOT_JS stamped inside an
@@ -217,6 +434,12 @@ const FIND_BY_SNAPSHOT_JS = `
     var all = deepQueryAll(document, "[data-pen-snap]");
     for (var i = 0; i < all.length; i++) {
       if (all[i].getAttribute("data-pen-snap") === stamp) return all[i];
+    }
+    var relocated = fingerprint ? relocateByFingerprint(fingerprint, snapshotId) : null;
+    if (relocated) {
+      relocated.setAttribute("data-pen-snap", stamp);
+      penRelocated = true;
+      return relocated;
     }
     return null;
   }
@@ -267,7 +490,7 @@ const LOCATE_TARGET_JS = `
     var el = null;
     var hidden = false;
     if (args.snapshotId !== undefined && args.snapshotId !== null && args.index !== undefined && args.index !== null) {
-      el = findBySnapshot(args.snapshotId, args.index);
+      el = findBySnapshot(args.snapshotId, args.index, args.fingerprint);
     } else if (typeof args.target === "string" && args.target.trim() !== "") {
       // Code review finding 5: visible text match → CSS selector → hidden
       // text match's own refusal — a hidden-only text match used to
@@ -283,7 +506,7 @@ const LOCATE_TARGET_JS = `
     }
     if (hidden) return { el: null, hidden: true };
     if (el) el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-    return { el: el, hidden: false };
+    return { el: el, hidden: false, relocated: penRelocated };
   }
 `;
 
@@ -1060,6 +1283,7 @@ export const CLICK_RESOLVE_JS = `(() => {
     __busyBefore: busyBefore,
   };
   if (typeof args.target === "string") result.matched = args.target;
+  if (located.relocated) result.relocated = true;
   return result;
 })()`;
 
@@ -1097,7 +1321,9 @@ export const REVEAL_TARGET_JS = `(() => {
     rect.width > 0 && rect.height > 0 && x >= 0 && y >= 0 && x <= window.innerWidth && y <= window.innerHeight
       ? penHitIsRelated(located.el, elementFromPointDeep(x, y))
       : false;
-  return { found: true, hitOk: hitOk };
+  var revealResult = { found: true, hitOk: hitOk };
+  if (located.relocated) revealResult.relocated = true;
+  return revealResult;
 })()`;
 
 /**
@@ -1207,7 +1433,9 @@ export const SCROLL_JS = `(() => {
   if (el) el.scrollBy(0, amountPx);
   else window.scrollBy(0, amountPx);
 
-  return { url: location.href, title: document.title };
+  var scrollResult = { url: location.href, title: document.title };
+  if (penRelocated) scrollResult.relocated = true;
+  return scrollResult;
 })()`;
 
 /**
@@ -1232,12 +1460,11 @@ export const SNAPSHOT_JS = `(() => {
   var args = ${ARGS_MARKER};
   var snapshotId = args.snapshotId;
   var maxElements = args.maxElements;
+  // Per-document token: FIND_BY_SNAPSHOT_JS relocates a re-mounted node only
+  // while this still matches the requested snapshot and the current URL.
+  window.__penSnapDoc = { id: String(snapshotId), href: location.href };
 
-  var INTERACTIVE_SELECTOR =
-    "a[href], button, input, select, textarea, [role='button'], [role='link'], " +
-    "[role='checkbox'], [role='radio'], [role='tab'], [role='menuitem'], " +
-    "[role='combobox'], [onclick], [contenteditable='true']";
-
+  ${INTERACTIVE_SELECTOR_JS}
   ${DEEP_QUERY_HELPER_JS}
   ${SCROLL_CONTAINER_HELPER_JS}
   ${HIT_TEST_HELPER_JS}
@@ -1264,133 +1491,7 @@ export const SNAPSHOT_JS = `(() => {
     return (el.tagName || "").toLowerCase();
   }
 
-  // Review finding 7: a machine-generated id (React useId's ":r3:", Ember's
-  // "ember123", Amazon's "a-autoid-1-announce") makes a worse label than the
-  // honest positional fallback — it reads as plausible to a decision model,
-  // which both defeats MIN_STEP_CONFIDENCE's ability to refuse a bad guess
-  // and actively invites a wrong one. A real, hand-authored id ("inp-search",
-  // "btn-checkout") is still a legitimate label source and is left alone;
-  // only ids that *look* generated are skipped, falling through to whatever
-  // label source comes next (and ultimately to the positional fallback).
-  function looksGenerated(id) {
-    var trimmed = (id || "").trim();
-    if (!trimmed) return true;
-    if (/^\\d+$/.test(trimmed)) return true; // digits-only, e.g. "123"
-    if (/^:.*:$/.test(trimmed)) return true; // React useId, e.g. ":r3:"
-    if (/^(react-select|radix-|headlessui-|mui-|chakra-|css-)/i.test(trimmed)) return true; // known framework prefixes
-    if (/\\d{2,}$/.test(trimmed)) return true; // digit-suffixed, e.g. "ember123"
-    if (/-\\d+(-|$)/.test(trimmed)) return true; // hyphen-digit segment, e.g. "a-autoid-1-announce"
-    return false;
-  }
-
-  // BROWSE-02 (jev-loop design doc, "Addendum 2, 2026-09-19"): a live
-  // Amazon run degraded to a run of unlabelled "div #6"/"input #7" entries
-  // whenever the real accessible name lived one level away from the
-  // element itself — a descendant icon ("<div role=button><svg
-  // aria-label=Save>"), an aria-labelledby reference, or an enclosing
-  // <a>/<button> wrapping a plain element. Every step below is tried, in
-  // order, before the positional "tag #index" fallback in the caller —
-  // which stays last on purpose: dropping an unlabelled element entirely is
-  // worse, since cookie banners are made of exactly these.
-  function accessibleNameOf(el) {
-    var aria = el.getAttribute("aria-label");
-    if (aria && aria.trim()) return aria.trim();
-    var text = (el.textContent || "").trim().replace(/\\s+/g, " ");
-    if (text) return text;
-    var title = el.getAttribute("title");
-    if (title && title.trim()) return title.trim();
-    return "";
-  }
-
-  function labelOf(el) {
-    var aria = el.getAttribute("aria-label");
-    if (aria && aria.trim()) return aria.trim();
-
-    var labelledBy = el.getAttribute("aria-labelledby");
-    if (labelledBy) {
-      var ids = labelledBy.split(/\\s+/);
-      var combined = [];
-      for (var i = 0; i < ids.length; i++) {
-        if (!ids[i]) continue;
-        var ref = document.getElementById(ids[i]);
-        if (!ref) continue;
-        var refText = (ref.textContent || "").trim().replace(/\\s+/g, " ");
-        if (refText) combined.push(refText);
-      }
-      var joined = combined.join(" ").trim();
-      if (joined) return joined;
-    }
-
-    // An associated <label> (for= or wrapping) — the ONLY name a plain radio
-    // or checkbox has. Without this step both shipping radios of a checkout
-    // form fell through to their shared name="shipping" and were
-    // indistinguishable in the element table: the bench run picked
-    // "express" when asked for "standard" in two runs out of three. Read
-    // from a clone with the form controls removed, so a wrapping
-    // <label>Country <select>…</select></label> doesn't glue every option's
-    // text onto the name.
-    if (el.labels && el.labels.length) {
-      var labelTexts = [];
-      for (var li = 0; li < el.labels.length; li++) {
-        var clone = el.labels[li].cloneNode(true);
-        var controls = clone.querySelectorAll("input, select, textarea, button");
-        for (var ci = 0; ci < controls.length; ci++) controls[ci].remove();
-        var labelText = (clone.textContent || "").trim().replace(/\\s+/g, " ");
-        if (labelText) labelTexts.push(labelText);
-      }
-      var labelJoined = labelTexts.join(" ").trim();
-      if (labelJoined) return labelJoined;
-    }
-
-    var text = (el.textContent || "").trim().replace(/\\s+/g, " ");
-    if (text) return text;
-
-    var placeholder = el.getAttribute("placeholder");
-    if (placeholder && placeholder.trim()) return placeholder.trim();
-
-    var alt = el.getAttribute("alt");
-    if (alt && alt.trim()) return alt.trim();
-
-    var title = el.getAttribute("title");
-    if (title && title.trim()) return title.trim();
-
-    // Review finding 6: a descendant's aria-label/title/alt — the common
-    // icon-button shape, e.g. <div role="button"><img alt=""><svg
-    // aria-label="Save"></svg></div>. The *first* element matching
-    // [aria-label],[title],[alt] is not necessarily the labelled one (an
-    // empty-alt <img> placed before the real svg[aria-label] used to make
-    // this whole step yield nothing) — every match is tried, in document
-    // order, until one actually has a non-empty value.
-    var descendants = el.querySelectorAll("[aria-label], [title], [alt]");
-    for (var di = 0; di < descendants.length; di++) {
-      var d = descendants[di];
-      var dAria = d.getAttribute("aria-label");
-      if (dAria && dAria.trim()) return dAria.trim();
-      var dTitle = d.getAttribute("title");
-      if (dTitle && dTitle.trim()) return dTitle.trim();
-      var dAlt = d.getAttribute("alt");
-      if (dAlt && dAlt.trim()) return dAlt.trim();
-    }
-
-    // The accessible name of the nearest enclosing <a>/<button> — for an
-    // element that is itself unlabelled but sits inside a labelled control
-    // (a plain <input> wrapped by an <a aria-label="…">, say). Guarded
-    // against matching el itself, which every earlier step already
-    // covered.
-    var enclosing = el.closest("a, button");
-    if (enclosing && enclosing !== el) {
-      var enclosingName = accessibleNameOf(enclosing);
-      if (enclosingName) return enclosingName;
-    }
-
-    var name = el.getAttribute("name");
-    if (name && name.trim()) return name.trim();
-
-    var id = el.id;
-    if (id && id.trim() && !looksGenerated(id)) return id.trim();
-
-    return "";
-  }
+  ${LABEL_HELPER_JS}
 
   function opsFor(el, tag) {
     if (tag === "select") return ["SELECT"];
@@ -1649,7 +1750,7 @@ export const SNAPSHOT_JS = `(() => {
     // Unlabelled icon buttons are exactly what cookie banners are made of —
     // still include the element, labelled by its tag and position, rather
     // than dropping it.
-    var label = item.label ? item.label.slice(0, 120) : item.tag + " #" + idx;
+    var label = item.label ? item.label.slice(0, PEN_LABEL_MAX) : item.tag + " #" + idx;
     item.el.setAttribute("data-pen-snap", snapshotId + ":" + idx);
     var out = { index: idx, tag: item.tag, label: label, ops: item.ops };
     if (item.role) out.role = item.role;
@@ -1871,7 +1972,7 @@ export const PERFORM_JS = `(() => {
     var amountPx = window.innerHeight * amount;
     var scrollEl = null;
     if (index !== undefined && index !== null && snapshotId) {
-      var scrollTargetEl = findBySnapshot(snapshotId, index);
+      var scrollTargetEl = findBySnapshot(snapshotId, index, args.fingerprint);
       if (scrollTargetEl) {
         scrollEl = isScrollableContainer(scrollTargetEl) ? scrollTargetEl : nearestScrollableAncestor(scrollTargetEl);
       }
@@ -1881,7 +1982,9 @@ export const PERFORM_JS = `(() => {
     }
     if (scrollEl) scrollEl.scrollBy(0, amountPx);
     else window.scrollBy(0, amountPx);
-    return { url: location.href, title: document.title };
+    var performScrollResult = { url: location.href, title: document.title };
+    if (penRelocated) performScrollResult.relocated = true;
+    return performScrollResult;
   }
 
   // Second-pass review finding 10: reuses the same exact-attribute-compare
@@ -1892,7 +1995,7 @@ export const PERFORM_JS = `(() => {
   // FIND_BY_SNAPSHOT_JS in the first place never applied to PERFORM_JS, but
   // keeping one lookup implementation instead of two means a future fix to
   // it can't drift between the two call sites.
-  var el = findBySnapshot(snapshotId, index);
+  var el = findBySnapshot(snapshotId, index, args.fingerprint);
   if (!el) {
     return { error: "No element at index " + index + " for this snapshot (stale or removed)." };
   }
@@ -1903,12 +2006,14 @@ export const PERFORM_JS = `(() => {
   var scopedBefore = scopedSignatureOf(el);
   var busyBefore = penTargetIsBusy(el);
   function penResult() {
-    return {
+    var r = {
       url: location.href,
       title: document.title,
       __scopedBefore: scopedBefore,
       __targetSelfDisabled: !busyBefore && penTargetIsBusy(el),
     };
+    if (penRelocated) r.relocated = true;
+    return r;
   }
 
   if (operation === "CLICK") {
@@ -2924,11 +3029,13 @@ export const HOVER_TARGET_JS = `(() => {
   var el = located.el;
   if (!el) return { found: false, hidden: located.hidden === true };
   var rect = el.getBoundingClientRect();
-  return {
+  var hoverResult = {
     found: true,
     x: rect.left + rect.width / 2,
     y: rect.top + rect.height / 2,
   };
+  if (located.relocated) hoverResult.relocated = true;
+  return hoverResult;
 })()`;
 
 /**
@@ -2952,7 +3059,9 @@ export const FOCUS_JS = `(() => {
   var el = located.el;
   if (!el) return { focused: false, hidden: located.hidden === true };
   if (typeof el.focus === "function") el.focus();
-  return { focused: true };
+  var focusResult = { focused: true };
+  if (located.relocated) focusResult.relocated = true;
+  return focusResult;
 })()`;
 
 /** `act`'s `wait` action, when given `text`: a single poll of the page's

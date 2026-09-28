@@ -874,7 +874,21 @@ export class BrowserController {
     // performUnlocked) since the overlay can't resolve or scroll to an
     // element inside a frame's own document.
     frameRects: Map<number, { x: number; y: number; width: number; height: number }>;
+    // Re-mount recovery (booking.com finding): for each TOP-document
+    // interactive element, the `{ tag, label, role? }` the snapshot's element
+    // table reported (label already truncated by SNAPSHOT_JS). Every
+    // index-based top-document page-script call carries it (see
+    // `executeScript`) so FIND_BY_SNAPSHOT_JS can re-find a node the page
+    // re-mounted after the stamp was set — only by a unique exact match.
+    // Absent for positional-fallback labels ("<tag> #<n>"), scroll-container
+    // entries, and frame-routed elements.
+    fingerprints: Map<number, ElementFingerprint>;
   } | null = null;
+
+  /** Set by `executeScript` when a page script reports `relocated: true`
+   * (a re-mounted target re-found by fingerprint); read and cleared by the
+   * public `act`/`perform` entry points, which surface it on their result. */
+  private relocatedThisCommand = false;
 
   /** Second-pass review finding 8: a FIFO queue every public command
    * (open/act/findImages/snapshot/perform/read/screenshot/tabs) runs
@@ -1140,7 +1154,8 @@ export class BrowserController {
    * command queue and delegates to `actUnlocked`. */
   async act(args: unknown): Promise<BrowserCommandResult> {
     return this.runExclusive(async () => {
-      const result = await this.actUnlocked(args);
+      this.relocatedThisCommand = false;
+      const result = this.withRelocated(await this.actUnlocked(args));
       // Wave 3 reliability, item 3: drained once, at the outermost public
       // entry point — see mergeConsoleErrors's doc comment.
       return this.mergeConsoleErrors(result, this.target.currentPage());
@@ -2289,7 +2304,21 @@ export class BrowserController {
       }
     }
 
-    this.lastSnapshot = { id: snapshotId, page, frameMap, frameRects };
+    const fingerprints = new Map<number, ElementFingerprint>();
+    const candidatesFp: [number, ElementFingerprint][] = [];
+    for (const el of (Array.isArray(result.elements) ? result.elements : []) as Record<string, unknown>[]) {
+      const fp = fingerprintOf(el);
+      if (fp) candidatesFp.push([el.index as number, fp]);
+    }
+    // A fingerprint shared by several entries of this table is ambiguous by
+    // construction (two "Remove" buttons) — relocation could hand one index
+    // the other's node — so none of them keeps one.
+    const fpKey = (f: ElementFingerprint) => JSON.stringify([f.tag, f.label, f.role ?? ""]);
+    const fpCounts = new Map<string, number>();
+    for (const [, f] of candidatesFp) fpCounts.set(fpKey(f), (fpCounts.get(fpKey(f)) ?? 0) + 1);
+    for (const [i, f] of candidatesFp) if (fpCounts.get(fpKey(f)) === 1) fingerprints.set(i, f);
+
+    this.lastSnapshot = { id: snapshotId, page, frameMap, frameRects, fingerprints };
     const { __modalFrames: _internal, ...publicResult } = result;
     void _internal;
     return { ...publicResult, elements, snapshotId };
@@ -2498,7 +2527,8 @@ export class BrowserController {
    * wait as browse_act's click (runClick above). */
   async perform(args: unknown): Promise<BrowserCommandResult> {
     return this.runExclusive(async () => {
-      const result = await this.performUnlocked(args);
+      this.relocatedThisCommand = false;
+      const result = this.withRelocated(await this.performUnlocked(args));
       // Wave 3 reliability, item 3: see act()'s identical call for why this
       // only ever runs once, at the outermost public entry point.
       return this.mergeConsoleErrors(result, this.target.currentPage());
@@ -2856,6 +2886,15 @@ export class BrowserController {
     return { frameRoute, frameRect, cursorPoint };
   }
 
+  /** Surfaces `relocated: true` on a successful act/perform result when any
+   * of its page-script calls re-found a re-mounted target by fingerprint. */
+  private withRelocated(result: BrowserCommandResult): BrowserCommandResult {
+    const relocated = this.relocatedThisCommand;
+    this.relocatedThisCommand = false;
+    if (!relocated || "error" in result) return result;
+    return { ...result, relocated: true };
+  }
+
   private async executeScript(
     page: BrowserPageHandle,
     script: ScriptName,
@@ -2871,9 +2910,28 @@ export class BrowserController {
     // never break out of the script" invariant this file's header claims.
     // The function form's return value is inserted verbatim, no pattern
     // interpretation.
-    const code = SCRIPT_TEMPLATES[script].replace(ARGS_MARKER, () => JSON.stringify(scriptArgs));
+    // Re-mount recovery: an index-based call against the CURRENT snapshot on
+    // its own tab carries that element's snapshot fingerprint. Only the top
+    // document ever reaches executeScript with an index (frame-routed calls go
+    // through executeScriptInFrame, which never adds one). Relocation is
+    // strictly within the same snapshot and tab — the controller-level
+    // staleness check has already run by the time we get here.
+    let args = scriptArgs;
+    if (
+      typeof scriptArgs.snapshotId === "string" &&
+      typeof scriptArgs.index === "number" &&
+      scriptArgs.fingerprint === undefined &&
+      this.lastSnapshot &&
+      this.lastSnapshot.id === scriptArgs.snapshotId &&
+      this.lastSnapshot.page === page
+    ) {
+      const fingerprint = this.lastSnapshot.fingerprints.get(scriptArgs.index);
+      if (fingerprint) args = { ...scriptArgs, fingerprint };
+    }
+    const code = SCRIPT_TEMPLATES[script].replace(ARGS_MARKER, () => JSON.stringify(args));
     const result = await page.executeJavaScript(code);
     if (!isRecord(result)) return errorResult("Unexpected response from the page script.");
+    if (result.relocated === true) this.relocatedThisCommand = true;
     return result;
   }
 
@@ -3333,6 +3391,27 @@ function extractScopedBefore(result: BrowserCommandResult): ScopedSignature | nu
   const raw = result.__scopedBefore;
   delete result.__scopedBefore;
   return isScopedSignature(raw) ? raw : null;
+}
+
+/** What a snapshot element table entry looked like when it was taken — see
+ * `lastSnapshot.fingerprints`. */
+interface ElementFingerprint {
+  tag: string;
+  label: string;
+  role?: string;
+}
+
+/** A top-document element's fingerprint from its element-table entry, or
+ * `null` when it must not have one: a scroll-container entry (`ops: []`), or
+ * an unlabelled element whose label is SNAPSHOT_JS's positional fallback
+ * `"<tag> #<index>"` (not a property of the node, so useless for matching). */
+function fingerprintOf(el: Record<string, unknown>): ElementFingerprint | null {
+  if (typeof el.index !== "number" || typeof el.tag !== "string" || typeof el.label !== "string") return null;
+  if (!Array.isArray(el.ops) || el.ops.length === 0) return null;
+  if (el.label === "" || el.label === `${el.tag} #${el.index}`) return null;
+  const fp: ElementFingerprint = { tag: el.tag, label: el.label };
+  if (typeof el.role === "string" && el.role !== "") fp.role = el.role;
+  return fp;
 }
 
 /** SNAPSHOT_JS's internal `__modalFrames` (only present when it scoped to a
