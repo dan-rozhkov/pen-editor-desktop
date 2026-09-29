@@ -43,6 +43,7 @@ let remountDupUrl: string;
 let reachBannerUrl: string;
 let wave3FrameUrl: string;
 let botCheckUrl: string;
+let rangeSliderUrl: string;
 // Wave 3 reliability item 2: a SECOND http server on a different port,
 // bound to "localhost" rather than "127.0.0.1" (the main server's own
 // bind), so the two are genuinely different origins/sites — a real
@@ -862,6 +863,51 @@ read as filled. -->
 <div role="dialog" aria-label="Cookie banner"><button id="cookie-ok">Accept cookies</button></div>`);
       return;
     }
+    if (req.url && req.url.startsWith("/range-slider")) {
+      // A dual slider the way a real filter widget ships it: two NATIVE
+      // range inputs (the accessible, value-carrying ones) visually hidden at
+      // 1x1 / opacity:0 over custom-drawn thumb divs. SNAPSHOT_JS's
+      // isVisible used to drop both, so the control never reached the
+      // element table. The question they answer lives in a <legend> four
+      // levels up, and "Max." alone says nothing about it.
+      res.end(`<!doctype html>
+<title>Range Slider</title>
+<h1 id="ready">range-slider-ready</h1>
+<fieldset>
+  <legend>Your budget (per night)</legend>
+  <div>
+    <div id="range-caption">10 - 400+</div>
+    <fieldset>
+      <div role="group" style="position:relative;width:200px;height:32px">
+        <input type="range" aria-label="Min." min="10" max="390" step="10" value="10"
+          style="opacity:0;width:1px;height:1px;position:absolute;left:0;top:0">
+        <input type="range" aria-label="Max." min="20" max="400" step="10" value="400"
+          style="opacity:0;width:1px;height:1px;position:absolute;left:0;top:0">
+        <div role="none" style="position:absolute;left:0;top:8px;width:16px;height:16px;border-radius:8px;background:#06c"></div>
+        <div role="none" style="position:absolute;right:0;top:8px;width:16px;height:16px;border-radius:8px;background:#06c"></div>
+      </div>
+    </fieldset>
+  </div>
+</fieldset>
+<div id="range-status">none</div>
+<!-- A hidden range input whose only boxed ancestor is page-sized: the proxy
+     would swallow any overlay drawn inside it, so it must stay unlisted. -->
+<section style="height:400px">
+  <div style="position:relative;height:0">
+    <input type="range" aria-label="Orphan" min="0" max="10" value="5"
+      style="opacity:0;width:1px;height:1px;position:absolute;left:0;top:0">
+  </div>
+</section>
+<script>
+  var inputs = document.querySelectorAll('input[type=range]');
+  for (var i = 0; i < inputs.length; i++) {
+    inputs[i].addEventListener('change', function (e) {
+      document.getElementById('range-status').textContent = e.target.getAttribute('aria-label') + '=' + e.target.value;
+    });
+  }
+</script>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/botcheck")) {
       // Wave 3 reliability item 4: title + body text matching the botCheck
       // heuristic's regex.
@@ -933,6 +979,7 @@ read as filled. -->
   reachBannerUrl = `${baseUrl}/reach-banner`;
   wave3FrameUrl = `${baseUrl}/wave3-frame`;
   botCheckUrl = `${baseUrl}/botcheck`;
+  rangeSliderUrl = `${baseUrl}/range-slider`;
 });
 
 test.afterAll(async () => {
@@ -3657,6 +3704,54 @@ test("Wave 3 reliability: botCheck is true on a page that looks like a challenge
     expect(openResult).toMatchObject({ botCheck: true });
 
     await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot/perform: a visually hidden native range input is listed with its group context and can be set by typing a number", async () => {
+  const { app, editorPage, page } = await openReachFixture(rangeSliderUrl, "range-slider-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const sliders = snap.elements.filter((e) => e.label.includes("slider"));
+    expect(sliders).toHaveLength(2);
+    expect(snap.elements.some((e) => e.label.includes("Orphan"))).toBe(false);
+    const max = snap.elements.find((e) => e.label.includes("Max."));
+    expect(max).toBeTruthy();
+    expect(max?.label).toBe("Your budget (per night): Max. (slider 20\u2013400, step 10)");
+    expect(max?.tag).toBe("input");
+    expect(max?.ops).toEqual(["TYPE_TEXT"]);
+    expect(max?.value).toBe("400");
+    const min = snap.elements.find((e) => e.label.includes("Min."));
+    expect(min?.label).toBe("Your budget (per night): Min. (slider 10\u2013390, step 10)");
+    expect(min?.value).toBe("10");
+
+    const type = async (text: string) =>
+      (await callBrowser(editorPage, "perform", {
+        snapshotId: snap.snapshotId,
+        index: max!.index,
+        operation: "TYPE_TEXT",
+        text,
+      })) as { error?: string };
+    const maxValue = () => page.evaluate(() => (document.querySelectorAll("input[type=range]")[1] as HTMLInputElement).value);
+
+    expect((await type("150 EUR")).error).toBeUndefined();
+    expect(await maxValue()).toBe("150");
+    await expect(page.locator("#range-status")).toHaveText("Max.=150");
+
+    expect((await type("137")).error).toBeUndefined();
+    expect(await maxValue()).toBe("140");
+    await expect(page.locator("#range-status")).toHaveText("Max.=140");
+
+    expect((await type("9999")).error).toBeUndefined();
+    expect(await maxValue()).toBe("400");
+
+    expect((await type("\u20ac1,500")).error).toBeUndefined();
+    expect(await maxValue()).toBe("400"); // 1500 clamps to max
+
+    const bad = await type("cheap");
+    expect(bad.error).toContain("is a slider (20\u2013400); type a number.");
+    expect(await maxValue()).toBe("400");
   } finally {
     await app.close().catch(() => {});
   }

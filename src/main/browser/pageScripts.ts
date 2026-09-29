@@ -250,7 +250,7 @@ const LABEL_HELPER_JS = `
     return "";
   }
 
-  function labelOf(el) {
+  function baseLabelOf(el) {
     var aria = el.getAttribute("aria-label");
     if (aria && aria.trim()) return aria.trim();
 
@@ -340,6 +340,84 @@ const LABEL_HELPER_JS = `
     return "";
   }
 
+  function penIsRange(el) {
+    return (
+      !!el &&
+      (el.tagName || "").toLowerCase() === "input" &&
+      (el.getAttribute("type") || "").toLowerCase() === "range"
+    );
+  }
+
+  // A range input's own label ("Max.") says nothing about WHAT it ranges
+  // over; the small model that writes the TYPE_TEXT value never knew a
+  // hidden "Min."/"Max." pair was a nightly-cost filter. The question lives
+  // on an ancestor: the <legend> of a <fieldset> (nearest one with a
+  // non-empty legend wins), else the aria-label / aria-labelledby of a
+  // [role=group]/<fieldset>, looked for up to 6 levels up. Live finding: the
+  // native inputs sit 4 levels below the legend that names the filter.
+  function penGroupContextOf(el) {
+    var node = el.parentElement;
+    var ancestors = [];
+    for (var lvl = 0; node && lvl < 6; lvl++) {
+      ancestors.push(node);
+      node = node.parentElement;
+    }
+    function clean(t) {
+      return (t || "").trim().replace(/\\s+/g, " ").slice(0, 50);
+    }
+    for (var a = 0; a < ancestors.length; a++) {
+      if ((ancestors[a].tagName || "").toLowerCase() !== "fieldset") continue;
+      var legend = ancestors[a].querySelector(":scope > legend");
+      var legendText = legend ? clean(legend.textContent) : "";
+      if (legendText) return legendText;
+    }
+    for (var b = 0; b < ancestors.length; b++) {
+      var anc = ancestors[b];
+      var isGroup = (anc.getAttribute("role") || "") === "group" || (anc.tagName || "").toLowerCase() === "fieldset";
+      if (!isGroup) continue;
+      var groupAria = clean(anc.getAttribute("aria-label"));
+      if (groupAria) return groupAria;
+      var groupBy = anc.getAttribute("aria-labelledby");
+      if (groupBy) {
+        var gIds = groupBy.split(/\\s+/);
+        var gParts = [];
+        for (var g = 0; g < gIds.length; g++) {
+          var gRef = gIds[g] ? document.getElementById(gIds[g]) : null;
+          var gText = gRef ? clean(gRef.textContent) : "";
+          if (gText) gParts.push(gText);
+        }
+        if (gParts.length) return gParts.join(" ").slice(0, 50);
+      }
+    }
+    return "";
+  }
+
+  function penRangeBounds(el) {
+    var min = parseFloat(el.getAttribute("min"));
+    var max = parseFloat(el.getAttribute("max"));
+    if (isNaN(min)) min = 0;
+    if (isNaN(max)) max = 100;
+    var stepAttr = (el.getAttribute("step") || "").trim().toLowerCase();
+    var step = stepAttr === "any" ? NaN : parseFloat(stepAttr);
+    if (stepAttr === "") step = 1;
+    return { min: min, max: max, step: step, anyStep: stepAttr === "any" };
+  }
+
+  // "<group context>: <own label> (slider <min>–<max>, step <step>)". The
+  // suffix must survive the callers' PEN_LABEL_MAX slice, so the two text
+  // parts are capped well below it.
+  function labelOf(el) {
+    var own = baseLabelOf(el);
+    if (!penIsRange(el)) return own;
+    var ctx = penGroupContextOf(el);
+    var b = penRangeBounds(el);
+    var stepAttrRaw = (el.getAttribute("step") || "").trim();
+    var suffix = "slider " + b.min + "\u2013" + b.max;
+    if (stepAttrRaw && !b.anyStep && !isNaN(b.step)) suffix += ", step " + b.step;
+    var head = [ctx, own.slice(0, 40)].filter(Boolean).join(": ");
+    return head ? head + " (" + suffix + ")" : suffix;
+  }
+
   var PEN_LABEL_MAX = 120;
   // The label exactly as the element table reports it (truncated), or "" when
   // labelOf found nothing (SNAPSHOT_JS then falls back to a positional
@@ -379,6 +457,12 @@ const FIND_BY_SNAPSHOT_JS = `
   // may be below the fold; it just must not be hidden.
   function penFingerprintVisible(el) {
     if (el.closest && (el.closest("[data-pen-cursor]") || el.closest("[data-pen-marks]"))) return false;
+    // A hidden native range input is listed by SNAPSHOT_JS through its
+    // visible proxy (penRangeProxy); relocation has to accept the same node.
+    if (penIsRange(el)) {
+      var rs = getComputedStyle(el);
+      return rs.display !== "none" && rs.visibility !== "hidden" && el.getClientRects().length > 0;
+    }
     var rect = el.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return false;
     var style = getComputedStyle(el);
@@ -998,6 +1082,39 @@ export const CLICK_JS = `(() => {
 })()`;
 
 /**
+ * Shared by TYPE_JS and PERFORM_JS: turns the text a model wrote for a range
+ * input into a value the slider will really accept. A range input has no
+ * text, so setting "150 EUR" verbatim leaves it at its default; the first
+ * number is parsed ("150", "150 EUR", "1,500" and "1 500" -> 1500), clamped
+ * to [min, max] and snapped to the min + k*step grid (a browser would snap
+ * it anyway, but to the nearest valid value only after we have clamped).
+ * Returns { value } or { error } (no parsable number).
+ */
+const RANGE_TYPE_HELPER_JS = `
+  function penRangeValueFor(el, raw) {
+    var min = parseFloat(el.getAttribute("min"));
+    var max = parseFloat(el.getAttribute("max"));
+    if (isNaN(min)) min = 0;
+    if (isNaN(max)) max = 100;
+    var stepAttr = (el.getAttribute("step") || "").trim().toLowerCase();
+    var step = stepAttr === "" ? 1 : parseFloat(stepAttr);
+    var m = String(raw === undefined || raw === null ? "" : raw).match(
+      /-?\\d+(?:[ ,\\u00a0\\u202f]\\d{3}(?!\\d))*(?:\\.\\d+)?/
+    );
+    if (!m) return { error: "a slider (" + min + "\\u2013" + max + "); type a number." };
+    var v = parseFloat(m[0].replace(/[ ,\\u00a0\\u202f]/g, ""));
+    if (v < min) v = min;
+    if (v > max) v = max;
+    if (stepAttr !== "any" && !isNaN(step) && step > 0) {
+      var snapped = min + Math.round((v - min) / step) * step;
+      if (snapped > max) snapped = min + Math.floor((max - min) / step + 1e-9) * step;
+      v = snapped;
+    }
+    return { value: String(parseFloat(v.toFixed(10))) };
+  }
+`;
+
+/**
  * Locates a target the same way CLICK_JS does, then sets its value (input /
  * textarea) or text content (contenteditable), dispatching `input` and
  * `change` so framework-bound listeners see the change. Also stamps and
@@ -1020,6 +1137,7 @@ export const TYPE_JS = `(() => {
   ${FIND_BY_TEXT_JS}
   ${SCOPED_SIGNATURE_JS}
   ${TARGET_BUSY_HELPER_JS}
+  ${RANGE_TYPE_HELPER_JS}
 
   // Text first, selector as fallback — see CLICK_JS's comment for why.
   // Code review finding 5: same visible-text → selector → hidden-text-
@@ -1042,6 +1160,11 @@ export const TYPE_JS = `(() => {
   el.scrollIntoView({ block: "center" });
   el.focus();
   var tag = (el.tagName || "").toLowerCase();
+  if (tag === "input" && (el.getAttribute("type") || "").toLowerCase() === "range") {
+    var rangeTyped = penRangeValueFor(el, text);
+    if (rangeTyped.error) return { error: "Element is " + rangeTyped.error + " Target: " + target };
+    text = rangeTyped.value;
+  }
   if (tag === "input" || tag === "textarea") {
     var proto = tag === "input" ? window.HTMLInputElement.prototype : window.HTMLTextAreaElement.prototype;
     var setter = Object.getOwnPropertyDescriptor(proto, "value").set;
@@ -1152,9 +1275,13 @@ const HIT_TEST_HELPER_JS = `
   // corners) through the shared hit-test. Returns how many were testable,
   // whether any hit was related to el, and how many unrelated hits sit under
   // a WALL layer. Elements outside the viewport have nothing testable.
-  function penProbe(el) {
+  //
+  // boxEl (optional) is the element whose rect is sampled when el has no
+  // usable box of its own — a visually hidden native range input is probed
+  // through its visible proxy, and a hit inside that proxy counts as related.
+  function penProbe(el, boxEl) {
     var out = { testable: 0, related: false, walled: 0 };
-    var r = el.getBoundingClientRect();
+    var r = (boxEl || el).getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return out;
     if (r.bottom <= 0 || r.top >= window.innerHeight || r.right <= 0 || r.left >= window.innerWidth) return out;
     var fracs = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
@@ -1165,7 +1292,7 @@ const HIT_TEST_HELPER_JS = `
       var hit = elementFromPointDeep(px, py);
       if (!hit) continue;
       out.testable++;
-      if (penHitIsRelated(el, hit)) {
+      if (penHitIsRelated(el, hit) || (boxEl && boxEl !== el && penHitIsRelated(boxEl, hit))) {
         out.related = true;
         return out;
       }
@@ -1271,7 +1398,14 @@ export const CLICK_RESOLVE_JS = `(() => {
   // link/button clicked it. Mirrors SELECT_ALL_CONTENT_JS's own tag check,
   // but read-only: no focus()/select() side effect here.
   var tagForEditable = (el.tagName || "").toLowerCase();
-  var editable = tagForEditable === "input" || tagForEditable === "textarea" || el.isContentEditable === true;
+  // A range input is "editable" only through the native-setter path
+  // (TYPE_JS/PERFORM_JS parse and snap the number): a trusted click on its
+  // hidden 1x1 box plus Input.insertText would type into nothing, so it is
+  // reported non-editable here to route dispatchType straight to that path.
+  var editable =
+    (tagForEditable === "input" && (el.getAttribute("type") || "").toLowerCase() !== "range") ||
+    tagForEditable === "textarea" ||
+    el.isContentEditable === true;
 
   var result = {
     found: true,
@@ -1493,6 +1627,44 @@ export const SNAPSHOT_JS = `(() => {
 
   ${LABEL_HELPER_JS}
 
+  // Native range inputs are routinely hidden on purpose: a 1x1, opacity:0
+  // <input type=range> layered over custom-drawn thumbs (a dual slider is
+  // two of them). isVisible drops them, so the control never reached the
+  // element table even though setting its value works. This returns the
+  // element whose box stands in for the input — the input itself when it
+  // has a real (>= 8x8) box, else its nearest ancestor with one — or null
+  // when the input is genuinely hidden (display:none / visibility:hidden on
+  // it or on anything between it and the proxy, opacity:0 on an ancestor, or
+  // outside the viewport margin). Only ever consulted for input[type=range].
+  //
+  // The proxy must stay slider-sized: a hit anywhere inside it counts as
+  // reaching the input (penProbe), so a wrapper whose absolutely positioned
+  // children give it no height would otherwise climb to #root/body, and a
+  // modal rendered inside that container would "reach" the slider behind
+  // it. Hence the short walk and the size cap; past them the input is
+  // treated as hidden (fail-closed).
+  var PEN_RANGE_PROXY_MAX_DEPTH = 4;
+  var PEN_RANGE_PROXY_MAX_HEIGHT = 120;
+  function penRangeProxy(el) {
+    if (!penIsRange(el)) return null;
+    if (el.closest && (el.closest("[data-pen-cursor]") || el.closest("[data-pen-marks]"))) return null;
+    var margin = Math.max(window.innerHeight, 600);
+    var node = el;
+    for (var depth = 0; node && node.nodeType === 1 && depth < PEN_RANGE_PROXY_MAX_DEPTH; depth++) {
+      var st = getComputedStyle(node);
+      if (st.display === "none" || st.visibility === "hidden") return null;
+      if (node !== el && parseFloat(st.opacity) === 0) return null;
+      var r = node.getBoundingClientRect();
+      if (r.width >= 8 && r.height >= 8) {
+        if (r.height > PEN_RANGE_PROXY_MAX_HEIGHT || r.width > window.innerWidth * 0.6) return null;
+        if (r.bottom < -margin || r.top > window.innerHeight + margin) return null;
+        return node;
+      }
+      node = penComposedParent(node);
+    }
+    return null;
+  }
+
   function opsFor(el, tag) {
     if (tag === "select") return ["SELECT"];
     if (tag === "textarea") return ["TYPE_TEXT"];
@@ -1520,14 +1692,19 @@ export const SNAPSHOT_JS = `(() => {
   var found = [];
   for (var i = 0; i < candidates.length; i++) {
     var el = candidates[i];
-    if (!isVisible(el)) continue;
+    var box = el;
+    if (!isVisible(el)) {
+      box = penRangeProxy(el);
+      if (!box) continue;
+    }
     var tag = tagOf(el);
     var isPassword = tag === "input" && (el.getAttribute("type") || "").toLowerCase() === "password";
     var ops = opsFor(el, tag);
-    var rect = el.getBoundingClientRect();
+    var rect = box.getBoundingClientRect();
     var distance = Math.abs((rect.top + rect.bottom) / 2 - window.innerHeight / 2);
     var entry = {
       el: el,
+      box: box,
       tag: tag,
       role: el.getAttribute("role") || undefined,
       label: labelOf(el),
@@ -1576,8 +1753,12 @@ export const SNAPSHOT_JS = `(() => {
         autocomplete === "one-time-code" ||
         autocomplete === "current-password" ||
         autocomplete === "new-password";
+      // A range value is a bare number the model needs to see (where the
+      // slider currently sits), never user-entered text.
       var valueEligible =
-        !isPassword && (inputType === "text" || inputType === "search" || inputType === "textarea") && !sensitiveAutocomplete;
+        !isPassword &&
+        (inputType === "text" || inputType === "search" || inputType === "textarea" || inputType === "range") &&
+        !sensitiveAutocomplete;
       var rawValue = el.value || "";
       if (valueEligible) {
         entry.value = String(rawValue).slice(0, 100);
@@ -1702,7 +1883,7 @@ export const SNAPSHOT_JS = `(() => {
       if (penComposedContains(modalEl, found[fm].el)) {
         inModal.push(found[fm]);
         insideCount++;
-      } else if (penProbe(found[fm].el).related) {
+      } else if (penProbe(found[fm].el, found[fm].box).related) {
         outsideOnTop.push(found[fm]);
       }
     }
@@ -1726,8 +1907,8 @@ export const SNAPSHOT_JS = `(() => {
   // hit-test, yet perfectly reachable through its wrapper, so only genuine
   // overlays count. Elements wholly outside the viewport are never dropped
   // (nothing can be hit-tested there; they're the infinite-scroll margin).
-  function penIsCovered(el) {
-    var probe = penProbe(el);
+  function penIsCovered(el, boxEl) {
+    var probe = penProbe(el, boxEl);
     return probe.testable > 0 && !probe.related && probe.walled === probe.testable;
   }
 
@@ -1741,7 +1922,7 @@ export const SNAPSHOT_JS = `(() => {
   });
   var capped = [];
   for (var cf = 0; cf < found.length && capped.length < maxElements; cf++) {
-    if (!penIsCovered(found[cf].el)) capped.push(found[cf]);
+    if (!penIsCovered(found[cf].el, found[cf].box)) capped.push(found[cf]);
   }
 
   var elements = [];
@@ -1960,6 +2141,7 @@ export const PERFORM_JS = `(() => {
   ${TARGET_BUSY_HELPER_JS}
   ${FIND_BY_SNAPSHOT_JS}
   ${SCROLL_CONTAINER_HELPER_JS}
+  ${RANGE_TYPE_HELPER_JS}
 
   if (operation === "SCROLL_UP" || operation === "SCROLL_DOWN") {
     // Wave 2 reliability item 4: same auto-pick SCROLL_JS uses when the
@@ -2026,6 +2208,11 @@ export const PERFORM_JS = `(() => {
     el.scrollIntoView({ block: "center" });
     el.focus();
     var tag = (el.tagName || "").toLowerCase();
+    if (tag === "input" && (el.getAttribute("type") || "").toLowerCase() === "range") {
+      var rangeTyped = penRangeValueFor(el, text);
+      if (rangeTyped.error) return { error: "Element at index " + index + " is " + rangeTyped.error };
+      text = rangeTyped.value;
+    }
     if (tag === "input" || tag === "textarea") {
       var proto = tag === "input" ? window.HTMLInputElement.prototype : window.HTMLTextAreaElement.prototype;
       var setter = Object.getOwnPropertyDescriptor(proto, "value").set;
