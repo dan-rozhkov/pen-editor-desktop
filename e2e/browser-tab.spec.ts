@@ -45,6 +45,8 @@ let wave3FrameUrl: string;
 let botCheckUrl: string;
 let rangeSliderUrl: string;
 let ariaSliderUrl: string;
+let ariaCardsUrl: string;
+let ariaHeaderUrl: string;
 // Wave 3 reliability item 2: a SECOND http server on a different port,
 // bound to "localhost" rather than "127.0.0.1" (the main server's own
 // bind), so the two are genuinely different origins/sites — a real
@@ -940,6 +942,10 @@ read as filled. -->
     style="position:absolute;left:150px;top:8px;width:16px;height:16px;border-radius:8px;background:#06c"></div>
   <div id="s-arrows" role="slider" tabindex="0" aria-label="Arrows only" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="900"
     style="position:absolute;left:180px;top:8px;width:16px;height:16px;border-radius:8px;background:#06c"></div>
+  <div id="s-marks" role="slider" tabindex="0" aria-label="Marks" aria-valuemin="0" aria-valuemax="100" aria-valuenow="37"
+    style="position:absolute;left:210px;top:8px;width:16px;height:16px;border-radius:8px;background:#06c"></div>
+  <div id="s-nonsnap" role="slider" tabindex="0" aria-label="Non snapping" aria-valuemin="0" aria-valuemax="100" aria-valuenow="37"
+    style="position:absolute;left:240px;top:8px;width:16px;height:16px;border-radius:8px;background:#06c"></div>
   <div id="s-stuck" role="slider" tabindex="0" aria-label="Stuck" aria-valuemin="0" aria-valuemax="100000" aria-valuenow="500"
     aria-valuetext="five hundred euros" style="position:absolute;left:90px;top:8px;width:16px;height:16px;border-radius:8px;background:#c60"></div>
   <div id="s-locked" role="slider" tabindex="0" aria-disabled="true" aria-label="Locked" aria-valuemin="0" aria-valuemax="10" aria-valuenow="5"
@@ -949,6 +955,7 @@ read as filled. -->
 <fieldset disabled><input id="r-fs-disabled" type="range" aria-label="Fieldset disabled slider" min="0" max="100" value="40"></fieldset>
 <!-- A text input that merely carries role=slider: the input branch's value
      privacy (cc-* autocomplete) must win over the slider rules. -->
+ <div><span>Coarse control</span><input id="r-coarse" type="range" aria-label="Coarse" min="0" max="100" step="50" value="0"></div>
 <input id="r-card" type="text" role="slider" autocomplete="cc-number" aria-label="Card slider" value="4111111111111111">
 <div id="aria-status">none</div>
 <div style="height:4000px"></div>
@@ -983,10 +990,51 @@ read as filled. -->
   bind('s-fine', 1, false, 100, false);
   bind('s-nopage', 1, false, 0, false);
   bind('s-offgrid', 10, false, 0, true);
+  bind('s-nonsnap', 25, false, 0, false);
   bind('s-free', 10, false, 0, false, true);
   bind('s-arrows', 5, false, 0, false, true);
+  // Marks only: arrows jump between the stops 0 / 26 / 37 / 100.
+  (function () {
+    var marks = [0, 26, 37, 100], el = document.getElementById('s-marks');
+    el.addEventListener('keydown', function (e) {
+      window.__keydowns++;
+      var d = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 }[e.key];
+      if (d === undefined) return;
+      var i = Math.max(0, Math.min(marks.length - 1, marks.indexOf(+el.getAttribute('aria-valuenow')) + d));
+      el.setAttribute('aria-valuenow', String(marks[i]));
+      e.preventDefault();
+    });
+  })();
   document.getElementById('s-stuck').addEventListener('keydown', function () { window.__keydowns++; });
 </script>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/aria-cards")) {
+      // Three bare ARIA sliders (no aria-label, no legend or labelled group),
+      // each alone in a card. Title before the slider, title AFTER it (the
+      // layout of a component gallery), and a third with tick labels only
+      // ("0\u00b0C") that must not become context. No id/aria-label on the
+      // sliders: a slider with a label of its own gets no nearby-text context.
+      const slider = (id: string, now: number) =>
+        `<div data-card="${id}" role="slider" tabindex="0" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${now}" style="width:200px;height:16px;border:1px solid #06c"></div>`;
+      res.end(`<!doctype html>
+<title>ARIA Cards</title>
+<h1 id="ready">aria-cards-ready</h1>
+<div class="card" style="margin:12px"><h3>Volume</h3>${slider("c1", 30)}<span>0\u00b0C</span> <span>37\u00b0C</span><p>Adjust the output level</p></div>
+<div class="card" style="margin:12px">${slider("c2", 40)}<span>0\u00b0C</span> <span>37\u00b0C</span><section><b>Graduated slider</b><p>Marks description</p></section></div>
+<div class="card" style="margin:12px"><div>${slider("c4", 20)}${slider("c5", 60)}</div><section><b>Range demo</b><p>Two handles</p></section></div>
+<div class="card" style="margin:12px"><h3>Budget</h3>${slider("c6", 70)}<span>Up to \u20ac400</span></div>
+<div class="card" style="margin:12px"><h3>Brightness</h3>${slider("c3", 50)}<span>0\u00b0C</span> <span>37\u00b0C</span><span>100</span></div>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/aria-header")) {
+      // One bare slider under a site header/nav: the header is page
+      // furniture, never the slider's context.
+      res.end(`<!doctype html>
+<title>ARIA Header</title>
+<h1 id="ready">aria-header-ready</h1>
+<header><nav><a href="#">Acme Store Home</a> <a href="#">Pricing plans</a></nav></header>
+<main><div role="slider" tabindex="0" aria-valuemin="0" aria-valuemax="100" aria-valuenow="30" style="width:200px;height:16px;border:1px solid #06c"></div></main>`);
       return;
     }
     if (req.url && req.url.startsWith("/botcheck")) {
@@ -1062,6 +1110,8 @@ read as filled. -->
   botCheckUrl = `${baseUrl}/botcheck`;
   rangeSliderUrl = `${baseUrl}/range-slider`;
   ariaSliderUrl = `${baseUrl}/aria-slider`;
+  ariaCardsUrl = `${baseUrl}/aria-cards`;
+  ariaHeaderUrl = `${baseUrl}/aria-header`;
 });
 
 test.afterAll(async () => {
@@ -3825,11 +3875,13 @@ test("browser snapshot/perform: a visually hidden native range input is listed w
     expect(await maxValue()).toBe("140");
     await expect(page.locator("#range-status")).toHaveText("Max.=140");
 
-    expect((await type("9999")).error).toBeUndefined();
+    // Clamping is reported, not silently accepted: the value is set to the
+    // bound and the error says so (read back from the input).
+    expect((await type("9999")).error).toBe("slider can't go above 400 (target 9999) \u2014 it is now at 400");
     expect(await maxValue()).toBe("400");
 
-    expect((await type("\u20ac1,500")).error).toBeUndefined();
-    expect(await maxValue()).toBe("400"); // 1500 clamps to max
+    expect((await type("\u20ac1,500")).error).toBe("slider can't go above 400 (target 1500) \u2014 it is now at 400");
+    expect(await maxValue()).toBe("400");
 
     const bad = await type("cheap");
     expect(bad.error).toContain("is a slider (20\u2013400); type a number.");
@@ -3897,6 +3949,12 @@ test("browser snapshot/perform: ARIA sliders are listed with their group context
     expect((await type(max, "310")).error).toBeUndefined();
     expect(Math.abs((await now("s-max")) - 310)).toBeLessThanOrEqual(12.5);
 
+    // Beyond the range is an honest error too, with the value at the bound.
+    const over = await type(max, "9999");
+    expect(over.error).toBe("slider can't go above 1000 (target 9999) \u2014 it is now at 1000");
+    expect(over.changed).toBe(true);
+    expect(await now("s-max")).toBe(1000);
+
     const bad = await type(max, "cheap");
     expect(bad.error).toContain("is a slider (0\u20131000); type a number.");
 
@@ -3923,6 +3981,30 @@ test("browser snapshot/perform: ARIA sliders are listed with their group context
     expect((await type(arrows, "400")).error).toBeUndefined();
     expect(await now("s-arrows")).toBe(400);
     expect(await page.evaluate(() => window.scrollY)).toBe(0);
+
+    // Off-grid start on a widget that does not snap (37, step 25): the
+    // arrows alone can only reach 12/37/62/87; one Home realignment lands 50.
+    const nonSnap = snap.elements.find((e) => e.label.includes("Non snapping"));
+    const rn = await type(nonSnap, "50");
+    expect(rn.error).toBeUndefined();
+    expect(await now("s-nonsnap")).toBe(50);
+
+    // Marks-only slider (stops 0/26/37/100), target 75: the nearest stop is
+    // 100, 25 away on a 0-100 range. That is not a success, and the message
+    // must say where it is now; the value did move (evidence attached).
+    const marks = snap.elements.find((e) => e.label.includes("Marks"));
+    const rm = await type(marks, "75");
+    expect(rm.error).toContain("can't be set to exactly 75");
+    expect(rm.error).toContain("nearest reachable value is 100");
+    expect(rm.error).toContain("now at 100");
+    expect(rm.changed).toBe(true);
+    expect(await now("s-marks")).toBe(100);
+
+    // Same honesty for a coarse native range: step 50, asked for 30.
+    const coarse = snap.elements.find((e) => e.label.includes("Coarse"));
+    const rc = await type(coarse, "30");
+    expect(rc.error).toContain("nearest reachable value is 50");
+    expect(await page.evaluate(() => (document.getElementById("r-coarse") as HTMLInputElement).value)).toBe("50");
 
     // Step 1 over 900 succeeds through PageUp/PageDown (+-100) plus arrows.
     await page.evaluate(() => ((window as unknown as { __keydowns: number }).__keydowns = 0));
@@ -3991,6 +4073,47 @@ test("browser perform: an ARIA slider is still driven while the agent's browser 
     })) as { error?: string };
     expect(res.error).toBeUndefined();
     expect(await page.evaluate(() => Number(document.getElementById("s-min")!.getAttribute("aria-valuenow")))).toBe(300);
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: bare ARIA sliders get their own card's text as context, without tick labels", async () => {
+  const { app, editorPage } = await openReachFixture(ariaCardsUrl, "aria-cards-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const sliders = snap.elements.filter((e) => e.label.includes("slider"));
+    expect(sliders).toHaveLength(6);
+    const labels = sliders.map((e) => e.label);
+    // Two sliders share one demo (the Ant shape: title in a sibling block
+    // AFTER them): both carry that title and, being bare, are identical.
+    expect(labels.filter((l) => l.includes("Range demo"))).toHaveLength(2);
+    expect(new Set(labels).size).toBe(5);
+    // A live readout ("Up to \u20ac400") changes as the slider moves and
+    // would break relocation: it never becomes context.
+    const budget = labels.find((l) => l.includes("Budget"));
+    expect(budget).toBeTruthy();
+    expect(budget).not.toContain("400");
+    expect(labels.find((l) => l.includes("Volume"))).toContain("Adjust the output level");
+    expect(labels.find((l) => l.includes("Graduated slider"))).toBeTruthy();
+    expect(labels.find((l) => l.includes("Brightness"))).toBeTruthy();
+    for (const l of labels) {
+      expect(l).not.toContain("\u00b0C");
+      expect(l).toMatch(/\(slider 0\u2013100\)$/);
+    }
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: a lone bare ARIA slider under a site header/nav does not get the header text as context", async () => {
+  const { app, editorPage } = await openReachFixture(ariaHeaderUrl, "aria-header-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const sliders = snap.elements.filter((e) => e.label.includes("slider"));
+    expect(sliders).toHaveLength(1);
+    expect(sliders[0].label).not.toMatch(/Acme|Pricing|Home/);
+    expect(sliders[0].label).toBe("slider 0\u2013100");
   } finally {
     await app.close().catch(() => {});
   }

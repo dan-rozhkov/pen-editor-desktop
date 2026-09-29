@@ -493,7 +493,15 @@ slider reports its position as a bare number in `value` — a native
 `aria-valuetext` never leaves the page). Sliders carry no user-entered text,
 and the model needs the position to choose a target. An `<input role=slider>`
 is NOT an ARIA slider here: the input branch and its `autocomplete` guard
-win. A `<select>` also reports its chosen option's text as `value` (the option texts
+win. A slider with no legend, labelled group or label of its own gets a
+*nearby-text context* prefix in its label (`labelOf` → `penNearbyTextOf`): the
+first two meaningful lines (≤40 chars) of the smallest ancestor within 9
+levels that has any, so ten bare `slider 0–100` controls in a gallery become
+distinguishable. Lines with a digit (live readouts), `@`, code characters, a
+trailing colon or a leading quote are dropped; nothing is used when that
+ancestor holds more than 4 sliders, over 2000 chars of text, or page furniture
+(nav/footer/banner), and never `<body>`. It is visible text that already
+leaves the page in the snapshot's `text` field. A `<select>` also reports its chosen option's text as `value` (the option texts
 already leave the page in `options`; a `Select…` placeholder with an empty
 option value is unset, `hasValue: false`), and a checkbox/radio reports only
 `checked` — its `value` is a submit token (`on`), never user input, and
