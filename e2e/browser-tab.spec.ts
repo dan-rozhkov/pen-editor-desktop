@@ -49,6 +49,7 @@ let ariaCardsUrl: string;
 let ariaHeaderUrl: string;
 let longListUrl: string;
 let ariaListboxUrl: string;
+let ariaCalendarUrl: string;
 // Wave 3 reliability item 2: a SECOND http server on a different port,
 // bound to "localhost" rather than "127.0.0.1" (the main server's own
 // bind), so the two are genuinely different origins/sites — a real
@@ -1055,6 +1056,57 @@ read as filled. -->
 <h1 id="ready">long-list-ready</h1>${rows}`);
       return;
     }
+    if (req.url && req.url.startsWith("/aria-calendar")) {
+      // Google Flights' date picker shape: a scrolling list of months, each
+      // day a role=gridcell (past days aria-hidden) wrapping a role=button
+      // whose only text is the bare day number; the real name sits on a
+      // grandchild's aria-label. Only November is scrolled into view.
+      const months = [
+        ["October", 31],
+        ["November", 30],
+        ["December", 31],
+        ["January", 31],
+        ["February", 28],
+        ["March", 31],
+        ["April", 30],
+        ["May", 31],
+        ["June", 30],
+        ["July", 31],
+        ["August", 31],
+        ["September", 30],
+      ] as const;
+      const grid = months
+        .map(
+          ([m, n]) =>
+            `<div role="rowgroup" style="height:120px;display:grid;grid-template-columns:repeat(8,28px)">` +
+            Array.from({ length: n }, (_, i) => {
+              const d = i + 1;
+              const past = m === "October" && d < 20;
+              return (
+                `<div role="gridcell" aria-selected="false"${past ? ' aria-hidden="true"' : ""} data-day="${m} ${d}" style="height:14px">` +
+                `<div role="button" tabindex="-1"><div aria-label="${m} ${d}, 2026">${d}</div></div></div>`
+              );
+            }).join("") +
+            `</div>`,
+        )
+        .join("");
+      res.end(`<!doctype html>
+<title>ARIA Calendar</title>
+<h1 id="ready">aria-calendar-ready</h1>
+<input type="text" aria-label="Departure" placeholder="Departure">
+<div id="scroller" role="grid" style="height:${req.url.includes("tall") ? 720 : 120}px;overflow-y:auto;width:260px;border:1px solid #999">${grid}</div>
+<button id="done" onclick="this.textContent='Confirmed'">Done</button>
+<p id="chosen-day">none</p>
+<script>
+  document.getElementById('scroller').scrollTop = 120;
+  document.querySelectorAll('[role=gridcell]').forEach(function (c) {
+    c.addEventListener('click', function () {
+      document.getElementById('chosen-day').textContent = c.getAttribute('data-day');
+    });
+  });
+</script>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/aria-listbox")) {
       // Google Flights shape: a custom combobox whose options are
       // role=option items (not a native <select>), plus a date grid of
@@ -1181,6 +1233,7 @@ read as filled. -->
   ariaHeaderUrl = `${baseUrl}/aria-header`;
   longListUrl = `${baseUrl}/long-list`;
   ariaListboxUrl = `${baseUrl}/aria-listbox`;
+  ariaCalendarUrl = `${baseUrl}/aria-calendar`;
 });
 
 test.afterAll(async () => {
@@ -1848,7 +1901,9 @@ test("browser snapshot: visibility filtering, labels, ops, and password values a
 
     const placeholderInput = byLabel("Type here");
     expect(placeholderInput?.tag).toBe("input");
-    expect(placeholderInput?.ops).toEqual(["TYPE_TEXT"]);
+    // A text field is also clickable (it may open a picker on click); a
+    // password field below stays TYPE_TEXT only.
+    expect(placeholderInput?.ops).toEqual(["TYPE_TEXT", "CLICK"]);
 
     // The icon button has no aria-label, no text, no placeholder, no alt —
     // it must still appear, labelled by tag and position, not be dropped.
@@ -4257,6 +4312,70 @@ test("browser snapshot: custom listbox options, switches and date-grid days are 
     })) as { error?: string };
     expect(clicked.error).toBeUndefined();
     await expect(page.locator("#chosen-date")).toHaveText("November 14, 2026");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: a scrolling date picker lists only the shown month's selectable days, once each, by their full name", async () => {
+  const { app, editorPage, page } = await openReachFixture(ariaCalendarUrl, "aria-calendar-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const days = snap.elements.filter((e) => e.role === "gridcell");
+    // Named by the child's aria-label, never the bare "14" every month shares.
+    for (const d of days) expect(d.label).toMatch(/^[A-Z][a-z]+ \d+, 2026$/);
+    // A year of days is far over the cap: the month shown in the panel
+    // survives whole, the months scrolled far out of it do not.
+    expect(days.filter((d) => d.label.startsWith("November"))).toHaveLength(30);
+    expect(days.some((d) => /^(June|July|August|September) /.test(d.label))).toBe(false);
+    // The cell's inner role=button is not a second entry for the same day.
+    expect(snap.elements.filter((e) => e.role === "button")).toHaveLength(0);
+
+    const day14 = days.find((d) => d.label === "November 14, 2026");
+    expect(day14).toBeTruthy();
+    const res = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: day14!.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(res.error).toBeUndefined();
+    await expect(page.locator("#chosen-day")).toHaveText("November 14");
+
+    // Scroll back to October: its past (aria-hidden) days are never offered.
+    await page.evaluate(() => (document.getElementById("scroller")!.scrollTop = 0));
+    const oct = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const octDays = oct.elements.filter((e) => e.role === "gridcell" && e.label.startsWith("October"));
+    expect(octDays.length).toBeGreaterThan(0);
+    for (const d of octDays) expect(Number(/October (\d+)/.exec(d.label)![1])).toBeGreaterThanOrEqual(20);
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: a custom combobox reports its shown choice as value and whether its list is open", async () => {
+  const { app, editorPage } = await openReachFixture(ariaListboxUrl, "aria-listbox-ready");
+  try {
+    const closed = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const combo = closed.elements.find((e) => e.role === "combobox") as SnapshotElement & { expanded?: boolean };
+    expect(combo.value).toBe("Round trip");
+    expect(combo.expanded).toBe(false);
+    await callBrowser(editorPage, "perform", { snapshotId: closed.snapshotId, index: combo.index, operation: "CLICK" });
+    const open = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const openCombo = open.elements.find((e) => e.role === "combobox") as SnapshotElement & { expanded?: boolean };
+    expect(openCombo.expanded).toBe(true);
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: an open calendar's many visible days never crowd out its confirm button; text fields are clickable", async () => {
+  const { app, editorPage } = await openReachFixture(`${ariaCalendarUrl}?tall=1`, "aria-calendar-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(snap.elements.filter((e) => e.role === "gridcell").length).toBeGreaterThan(100);
+    expect(snap.elements.some((e) => e.label === "Done")).toBe(true);
+    // A date field that opens its picker on click has no attribute saying so.
+    expect(snap.elements.find((e) => e.label === "Departure")?.ops).toEqual(["TYPE_TEXT", "CLICK"]);
   } finally {
     await app.close().catch(() => {});
   }

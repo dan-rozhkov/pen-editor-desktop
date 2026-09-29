@@ -485,7 +485,18 @@ freshly minted `snapshotId`. Custom listbox/menu/date-picker controls are
 candidates too (`role=option|menuitemradio|menuitemcheckbox|switch|treeitem`,
 and a `gridcell` only when focusable or selectable); an `aria-disabled` option
 or day is skipped, and ARIA state (`aria-checked`, or `aria-selected` for
-option/gridcell/tab/treeitem) is reported as `checked`. Addendum D governs what an element may report as
+option/gridcell/tab/treeitem) is reported as `checked`. Found live on Google
+Flights (browse_task looped, 0/3 → 3/3 after): `aria-hidden="true"` controls
+are skipped; a control nested in a listed cell/option is not listed again; an
+element with no 3+-letter text ("14", "14$34") is named by a descendant's
+`aria-label` ("Saturday, November 14, 2026"); a candidate's distance is the
+larger of its distance from the window and from its nearest scrolling
+ancestor's box, so a year-long picker spends the cap on the shown month; at
+equal distance cells rank after one-off controls, so an open calendar keeps its
+confirm button; `aria-expanded` is reported as `expanded`, a non-input
+`role=combobox` reports its shown text as `value`, and a text `input` (not
+password/range) offers `["TYPE_TEXT", "CLICK"]` — date fields open their picker
+on click with no attribute saying so. Addendum D governs what an element may report as
 `value`: only a non-password `input[type=text]`, `input[type=search]`, or
 `textarea` — truncated to 100 chars, and only when `autocomplete` isn't one
 of `cc-*`, `one-time-code`, `current-password`, `new-password` — reports its
