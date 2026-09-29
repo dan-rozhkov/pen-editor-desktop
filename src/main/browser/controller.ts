@@ -41,6 +41,8 @@ import {
   REVEAL_TARGET_JS,
   SELECT_ALL_CONTENT_JS,
   READ_TARGET_VALUE_JS,
+  SLIDER_READ_JS,
+  SLIDER_SCROLL_JS,
   BOT_CHECK_JS,
   IFRAME_RECTS_JS,
 } from "./pageScripts";
@@ -65,11 +67,21 @@ const SCRIPT_TEMPLATES = {
   REVEAL_TARGET_JS,
   SELECT_ALL_CONTENT_JS,
   READ_TARGET_VALUE_JS,
+  SLIDER_READ_JS,
+  SLIDER_SCROLL_JS,
   BOT_CHECK_JS,
   IFRAME_RECTS_JS,
 } as const;
 
 type ScriptName = keyof typeof SCRIPT_TEMPLATES;
+
+/** Hard bounds on `driveSlider`: total trusted key presses (what a
+ * misbehaving widget can cost; large ranges are covered by Home/End and page
+ * keys, not by raising this), and the margin subtracted from the controller's
+ * command timeout to get the loop's own deadline, so it ends itself before
+ * the command timeout abandons it mid-flight. */
+const SLIDER_MAX_PRESSES = 300;
+const SLIDER_TIME_MARGIN_MS = 3_000;
 
 /** jev-loop design doc "Addendum 2, 2026-09-19" §2: default/hard-cap for
  * browse_read's `maxChars`. */
@@ -109,6 +121,8 @@ interface ScopedSignature {
   valueLength: number;
   ariaExpanded: string;
   ariaSelected: string;
+  /** Optional: a slider's only moving property (see SCOPED_SIGNATURE_JS). */
+  ariaValueNow?: string;
   checked: boolean;
 }
 
@@ -121,6 +135,7 @@ function isScopedSignature(value: unknown): value is ScopedSignature {
     typeof value.valueLength === "number" &&
     typeof value.ariaExpanded === "string" &&
     typeof value.ariaSelected === "string" &&
+    (value.ariaValueNow === undefined || typeof value.ariaValueNow === "string") &&
     typeof value.checked === "boolean"
   );
 }
@@ -1371,7 +1386,7 @@ export class BrowserController {
       // Wave 2 reliability item 2: trusted CDP typing (dispatchType), with
       // its own DOM fallback baked in — see runTypeWithEvidence.
       return this.withCommandTimeout(
-        () => this.runTypeWithEvidence({ target }, text),
+        (deadlineAt) => this.runTypeWithEvidence({ target }, text, deadlineAt),
         this.timeoutMs + this.cursorBudgetMs,
       );
     }
@@ -1417,6 +1432,7 @@ export class BrowserController {
     operation: "CLICK" | "TYPE_TEXT",
     localIndex: number,
     snapshotId: string,
+    deadlineAt: number,
     text?: string,
   ): Promise<BrowserCommandResult> {
     const result = await this.executeScriptInFrame(page, frameId, "PERFORM_JS", {
@@ -1426,6 +1442,9 @@ export class BrowserController {
       text,
     });
     if ("error" in result) return result;
+    // A role=slider comes back prepared (focused, target parsed) but not yet
+    // moved: the trusted key presses go to whichever frame holds focus.
+    if (operation === "TYPE_TEXT") return this.completeSliderResult(page, frameId, { ...result, via: "dom" }, deadlineAt);
     return { ...result, via: "dom" };
   }
 
@@ -1555,9 +1574,10 @@ export class BrowserController {
     page: BrowserPageHandle,
     locateArgs: { target?: string; index?: number; snapshotId?: string },
     text: string,
+    deadlineAt: number,
   ): Promise<BrowserCommandResult> {
     if (!page.sendCdp) {
-      return this.legacyTypeFallback(page, locateArgs, text);
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
     }
     const located = await this.executeScript(page, "CLICK_RESOLVE_JS", locateArgs);
     if ("error" in located) return located;
@@ -1571,7 +1591,7 @@ export class BrowserController {
     // the same "not a text field" style error TYPE_JS/PERFORM_JS always
     // have, without ever touching the mouse.
     if (located.editable !== true) {
-      return this.legacyTypeFallback(page, locateArgs, text);
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
     }
 
     const scopedBefore = extractScopedBefore(located);
@@ -1598,42 +1618,27 @@ export class BrowserController {
     }
     if ("error" in selectResult) return selectResult;
     if (selectResult.editable !== true) {
-      return this.legacyTypeFallback(page, locateArgs, text);
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
     }
 
     try {
       if (text.length > 0) {
         const firstKey = resolveNamedKey(text[0]);
-        if (firstKey) {
-          await page.sendCdp("Input.dispatchKeyEvent", {
-            type: "rawKeyDown",
-            key: firstKey.key,
-            code: firstKey.code,
-            windowsVirtualKeyCode: firstKey.windowsVirtualKeyCode,
-            nativeVirtualKeyCode: firstKey.windowsVirtualKeyCode,
-          });
-          await page.sendCdp("Input.dispatchKeyEvent", {
-            type: "keyUp",
-            key: firstKey.key,
-            code: firstKey.code,
-            windowsVirtualKeyCode: firstKey.windowsVirtualKeyCode,
-            nativeVirtualKeyCode: firstKey.windowsVirtualKeyCode,
-          });
-        }
+        if (firstKey) await this.dispatchKeyPair(page, firstKey);
       }
       await page.sendCdp("Input.insertText", { text });
     } catch {
-      return this.legacyTypeFallback(page, locateArgs, text);
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
     }
 
     let verify: BrowserCommandResult;
     try {
       verify = await this.executeScript(page, "READ_TARGET_VALUE_JS", { text });
     } catch {
-      return this.legacyTypeFallback(page, locateArgs, text);
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
     }
     if ("error" in verify || verify.matches !== true) {
-      return this.legacyTypeFallback(page, locateArgs, text);
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
     }
 
     let busyAfter = busyBefore;
@@ -1662,11 +1667,12 @@ export class BrowserController {
     page: BrowserPageHandle,
     locateArgs: { target?: string; index?: number; snapshotId?: string },
     text: string,
+    deadlineAt: number,
   ): Promise<BrowserCommandResult> {
     if (locateArgs.target !== undefined) {
       const domResult = await this.executeScript(page, "TYPE_JS", { target: locateArgs.target, text });
       if ("error" in domResult) return domResult;
-      return { ...domResult, via: "dom" };
+      return this.completeSliderResult(page, null, { ...domResult, via: "dom" }, deadlineAt);
     }
     const domResult = await this.executeScript(page, "PERFORM_JS", {
       snapshotId: locateArgs.snapshotId,
@@ -1675,7 +1681,310 @@ export class BrowserController {
       text,
     });
     if ("error" in domResult) return domResult;
-    return { ...domResult, via: "dom" };
+    return this.completeSliderResult(page, null, { ...domResult, via: "dom" }, deadlineAt);
+  }
+
+  /** TYPE_JS/PERFORM_JS answer a role=slider target with `__slider`
+   * ({ min, max, target }) instead of typing: the element is focused and the
+   * number parsed, but a custom slider keeps its value in its own state, so
+   * nothing a page script could set would stick. This finishes the job with
+   * trusted key presses (`driveSlider`) and folds the outcome into the
+   * result. A result without `__slider` (every other target) passes through
+   * untouched.
+   *
+   * A drive that fails AFTER moving the slider still carries evidence: the
+   * error plus url/title and the target's own before-signature
+   * (`__scopedBefore`) with `__sliderPartial`, which the two callers that
+   * compute `{ changed, changes }` (perform TYPE_TEXT, act type) treat as
+   * "diff it anyway". The agent then learns the value moved
+   * (`slider stopped at 300 (target 900)` + changed: true) instead of
+   * retrying blind. */
+  private async completeSliderResult(
+    page: BrowserPageHandle,
+    frameId: number | null,
+    result: BrowserCommandResult,
+    deadlineAt: number,
+  ): Promise<BrowserCommandResult> {
+    const raw = result.__slider;
+    delete result.__slider;
+    if ("error" in result || raw === undefined) return result;
+    const bound = (v: unknown): number | null | undefined => (v === null || typeof v === "number" ? v : undefined);
+    const min = isRecord(raw) ? bound(raw.min) : undefined;
+    const max = isRecord(raw) ? bound(raw.max) : undefined;
+    if (!isRecord(raw) || min === undefined || max === undefined || typeof raw.target !== "number") {
+      return errorResult("Unexpected slider description from the page script.");
+    }
+    // The command's own absolute deadline (captured when it started), not a
+    // fresh budget from here: the cursor move, snapshots and page scripts
+    // before this point have already spent part of it.
+    const margin = Math.min(SLIDER_TIME_MARGIN_MS, this.timeoutMs / 4);
+    const deadline = deadlineAt - margin;
+    const outcome = await this.driveSlider(page, frameId, { min, max, target: raw.target }, deadline);
+    if ("error" in outcome) {
+      if (!outcome.moved) return errorResult(outcome.error);
+      return {
+        error: outcome.error,
+        url: page.getURL(),
+        title: page.getTitle(),
+        __scopedBefore: result.__scopedBefore,
+        __sliderPartial: true,
+      };
+    }
+    return { ...result, via: "cdp", sliderValue: outcome.value };
+  }
+
+  /** One trusted key press (`rawKeyDown` + `keyUp` via
+   * `Input.dispatchKeyEvent`), shared by typing's first key, `press` and the
+   * slider loop. `text` makes the down event a `keyDown` that also inserts
+   * it; `modifiers`/`commands` are `press`'s modifier bitmask and editing
+   * command. Throws if the tab has no CDP session or a dispatch rejects. */
+  private async dispatchKeyPair(
+    page: BrowserPageHandle,
+    key: { key: string; code: string; windowsVirtualKeyCode: number },
+    opts?: { modifiers?: number; text?: string; commands?: string[] },
+  ): Promise<void> {
+    if (!page.sendCdp) throw new Error("Keyboard input requires a CDP session, which is unavailable for this browser tab.");
+    const base: Record<string, unknown> = {
+      key: key.key,
+      code: key.code,
+      windowsVirtualKeyCode: key.windowsVirtualKeyCode,
+      nativeVirtualKeyCode: key.windowsVirtualKeyCode,
+    };
+    if (opts?.modifiers !== undefined) base.modifiers = opts.modifiers;
+    const down: Record<string, unknown> = { type: opts?.text ? "keyDown" : "rawKeyDown", ...base };
+    if (opts) {
+      // Present even when undefined: `press`'s callers (and tests) read them.
+      down.text = opts.text;
+      down.unmodifiedText = opts.text;
+      down.commands = opts.commands;
+    }
+    await page.sendCdp("Input.dispatchKeyEvent", down);
+    await page.sendCdp("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+  }
+
+  /** Moves a focused ARIA slider to `target` with trusted CDP key presses
+   * (the WAI-ARIA slider keyboard contract). Trusted, not synthesized: many
+   * widgets read `keyCode`/`which`, which a constructed KeyboardEvent leaves
+   * at 0, and ignore attribute writes entirely.
+   *
+   * ARIA has no step attribute, so the step is learned and kept current:
+   * two single arrow presses (the first can be a partial step off an
+   * off-grid start, 137 -> 140), and after EVERY batch the step is
+   * re-estimated as |moved| / presses. The remaining distance goes out as
+   * round(|distance| / step) arrow presses, so an overshoot is corrected by
+   * the next batch with the fresh estimate; three batches in a row that get
+   * no closer stop the loop (no oscillation). It succeeds within half an
+   * arrow step of the target, inclusive (a target exactly between two grid
+   * points is as close as the widget can get, and pressing again would only
+   * swing back).
+   *
+   * A long distance (> 20 arrow steps) first tries Home/End when a KNOWN
+   * bound is much closer than the current value (an unstated aria-valuemin/
+   * max is unknown, never a default), then PageUp/PageDown once to measure
+   * their step: if it beats the arrow step, whole pages (floored, never
+   * overshooting) do the bulk and arrows finish.
+   *
+   * A key the widget does not handle falls through to the browser, which
+   * scrolls the page. SLIDER_SCROLL_JS guards against it: a window keydown
+   * listener cancels the default of any such key the widget left un-prevented,
+   * and the scroll position saved once at the start is restored (instantly,
+   * only if it moved) after every batch, for widgets that swallow the key
+   * without preventing it.
+   *
+   * Direction keys are learned too (ArrowRight/Left, else ArrowUp/Down; a
+   * value moving against the intent swaps them, e.g. RTL). Every read also
+   * checks the slider still holds keyboard focus (SLIDER_READ_JS). Document
+   * focus is not required, since Chromium reports none whenever the window
+   * is not OS-focused although CDP keys still arrive: a press that lands
+   * elsewhere shows up as an unchanged value, which stops the drive.
+   *
+   * Bounded by SLIDER_MAX_PRESSES and `deadline` (the command's own absolute
+   * deadline minus a margin), checked before EVERY press: `withCommandTimeout`
+   * abandons but never cancels the work, so an abandoned loop must be unable
+   * to keep pressing keys into the page after the caller was told it timed
+   * out. Once any key was sent the slider may have moved, so every failure
+   * after that reports `moved` and keeps its evidence. */
+  private async driveSlider(
+    page: BrowserPageHandle,
+    frameId: number | null,
+    slider: { min: number | null; max: number | null; target: number },
+    deadline: number,
+  ): Promise<{ value: number } | { error: string; moved: boolean }> {
+    if (!page.sendCdp) {
+      return {
+        error: "Setting a slider requires a CDP session (trusted key input), which is unavailable for this browser tab.",
+        moved: false,
+      };
+    }
+    const { min, max, target } = slider;
+    let presses = 0;
+    let now = NaN;
+    const fail = (error: string) => ({ error, moved: presses > 0 });
+    const stopped = () =>
+      fail(
+        `slider stopped at ${now} (target ${target})` +
+          (presses >= SLIDER_MAX_PRESSES ? " after the press limit" : Date.now() > deadline ? " at the time limit" : ""),
+      );
+
+    const script = (name: "SLIDER_READ_JS" | "SLIDER_SCROLL_JS", args: Record<string, unknown>) =>
+      frameId === null ? this.executeScript(page, name, args) : this.executeScriptInFrame(page, frameId, name, args);
+    const read = async (): Promise<void> => {
+      const r = await script("SLIDER_READ_JS", {});
+      if ("error" in r) throw new Error(String(r.error));
+      if (r.present !== true) throw new Error("The slider disappeared from the page.");
+      if (r.focused !== true) throw new Error("Could not focus the slider, so key presses would not reach it.");
+      if (typeof r.now !== "number") throw new Error("The slider no longer reports a numeric aria-valuenow.");
+      now = r.now;
+    };
+    /** Presses `name` up to `times` times, stopping early at the press cap
+     * or the deadline; returns how many were actually sent. */
+    const press = async (name: string, times: number): Promise<number> => {
+      const key = resolveNamedKey(name);
+      if (!key) throw new Error(`Unsupported key: ${name}`);
+      let sent = 0;
+      while (sent < times && presses < SLIDER_MAX_PRESSES && Date.now() <= deadline) {
+        await this.dispatchKeyPair(page, key);
+        presses++;
+        sent++;
+      }
+      return sent;
+    };
+    /** One batch's read-back: reads aria-valuenow, then puts back any scroll
+     * a key the widget swallowed without preventing still caused. */
+    const settle = async (): Promise<void> => {
+      await read();
+      await script("SLIDER_SCROLL_JS", { op: "restore" });
+    };
+    /** One press + read. True when aria-valuenow changed. */
+    const probe = async (name: string): Promise<boolean> => {
+      const before = now;
+      await press(name, 1);
+      await settle();
+      return now !== before;
+    };
+    let guarded = false;
+    try {
+      await read();
+      if (now === target) return { value: now };
+      // Unhandled keys must not scroll the page (see SLIDER_SCROLL_JS): the
+      // guard stops the default action, and the scroll position saved once
+      // here is restored after every batch for widgets that swallow keys
+      // without preventing them.
+      await script("SLIDER_SCROLL_JS", { op: "guard" });
+      guarded = true;
+      await script("SLIDER_SCROLL_JS", { op: "save" });
+
+      let boundTried = false;
+      const boundKey = target <= (min ?? -Infinity) ? "Home" : target >= (max ?? Infinity) ? "End" : null;
+      if (boundKey) {
+        // Home/End land exactly on a bound, whatever the step. A widget that
+        // ignores them leaves the value alone and the arrows take over.
+        boundTried = true;
+        await probe(boundKey);
+        if (now === target) return { value: now };
+      }
+
+      // Learn the direction keys and the arrow step.
+      let inc = "ArrowRight";
+      let dec = "ArrowLeft";
+      let delta = 0;
+      for (const pair of [
+        ["ArrowRight", "ArrowLeft"],
+        ["ArrowUp", "ArrowDown"],
+      ]) {
+        const wantUp = target > now;
+        const before = now;
+        if (await probe(wantUp ? pair[0] : pair[1])) {
+          delta = Math.abs(now - before);
+          [inc, dec] = now > before === wantUp ? pair : [pair[1], pair[0]];
+          break;
+        }
+        if (presses >= SLIDER_MAX_PRESSES || Date.now() > deadline) break;
+      }
+      if (delta === 0) return stopped();
+      if (Math.abs(target - now) >= delta) {
+        // A second press: the first may have been a partial step from an
+        // off-grid start, the second is a whole one.
+        const before = now;
+        await press(target > now ? inc : dec, 1);
+        await settle();
+        if (now !== before) delta = Math.abs(now - before);
+      }
+
+      let pageDelta: number | undefined; // undefined = untried, 0 = no use
+      let pageInc = "PageUp";
+      let pageDec = "PageDown";
+      let bestError = Math.abs(target - now);
+      let stalls = 0;
+      for (;;) {
+        const remaining = target - now;
+        const distance = Math.abs(remaining);
+        if (distance <= delta / 2) return { value: now };
+        if (presses >= SLIDER_MAX_PRESSES || Date.now() > deadline) return stopped();
+        const up = remaining > 0;
+
+        let key = up ? inc : dec;
+        let count = Math.max(1, Math.round(distance / delta));
+        let isPage = false;
+        if (distance / delta > 20) {
+          if (!boundTried) {
+            boundTried = true;
+            const toMin = min === null ? Infinity : Math.abs(target - min);
+            const toMax = max === null ? Infinity : Math.abs(max - target);
+            if (Math.min(toMin, toMax) < distance / 2) {
+              await probe(toMin <= toMax ? "Home" : "End");
+              continue;
+            }
+          }
+          if (pageDelta === undefined) {
+            // Probe once: does a page key move it, which way, how far?
+            const before = now;
+            if (await probe(up ? pageInc : pageDec)) {
+              pageDelta = Math.abs(now - before);
+              if (now > before !== up) [pageInc, pageDec] = [pageDec, pageInc];
+            } else {
+              pageDelta = 0; // ignored: never used again this drive
+            }
+            continue;
+          }
+          if (pageDelta > delta * 1.5 && Math.floor(distance / pageDelta) >= 1) {
+            // Floored: bulk by pages never overshoots, arrows finish.
+            key = up ? pageInc : pageDec;
+            count = Math.floor(distance / pageDelta);
+            isPage = true;
+          }
+        }
+
+        const before = now;
+        const sent = await press(key, count);
+        await settle();
+        const moved = Math.abs(now - before);
+        if (moved === 0) {
+          if (!isPage) return stopped(); // at a bound or ignoring the key
+          pageDelta = 0;
+        } else if (sent > 0) {
+          // Re-estimate: covers off-grid starts, non-linear scales, page steps.
+          if (isPage) pageDelta = moved / sent;
+          else delta = moved / sent;
+        }
+        const error = Math.abs(target - now);
+        if (error < bestError) {
+          bestError = error;
+          stalls = 0;
+        } else if (++stalls >= 3) {
+          return stopped();
+        }
+      }
+    } catch (err) {
+      return fail(toMessage(err));
+    } finally {
+      // settle() restores only after a successful read; a drive that threw
+      // mid-batch (thumb re-mounted, focus lost) must not leave the page
+      // scrolled by a key the widget stopped without preventing — and
+      // unguard drops the saved position, so restore has to come first.
+      if (guarded) await script("SLIDER_SCROLL_JS", { op: "restore" }).catch(() => undefined);
+      if (guarded) await script("SLIDER_SCROLL_JS", { op: "unguard" }).catch(() => undefined);
+    }
   }
 
   /** Runs CLICK_JS and, if the click actually started a navigation, waits
@@ -1845,25 +2154,7 @@ export class BrowserController {
     const commands = isEditCombo ? resolveEditCommand(descriptor.key, modifiers) : undefined;
     const text = isEditCombo ? undefined : descriptor.text;
     try {
-      await page.sendCdp("Input.dispatchKeyEvent", {
-        type: text ? "keyDown" : "rawKeyDown",
-        modifiers: modBits,
-        windowsVirtualKeyCode: descriptor.windowsVirtualKeyCode,
-        nativeVirtualKeyCode: descriptor.windowsVirtualKeyCode,
-        code: descriptor.code,
-        key: descriptor.key,
-        text,
-        unmodifiedText: text,
-        commands,
-      });
-      await page.sendCdp("Input.dispatchKeyEvent", {
-        type: "keyUp",
-        modifiers: modBits,
-        windowsVirtualKeyCode: descriptor.windowsVirtualKeyCode,
-        nativeVirtualKeyCode: descriptor.windowsVirtualKeyCode,
-        code: descriptor.code,
-        key: descriptor.key,
-      });
+      await this.dispatchKeyPair(page, descriptor, { modifiers: modBits, text, commands });
     } catch (err) {
       navWatcher.dispose();
       return errorResult(`Failed to dispatch key "${keySpec}": ${toMessage(err)}`);
@@ -2557,7 +2848,7 @@ export class BrowserController {
     // still always runs before the action, per the hard constraint.
     const { frameRoute, cursorPoint } = this.resolveFrameRouteWithCursorPoint(index);
 
-    return this.withCommandTimeout(async () => {
+    return this.withCommandTimeout(async (deadlineAt) => {
       if (operation === "CLICK") {
         const previousUrl = page.getURL();
         // Full browser use: same openedTab detection as runClick — an
@@ -2581,7 +2872,7 @@ export class BrowserController {
         const result =
           frameRoute.frameId === null
             ? await this.dispatchClick(page, { index, snapshotId })
-            : await this.frameClickOrType(page, frameRoute.frameId, "CLICK", frameRoute.localIndex, snapshotId);
+            : await this.frameClickOrType(page, frameRoute.frameId, "CLICK", frameRoute.localIndex, snapshotId, deadlineAt);
         if ("error" in result) {
           navWatcher.dispose();
           return result;
@@ -2618,9 +2909,9 @@ export class BrowserController {
         // CLICK above.
         const result =
           frameRoute.frameId === null
-            ? await this.dispatchType(page, { index, snapshotId }, text!)
-            : await this.frameClickOrType(page, frameRoute.frameId, "TYPE_TEXT", frameRoute.localIndex, snapshotId, text);
-        if ("error" in result) return result;
+            ? await this.dispatchType(page, { index, snapshotId }, text!, deadlineAt)
+            : await this.frameClickOrType(page, frameRoute.frameId, "TYPE_TEXT", frameRoute.localIndex, snapshotId, deadlineAt, text);
+        if ("error" in result && !extractSliderPartial(result)) return result;
         const scopedBefore = extractScopedBefore(result);
         const selfDisabled = extractTargetSelfDisabled(result);
         await this.settleShort();
@@ -2714,14 +3005,15 @@ export class BrowserController {
   private async runTypeWithEvidence(
     locateArgs: { target?: string; index?: number; snapshotId?: string },
     text: string,
+    deadlineAt: number,
   ): Promise<BrowserCommandResult> {
     const page = this.target.currentPage();
     if (!page) return errorResult("No browser tab is open — call browse_open first.");
     await this.revealTarget(page, locateArgs);
     await this.moveCursor(page, { action: "type", target: locateArgs.target, index: locateArgs.index, snapshotId: locateArgs.snapshotId });
     const before = await this.captureSignature(page, "before");
-    const result = await this.dispatchType(page, locateArgs, text);
-    if ("error" in result) return result;
+    const result = await this.dispatchType(page, locateArgs, text, deadlineAt);
+    if ("error" in result && !extractSliderPartial(result)) return result;
     const scopedBefore = extractScopedBefore(result);
     const selfDisabled = extractTargetSelfDisabled(result);
     await this.settleShort();
@@ -3020,6 +3312,7 @@ export class BrowserController {
           scopedBefore.valueLength !== scopedAfter.valueLength ||
           scopedBefore.ariaExpanded !== scopedAfter.ariaExpanded ||
           scopedBefore.ariaSelected !== scopedAfter.ariaSelected ||
+          (scopedBefore.ariaValueNow ?? "") !== (scopedAfter.ariaValueNow ?? "") ||
           scopedBefore.checked !== scopedAfter.checked;
       }
       if (scopedChanged) changes.push("target");
@@ -3254,10 +3547,14 @@ export class BrowserController {
   }
 
   private async withCommandTimeout(
-    fn: () => Promise<BrowserCommandResult>,
+    fn: (deadlineAt: number) => Promise<BrowserCommandResult>,
     budgetMs?: number,
   ): Promise<BrowserCommandResult> {
     const ms = budgetMs ?? this.timeoutMs;
+    // Handed to `fn` (not stored on the controller): an abandoned command's
+    // work keeps running after the next command starts, and must only ever
+    // see ITS OWN deadline.
+    const deadlineAt = Date.now() + ms;
     // Review finding 6: both captured *before* fn() runs, not after — a
     // command can itself close the tab it acted on (`tabs({action:"close"})`,
     // or a click whose handler navigates the whole window away and it gets
@@ -3268,7 +3565,7 @@ export class BrowserController {
     const actedPage = this.target.currentPage();
     const pageHandles = await this.listPageHandlesSafe();
     let result: BrowserCommandResult;
-    const work = fn();
+    const work = fn(deadlineAt);
     try {
       result = await withTimeout(work, ms, `Browser command timed out after ${ms}ms.`);
     } catch (err) {
@@ -3384,6 +3681,16 @@ function normalizeNonNegativeNumber(
 function extractTargetSelfDisabled(result: BrowserCommandResult): boolean {
   const raw = result.__targetSelfDisabled;
   delete result.__targetSelfDisabled;
+  return raw === true;
+}
+
+/** A slider drive that failed after moving the slider (see
+ * `completeSliderResult`) marks its error result `__sliderPartial` so the
+ * caller still computes `{ changed, changes }`. Pulled out and deleted in
+ * place like the other internal fields. */
+function extractSliderPartial(result: BrowserCommandResult): boolean {
+  const raw = result.__sliderPartial;
+  delete result.__sliderPartial;
   return raw === true;
 }
 

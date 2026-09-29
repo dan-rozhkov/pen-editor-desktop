@@ -486,8 +486,14 @@ live `value` at all; every other element (a password input included)
 reports `hasValue: true|false` instead, never the content. The original
 rule guarded only `type=password`, so an autofilled card number in a
 `type=text` field, an email, or a phone number left the page in the element
-table under `value`. Two exceptions to "everything else reports `hasValue`": a
-`<select>` also reports its chosen option's text as `value` (the option texts
+table under `value`. Exceptions to "everything else reports `hasValue`": a
+slider reports its position as a bare number in `value` — a native
+`<input type=range>` (its `.value`) and a non-native `role=slider` (only
+`aria-valuenow`, and only when it is a plain number; the free-form
+`aria-valuetext` never leaves the page). Sliders carry no user-entered text,
+and the model needs the position to choose a target. An `<input role=slider>`
+is NOT an ARIA slider here: the input branch and its `autocomplete` guard
+win. A `<select>` also reports its chosen option's text as `value` (the option texts
 already leave the page in `options`; a `Select…` placeholder with an empty
 option value is unset, `hasValue: false`), and a checkbox/radio reports only
 `checked` — its `value` is a submit token (`on`), never user input, and
@@ -607,7 +613,11 @@ doc's "Addendum 2, 2026-09-19"):
 1. **Evidence of effect.** `act` and `perform` now merge an
    `{ changed: boolean, changes: string[] }` pair into every successful
    result (an `{ error }` result is unaffected — no evidence is attached to a
-   failure). `BrowserController.captureSignature` runs a new page script,
+   failure — with one exception: an ARIA-slider `TYPE_TEXT` that fails AFTER
+   its key presses were sent, e.g. `slider stopped at 300 (target 900)`, keeps
+   its `error` and still carries `url`/`title` and `{ changed, changes }`, so
+   the agent learns the value moved instead of retrying blind; the internal
+   `__sliderPartial` marker routes it through the same diff). `BrowserController.captureSignature` runs a new page script,
    `SIGNATURE_JS`, once before the action and once after the existing settle
    wait, and `diffSignatures` compares the two. `changed: false` is a normal,
    reportable answer — a click that landed on a wrapper and did nothing is
@@ -639,7 +649,7 @@ doc's "Addendum 2, 2026-09-19"):
      element they actually found with `data-pen-sig-target` and compute its
      own signature (subtree node count, text hash, `src`, a **value
      length** — never the raw value — `aria-expanded`, `aria-selected`,
-     `checked`) *before* mutating it, inline in the action script itself
+     `aria-valuenow` (a slider thumb's only moving property), `checked`) *before* mutating it, inline in the action script itself
      (returned as an internal `__scopedBefore` field the controller strips
      before the result reaches a caller — see `extractScopedBefore`).
      `SIGNATURE_JS`'s `"after"` phase re-finds the same marked element and

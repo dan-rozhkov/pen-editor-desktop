@@ -200,7 +200,57 @@ const INTERACTIVE_SELECTOR_JS = `
   var INTERACTIVE_SELECTOR =
     "a[href], button, input, select, textarea, [role='button'], [role='link'], " +
     "[role='checkbox'], [role='radio'], [role='tab'], [role='menuitem'], " +
-    "[role='combobox'], [onclick], [contenteditable='true']";
+    "[role='combobox'], [role='slider'], [onclick], [contenteditable='true']";
+`;
+
+/**
+ * The ARIA slider predicate and bounds, shared by LABEL_HELPER_JS (so
+ * SNAPSHOT_JS/FIND_BY_SNAPSHOT_JS list and label it) and TYPE_JS (which
+ * includes it directly; PERFORM_JS gets it through FIND_BY_SNAPSHOT_JS). One
+ * copy: the listing rule and the typing rule must agree on what a slider is.
+ */
+const ARIA_SLIDER_HELPER_JS = `
+  // A non-native slider (role=slider on a div/span thumb: rc-slider, noUiSlider,
+  // Radix, custom widgets). Any native <input> keeps its own path even with
+  // role=slider: a native range is a range, and a text input with that role
+  // still has to pass the input branch's value-privacy rules.
+  function penIsAriaSlider(el) {
+    return (
+      !!el &&
+      el.nodeType === 1 &&
+      (el.tagName || "").toLowerCase() !== "input" &&
+      (el.getAttribute("role") || "").toLowerCase() === "slider"
+    );
+  }
+
+  // Only bounds the page states explicitly: null = unknown. The WAI-ARIA
+  // defaults (0/100) are a spec fiction for a widget that omits them (a
+  // slider with aria-valuenow=500 and no bounds is not clamped to 100), so an
+  // unknown side is neither clamped to nor sent Home/End toward. There is no
+  // "step" attribute in ARIA.
+  function penAriaSliderBounds(el) {
+    var min = parseFloat(el.getAttribute("aria-valuemin"));
+    var max = parseFloat(el.getAttribute("aria-valuemax"));
+    return { min: isNaN(min) ? null : min, max: isNaN(max) ? null : max };
+  }
+
+  // The one place a slider's bounds turn into label text, for native ranges
+  // and ARIA sliders alike, so their fingerprint labels cannot drift:
+  // "0\u20131000", "\u22650", "\u226410" or "" (unknown).
+  function penBoundsText(b) {
+    if (b.min !== null && b.max !== null) return b.min + "\u2013" + b.max;
+    if (b.min !== null) return "\u2265" + b.min;
+    if (b.max !== null) return "\u2264" + b.max;
+    return "";
+  }
+
+  // "slider <bounds>[, step <step>]" — b.step is null/undefined for none.
+  function penSliderSuffix(b) {
+    var text = penBoundsText(b);
+    var suffix = "slider" + (text ? " " + text : "");
+    if (b.step !== null && b.step !== undefined) suffix += ", step " + b.step;
+    return suffix;
+  }
 `;
 
 /**
@@ -212,6 +262,8 @@ const INTERACTIVE_SELECTOR_JS = `
  * reported and silently never match.
  */
 const LABEL_HELPER_JS = `
+  ${ARIA_SLIDER_HELPER_JS}
+
   // Review finding 7: a machine-generated id (React useId's ":r3:", Ember's
   // "ember123", Amazon's "a-autoid-1-announce") makes a worse label than the
   // honest positional fallback — it reads as plausible to a decision model,
@@ -408,13 +460,18 @@ const LABEL_HELPER_JS = `
   // parts are capped well below it.
   function labelOf(el) {
     var own = baseLabelOf(el);
-    if (!penIsRange(el)) return own;
-    var ctx = penGroupContextOf(el);
-    var b = penRangeBounds(el);
-    var stepAttrRaw = (el.getAttribute("step") || "").trim();
-    var suffix = "slider " + b.min + "\u2013" + b.max;
-    if (stepAttrRaw && !b.anyStep && !isNaN(b.step)) suffix += ", step " + b.step;
-    var head = [ctx, own.slice(0, 40)].filter(Boolean).join(": ");
+    var bounds;
+    if (penIsAriaSlider(el)) {
+      bounds = penAriaSliderBounds(el);
+    } else if (penIsRange(el)) {
+      var rb = penRangeBounds(el);
+      var stepAttrRaw = (el.getAttribute("step") || "").trim();
+      bounds = { min: rb.min, max: rb.max, step: stepAttrRaw && !rb.anyStep && !isNaN(rb.step) ? rb.step : null };
+    } else {
+      return own;
+    }
+    var suffix = penSliderSuffix(bounds);
+    var head = [penGroupContextOf(el), own.slice(0, 40)].filter(Boolean).join(": ");
     return head ? head + " (" + suffix + ")" : suffix;
   }
 
@@ -595,6 +652,42 @@ const LOCATE_TARGET_JS = `
 `;
 
 /**
+ * The `data-pen-sig-target` stamp: which element the current action is about.
+ * The stamp is the attribute AND a per-document reference
+ * (`window.__penSigTarget`), so finding it is a property read, never a DOM
+ * walk (Wave 1 speed: no querySelectorAll('*') per command). The reference
+ * also reaches a stamp inside an open shadow root, which the attribute query
+ * alone cannot. Each frame has its own window, hence its own reference.
+ * Interpolated into SCOPED_SIGNATURE_JS and into the small scripts that only
+ * read the stamp.
+ */
+const SIG_TARGET_HELPER_JS = `
+  // Removes the stamp: from the stored element (wherever it lives, shadow
+  // roots included) plus a shallow query for any light-DOM leftover.
+  function penClearSigTargets() {
+    var prev = window.__penSigTarget;
+    if (prev && prev.removeAttribute) prev.removeAttribute("data-pen-sig-target");
+    var stale = document.querySelectorAll("[data-pen-sig-target]");
+    for (var st = 0; st < stale.length; st++) stale[st].removeAttribute("data-pen-sig-target");
+    window.__penSigTarget = null;
+  }
+
+  function penStampSigTarget(el) {
+    penClearSigTargets();
+    el.setAttribute("data-pen-sig-target", "1");
+    window.__penSigTarget = el;
+  }
+
+  // The stamped element: the stored reference while it is still in the
+  // document and still stamped, else a shallow query.
+  function penFindSigTarget() {
+    var ref = window.__penSigTarget;
+    if (ref && ref.isConnected && ref.hasAttribute("data-pen-sig-target")) return ref;
+    return document.querySelector("[data-pen-sig-target]");
+  }
+`;
+
+/**
  * Shared `scopedSignatureOf` body, interpolated into CLICK_JS, TYPE_JS,
  * PERFORM_JS and SIGNATURE_JS — a cheap signature of a *single element's own
  * subtree*, not the whole document.
@@ -617,6 +710,8 @@ const LOCATE_TARGET_JS = `
  * — not whatever else happens to be moving elsewhere on the page.
  */
 const SCOPED_SIGNATURE_JS = `
+  ${SIG_TARGET_HELPER_JS}
+
   function scopedSignatureOf(el) {
     var nodeCount = el.querySelectorAll("*").length + 1;
     var text = (el.textContent || "").replace(/\\s+/g, " ").trim();
@@ -635,6 +730,9 @@ const SCOPED_SIGNATURE_JS = `
       valueLength: "value" in el ? String(el.value || "").length : 0,
       ariaExpanded: el.getAttribute("aria-expanded") || "",
       ariaSelected: el.getAttribute("aria-selected") || "",
+      // A slider thumb has no text/value of its own: aria-valuenow is the
+      // only property that moves when a key press really changed it.
+      ariaValueNow: el.getAttribute("aria-valuenow") || "",
       checked: "checked" in el ? !!el.checked : false,
     };
   }
@@ -1014,7 +1112,8 @@ const TARGET_BUSY_HELPER_JS = `
  */
 export const TARGET_BUSY_JS = `(() => {
   ${TARGET_BUSY_HELPER_JS}
-  var el = document.querySelector("[data-pen-sig-target]");
+  ${SIG_TARGET_HELPER_JS}
+  var el = penFindSigTarget();
   if (!el) return { present: false, busy: false };
   return { present: true, busy: penTargetIsBusy(el) };
 })()`;
@@ -1064,9 +1163,7 @@ export const CLICK_JS = `(() => {
   }
   if (!el) return { error: "No element matched: " + target };
 
-  var staleTargets = document.querySelectorAll("[data-pen-sig-target]");
-  for (var st = 0; st < staleTargets.length; st++) staleTargets[st].removeAttribute("data-pen-sig-target");
-  el.setAttribute("data-pen-sig-target", "1");
+  penStampSigTarget(el);
   var scopedBefore = scopedSignatureOf(el);
   var busyBefore = penTargetIsBusy(el);
 
@@ -1091,18 +1188,55 @@ export const CLICK_JS = `(() => {
  * Returns { value } or { error } (no parsable number).
  */
 const RANGE_TYPE_HELPER_JS = `
+  // The first number in free text: "150", "150 EUR", "1,500" and "1 500"
+  // (thousands separators) -> 1500. null when there is none.
+  function penFirstNumber(raw) {
+    var m = String(raw === undefined || raw === null ? "" : raw).match(
+      /-?\\d+(?:[ ,\\u00a0\\u202f]\\d{3}(?!\\d))*(?:\\.\\d+)?/
+    );
+    if (!m) return null;
+    return parseFloat(m[0].replace(/[ ,\\u00a0\\u202f]/g, ""));
+  }
+
+  // Prepares a typed number for a non-native slider (role=slider). It cannot
+  // be set by writing a value or attribute (widgets keep the value in their
+  // own state), so this only parses/clamps the target, focuses the thumb and
+  // reports where it stands; the controller then drives it with TRUSTED key
+  // presses (see controller.ts driveSlider). null = el is not an ARIA slider.
+  // No step snapping: ARIA exposes none, the loop stops within half a step.
+  function penSliderPrepare(el, raw) {
+    if (!penIsAriaSlider(el)) return null;
+    var bounds = penAriaSliderBounds(el);
+    var min = bounds.min;
+    var max = bounds.max;
+    var v = penFirstNumber(raw);
+    if (v === null) {
+      var boundsText = penBoundsText(bounds);
+      return { error: "a slider" + (boundsText ? " (" + boundsText + ")" : "") + "; type a number." };
+    }
+    if (el.getAttribute("aria-disabled") === "true") return { error: "a disabled slider." };
+    if (isNaN(parseFloat(el.getAttribute("aria-valuenow")))) {
+      return { error: "a slider with no numeric aria-valuenow, so it cannot be set by typing." };
+    }
+    if (min !== null && v < min) v = min;
+    if (max !== null && v > max) v = max;
+    el.scrollIntoView({ block: "center" });
+    el.focus();
+    return { slider: { min: min, max: max, target: v } };
+  }
+
   function penRangeValueFor(el, raw) {
+    // A disabled range (its own attribute or a disabled fieldset) cannot be
+    // moved by a user, so the native setter must not move it either.
+    if (el.matches && el.matches(":disabled")) return { error: "a disabled slider." };
     var min = parseFloat(el.getAttribute("min"));
     var max = parseFloat(el.getAttribute("max"));
     if (isNaN(min)) min = 0;
     if (isNaN(max)) max = 100;
     var stepAttr = (el.getAttribute("step") || "").trim().toLowerCase();
     var step = stepAttr === "" ? 1 : parseFloat(stepAttr);
-    var m = String(raw === undefined || raw === null ? "" : raw).match(
-      /-?\\d+(?:[ ,\\u00a0\\u202f]\\d{3}(?!\\d))*(?:\\.\\d+)?/
-    );
-    if (!m) return { error: "a slider (" + min + "\\u2013" + max + "); type a number." };
-    var v = parseFloat(m[0].replace(/[ ,\\u00a0\\u202f]/g, ""));
+    var v = penFirstNumber(raw);
+    if (v === null) return { error: "a slider (" + min + "\\u2013" + max + "); type a number." };
     if (v < min) v = min;
     if (v > max) v = max;
     if (stepAttr !== "any" && !isNaN(step) && step > 0) {
@@ -1137,6 +1271,7 @@ export const TYPE_JS = `(() => {
   ${FIND_BY_TEXT_JS}
   ${SCOPED_SIGNATURE_JS}
   ${TARGET_BUSY_HELPER_JS}
+  ${ARIA_SLIDER_HELPER_JS}
   ${RANGE_TYPE_HELPER_JS}
 
   // Text first, selector as fallback — see CLICK_JS's comment for why.
@@ -1151,12 +1286,24 @@ export const TYPE_JS = `(() => {
   }
   if (!el) return { error: "No element matched: " + target };
 
-  var staleTargets = document.querySelectorAll("[data-pen-sig-target]");
-  for (var st = 0; st < staleTargets.length; st++) staleTargets[st].removeAttribute("data-pen-sig-target");
-  el.setAttribute("data-pen-sig-target", "1");
+  penStampSigTarget(el);
   var scopedBefore = scopedSignatureOf(el);
   var busyBefore = penTargetIsBusy(el);
 
+  var sliderPrep = penSliderPrepare(el, text);
+  if (sliderPrep) {
+    if (sliderPrep.error) return { error: "Element is " + sliderPrep.error + " Target: " + target };
+    // Nothing is typed here: the controller drives the focused thumb with
+    // trusted key presses and folds the outcome into this result.
+    return {
+      url: location.href,
+      title: document.title,
+      matched: target,
+      __scopedBefore: scopedBefore,
+      __targetSelfDisabled: false,
+      __slider: sliderPrep.slider,
+    };
+  }
   el.scrollIntoView({ block: "center" });
   el.focus();
   var tag = (el.tagName || "").toLowerCase();
@@ -1364,9 +1511,7 @@ export const CLICK_RESOLVE_JS = `(() => {
   var el = located.el;
   if (!el) return { error: "No element matched: " + (args.target || "index " + args.index) };
 
-  var staleTargets = document.querySelectorAll("[data-pen-sig-target]");
-  for (var st = 0; st < staleTargets.length; st++) staleTargets[st].removeAttribute("data-pen-sig-target");
-  el.setAttribute("data-pen-sig-target", "1");
+  penStampSigTarget(el);
 
   var rect, x, y, hitOk;
   function hitTestTarget() {
@@ -1402,6 +1547,9 @@ export const CLICK_RESOLVE_JS = `(() => {
   // (TYPE_JS/PERFORM_JS parse and snap the number): a trusted click on its
   // hidden 1x1 box plus Input.insertText would type into nothing, so it is
   // reported non-editable here to route dispatchType straight to that path.
+  // A role=slider div is non-editable for the same reason, and that legacy
+  // path is where it is prepared (penSliderPrepare) before the controller
+  // drives it with trusted arrow keys.
   var editable =
     (tagForEditable === "input" && (el.getAttribute("type") || "").toLowerCase() !== "range") ||
     tagForEditable === "textarea" ||
@@ -1474,7 +1622,8 @@ export const REVEAL_TARGET_JS = `(() => {
  * same "Element is not editable" error TYPE_JS/PERFORM_JS already report.
  */
 export const SELECT_ALL_CONTENT_JS = `(() => {
-  var el = document.querySelector("[data-pen-sig-target]");
+  ${SIG_TARGET_HELPER_JS}
+  var el = penFindSigTarget();
   if (!el) return { error: "Target element not found for typing." };
   if (typeof el.focus === "function") el.focus();
   var tag = (el.tagName || "").toLowerCase();
@@ -1513,7 +1662,8 @@ export const SELECT_ALL_CONTENT_JS = `(() => {
 export const READ_TARGET_VALUE_JS = `(() => {
   var args = ${ARGS_MARKER};
   var expected = args.text;
-  var el = document.querySelector("[data-pen-sig-target]");
+  ${SIG_TARGET_HELPER_JS}
+  var el = penFindSigTarget();
   if (!el) return { matches: false, present: false };
   var tag = (el.tagName || "").toLowerCase();
   var actual;
@@ -1521,6 +1671,105 @@ export const READ_TARGET_VALUE_JS = `(() => {
   else if (el.isContentEditable) actual = el.textContent;
   else actual = null;
   return { matches: actual === expected, present: true };
+})()`;
+
+/**
+ * Reads back a non-native slider that TYPE_JS/PERFORM_JS stamped
+ * `data-pen-sig-target`, between the controller's trusted key presses: its
+ * current aria-valuenow and whether keyboard focus is still on it (keys go
+ * to the focused element, so a press sent after focus moved would land on
+ * something else). It adopts ONLY the stamped element (and it must still be
+ * an ARIA slider): a framework that re-mounts the thumb mid-drive replaces
+ * the stamped node, and the read then reports `present: false`, which ends
+ * the drive with a "disappeared" error that still carries evidence. There is
+ * no relocation. Document focus (`document.hasFocus()`) is deliberately not
+ * required: Chromium reports false whenever the window is not OS-focused
+ * although CDP keys still reach the focused element; a press that lands
+ * elsewhere shows up as "value did not change" and stops the drive.
+ */
+export const SLIDER_READ_JS = `(() => {
+  ${SIG_TARGET_HELPER_JS}
+  ${ARIA_SLIDER_HELPER_JS}
+  function deepActive() {
+    var a = document.activeElement;
+    while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+    return a;
+  }
+  var el = penFindSigTarget();
+  if (!el || !penIsAriaSlider(el)) return { present: false };
+  function hasKeyFocus() {
+    var a = deepActive();
+    return !!a && (a === el || el.contains(a));
+  }
+  var focused = hasKeyFocus();
+  if (!focused) {
+    try {
+      el.focus();
+    } catch (e) {}
+    focused = hasKeyFocus();
+  }
+  var now = parseFloat(el.getAttribute("aria-valuenow"));
+  return { present: true, now: isNaN(now) ? null : now, focused: focused };
+})()`;
+
+/**
+ * Scroll safety for the slider key presses: an unhandled Home/End/PageUp/
+ * PageDown/arrow falls through to the browser and scrolls the page.
+ * - `guard` / `unguard`: install/remove a last-in-bubble window keydown
+ *   listener that cancels the default action of such a key the widget left
+ *   un-prevented, so the page never starts scrolling.
+ * - `save` (once, at the start of the drive) / `restore` (after each batch):
+ *   records the window and the slider's scrollable ancestors and puts them
+ *   back, instantly, only if they moved. That covers a widget that stops
+ *   propagation without preventing the default. State lives on window.
+ */
+export const SLIDER_SCROLL_JS = `(() => {
+  var args = ${ARGS_MARKER};
+  ${SIG_TARGET_HELPER_JS}
+  if (args.op === "guard") {
+    if (!window.__penSliderKeyGuard) {
+      window.__penSliderKeyGuard = function (e) {
+        if (!e.defaultPrevented && /^(Home|End|PageUp|PageDown|Arrow(Up|Down|Left|Right))$/.test(e.key)) e.preventDefault();
+      };
+      window.addEventListener("keydown", window.__penSliderKeyGuard);
+    }
+    return { guarded: true };
+  }
+  if (args.op === "unguard") {
+    if (window.__penSliderKeyGuard) window.removeEventListener("keydown", window.__penSliderKeyGuard);
+    window.__penSliderKeyGuard = null;
+    window.__penSliderScroll = null;
+    return { guarded: false };
+  }
+  if (args.op === "save") {
+    var saved = { x: window.scrollX, y: window.scrollY, anc: [] };
+    var node = penFindSigTarget();
+    for (var depth = 0; node && depth < 40; depth++) {
+      var parent = node.parentNode;
+      if (parent && parent.nodeType === 11 && parent.host) parent = parent.host;
+      node = parent && parent.nodeType === 1 ? parent : null;
+      if (node && (node.scrollTop || node.scrollLeft || node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth)) {
+        saved.anc.push({ el: node, top: node.scrollTop, left: node.scrollLeft });
+      }
+    }
+    window.__penSliderScroll = saved;
+    return { saved: true };
+  }
+  var s = window.__penSliderScroll;
+  if (!s) return { restored: false };
+  var restored = false;
+  if (window.scrollX !== s.x || window.scrollY !== s.y) {
+    window.scrollTo({ left: s.x, top: s.y, behavior: "instant" });
+    restored = true;
+  }
+  for (var i = 0; i < s.anc.length; i++) {
+    var a = s.anc[i];
+    if (a.el.scrollTop !== a.top || a.el.scrollLeft !== a.left) {
+      a.el.scrollTo({ left: a.left, top: a.top, behavior: "instant" });
+      restored = true;
+    }
+  }
+  return { restored: restored };
 })()`;
 
 /**
@@ -1666,6 +1915,8 @@ export const SNAPSHOT_JS = `(() => {
   }
 
   function opsFor(el, tag) {
+    // ARIA slider: typed as a number, driven by trusted arrow keys.
+    if (penIsAriaSlider(el)) return ["TYPE_TEXT"];
     if (tag === "select") return ["SELECT"];
     if (tag === "textarea") return ["TYPE_TEXT"];
     if (tag === "input") {
@@ -1692,6 +1943,12 @@ export const SNAPSHOT_JS = `(() => {
   var found = [];
   for (var i = 0; i < candidates.length; i++) {
     var el = candidates[i];
+    // A disabled ARIA slider ignores keys, so offering it only invites a
+    // TYPE_TEXT that cannot work.
+    if (penIsAriaSlider(el) && el.getAttribute("aria-disabled") === "true") continue;
+    // Likewise a native range the user cannot move (own attribute or a
+    // disabled fieldset: :disabled matches both).
+    if (penIsRange(el) && el.matches(":disabled")) continue;
     var box = el;
     if (!isVisible(el)) {
       box = penRangeProxy(el);
@@ -1719,7 +1976,12 @@ export const SNAPSHOT_JS = `(() => {
       var checkType = (el.getAttribute("type") || "").toLowerCase();
       if (checkType === "checkbox" || checkType === "radio") entry.checked = !!el.checked;
     }
-    if (tag === "select") {
+    if (penIsAriaSlider(el)) {
+      // Where the slider sits now, as a bare number only: aria-valuetext is
+      // free-form page text, and never leaves the page here.
+      var sliderNow = (el.getAttribute("aria-valuenow") || "").trim();
+      if (/^-?\\d+(?:\\.\\d+)?$/.test(sliderNow)) entry.value = sliderNow;
+    } else if (tag === "select") {
       // Addendum D: options capped at 100 entries, each truncated, in the
       // page script itself — the payload must be valid by construction, not
       // rely on the backend to reject an oversized country dropdown.
@@ -2182,9 +2444,7 @@ export const PERFORM_JS = `(() => {
     return { error: "No element at index " + index + " for this snapshot (stale or removed)." };
   }
 
-  var staleTargets = document.querySelectorAll("[data-pen-sig-target]");
-  for (var st = 0; st < staleTargets.length; st++) staleTargets[st].removeAttribute("data-pen-sig-target");
-  el.setAttribute("data-pen-sig-target", "1");
+  penStampSigTarget(el);
   var scopedBefore = scopedSignatureOf(el);
   var busyBefore = penTargetIsBusy(el);
   function penResult() {
@@ -2205,6 +2465,15 @@ export const PERFORM_JS = `(() => {
   }
 
   if (operation === "TYPE_TEXT") {
+    var sliderPrep = penSliderPrepare(el, text);
+    if (sliderPrep) {
+      if (sliderPrep.error) return { error: "Element at index " + index + " is " + sliderPrep.error };
+      // See TYPE_JS: the controller finishes the job with trusted keys.
+      var sliderResult = penResult();
+      sliderResult.__slider = sliderPrep.slider;
+      sliderResult.__targetSelfDisabled = false;
+      return sliderResult;
+    }
     el.scrollIntoView({ block: "center" });
     el.focus();
     var tag = (el.tagName || "").toLowerCase();
@@ -2304,8 +2573,7 @@ export const SIGNATURE_JS = `(() => {
   if (phase === "before") {
     var staleMain = document.querySelectorAll("[data-pen-sig-mainimg]");
     for (var sm = 0; sm < staleMain.length; sm++) staleMain[sm].removeAttribute("data-pen-sig-mainimg");
-    var staleTarget = document.querySelectorAll("[data-pen-sig-target]");
-    for (var stg = 0; stg < staleTarget.length; stg++) staleTarget[stg].removeAttribute("data-pen-sig-target");
+    penClearSigTargets();
   }
 
   // Wave 1 speed (2026-09-24 browse-speed contract, "cheaper evidence"): the
@@ -2589,7 +2857,7 @@ export const SIGNATURE_JS = `(() => {
   };
 
   if (phase === "after") {
-    var targetEl = document.querySelector("[data-pen-sig-target]");
+    var targetEl = penFindSigTarget();
     result.scopedAfter = targetEl ? scopedSignatureOf(targetEl) : null;
     // Review finding 3: the observer itself is already disconnected above,
     // but the state object it was accumulating into (domChanged/

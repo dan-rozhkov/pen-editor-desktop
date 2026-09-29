@@ -44,6 +44,7 @@ let reachBannerUrl: string;
 let wave3FrameUrl: string;
 let botCheckUrl: string;
 let rangeSliderUrl: string;
+let ariaSliderUrl: string;
 // Wave 3 reliability item 2: a SECOND http server on a different port,
 // bound to "localhost" rather than "127.0.0.1" (the main server's own
 // bind), so the two are genuinely different origins/sites — a real
@@ -908,6 +909,86 @@ read as filled. -->
 </script>`);
       return;
     }
+    if (req.url && req.url.startsWith("/aria-slider")) {
+      // Non-native sliders (role=slider on a focusable div) that keep their
+      // value in script state, the way custom widgets do: setting the
+      // attribute does nothing, only a keydown moves them (step 25, Home/End,
+      // clamped). "Minimum" reads e.key; "Maximum" reads ONLY e.keyCode, which
+      // a constructed KeyboardEvent leaves at 0, so it proves the presses are
+      // trusted CDP events. "Fine step" (step 1) makes the press cap bite,
+      // "Stuck" ignores keys, "Locked" is aria-disabled and must be unlisted.
+      res.end(`<!doctype html>
+<title>ARIA Slider</title>
+<h1 id="ready">aria-slider-ready</h1>
+<fieldset>
+  <legend>Price range</legend>
+  <div class="track" style="position:relative;width:300px;height:32px">
+    <div id="s-min" role="slider" tabindex="0" aria-label="Minimum" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="100"
+      style="position:absolute;left:0;top:8px;width:16px;height:16px;border-radius:8px;background:#06c"></div>
+    <div id="s-max" role="slider" tabindex="0" aria-label="Maximum" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="900"
+      style="position:absolute;left:40px;top:8px;width:16px;height:16px;border-radius:8px;background:#06c"></div>
+  </div>
+</fieldset>
+<div style="position:relative;height:60px">
+  <div id="s-fine" role="slider" tabindex="0" aria-label="Fine step" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="0"
+    style="position:absolute;left:0;top:8px;width:16px;height:16px;border-radius:8px;background:#06c"></div>
+  <div id="s-nopage" role="slider" tabindex="0" aria-label="No page keys" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="0"
+    style="position:absolute;left:30px;top:8px;width:16px;height:16px;border-radius:8px;background:#06c"></div>
+  <div id="s-offgrid" role="slider" tabindex="0" aria-label="Off grid" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="137"
+    style="position:absolute;left:60px;top:8px;width:16px;height:16px;border-radius:8px;background:#06c"></div>
+ <div id="s-free" role="slider" tabindex="0" aria-label="Free" aria-valuenow="500"
+    style="position:absolute;left:150px;top:8px;width:16px;height:16px;border-radius:8px;background:#06c"></div>
+  <div id="s-arrows" role="slider" tabindex="0" aria-label="Arrows only" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="900"
+    style="position:absolute;left:180px;top:8px;width:16px;height:16px;border-radius:8px;background:#06c"></div>
+  <div id="s-stuck" role="slider" tabindex="0" aria-label="Stuck" aria-valuemin="0" aria-valuemax="100000" aria-valuenow="500"
+    aria-valuetext="five hundred euros" style="position:absolute;left:90px;top:8px;width:16px;height:16px;border-radius:8px;background:#c60"></div>
+  <div id="s-locked" role="slider" tabindex="0" aria-disabled="true" aria-label="Locked" aria-valuemin="0" aria-valuemax="10" aria-valuenow="5"
+    style="position:absolute;left:120px;top:8px;width:16px;height:16px;border-radius:8px;background:#999"></div>
+</div>
+<input id="r-disabled" type="range" aria-label="Disabled slider" min="0" max="100" value="30" disabled>
+<fieldset disabled><input id="r-fs-disabled" type="range" aria-label="Fieldset disabled slider" min="0" max="100" value="40"></fieldset>
+<!-- A text input that merely carries role=slider: the input branch's value
+     privacy (cc-* autocomplete) must win over the slider rules. -->
+<input id="r-card" type="text" role="slider" autocomplete="cc-number" aria-label="Card slider" value="4111111111111111">
+<div id="aria-status">none</div>
+<div style="height:4000px"></div>
+<script>
+  window.__keydowns = 0;
+  var byKey = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1, Home: 'min', End: 'max' };
+  var byCode = { 39: 1, 38: 1, 37: -1, 40: -1, 36: 'min', 35: 'max' };
+  // pageStep: PageUp/PageDown move by that much (0 = widget has no page keys).
+  // snap: arrows land on the step grid (off-grid start 137 -> 140, not 147).
+  function bind(id, step, useKeyCode, pageStep, snap, arrowsOnly) {
+    var el = document.getElementById(id);
+    el.addEventListener('keydown', function (e) {
+      window.__keydowns++;
+      var act = useKeyCode ? byCode[e.keyCode] : byKey[e.key];
+      if (arrowsOnly && typeof act === 'string') act = undefined;
+      if (act === undefined && pageStep) act = { PageUp: pageStep, PageDown: -pageStep }[e.key];
+      if (act === undefined) return;
+      // A bound the widget does not declare is unbounded (Infinity).
+      var min = el.hasAttribute('aria-valuemin') ? +el.getAttribute('aria-valuemin') : -Infinity;
+      var max = el.hasAttribute('aria-valuemax') ? +el.getAttribute('aria-valuemax') : Infinity;
+      var v = +el.getAttribute('aria-valuenow');
+      var next = v + act * (Math.abs(act) === 1 ? step : 1);
+      if (snap && Math.abs(act) === 1) next = act > 0 ? (Math.floor(v / step) + 1) * step : (Math.ceil(v / step) - 1) * step;
+      v = act === 'min' ? min : act === 'max' ? max : Math.min(max, Math.max(min, next));
+      el.setAttribute('aria-valuenow', String(v));
+      document.getElementById('aria-status').textContent = el.getAttribute('aria-label') + '=' + v;
+      e.preventDefault();
+    });
+  }
+  bind('s-min', 25, false, 0, false);
+  bind('s-max', 25, true, 0, false);
+  bind('s-fine', 1, false, 100, false);
+  bind('s-nopage', 1, false, 0, false);
+  bind('s-offgrid', 10, false, 0, true);
+  bind('s-free', 10, false, 0, false, true);
+  bind('s-arrows', 5, false, 0, false, true);
+  document.getElementById('s-stuck').addEventListener('keydown', function () { window.__keydowns++; });
+</script>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/botcheck")) {
       // Wave 3 reliability item 4: title + body text matching the botCheck
       // heuristic's regex.
@@ -980,6 +1061,7 @@ read as filled. -->
   wave3FrameUrl = `${baseUrl}/wave3-frame`;
   botCheckUrl = `${baseUrl}/botcheck`;
   rangeSliderUrl = `${baseUrl}/range-slider`;
+  ariaSliderUrl = `${baseUrl}/aria-slider`;
 });
 
 test.afterAll(async () => {
@@ -3752,6 +3834,163 @@ test("browser snapshot/perform: a visually hidden native range input is listed w
     const bad = await type("cheap");
     expect(bad.error).toContain("is a slider (20\u2013400); type a number.");
     expect(await maxValue()).toBe("400");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot/perform: ARIA sliders are listed with their group context and set by typing a number via trusted arrow keys", async () => {
+  const { app, editorPage, page } = await openReachFixture(ariaSliderUrl, "aria-slider-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(snap.elements.some((e) => e.label.includes("Locked"))).toBe(false);
+    const min = snap.elements.find((e) => e.label.includes("Minimum"));
+    const max = snap.elements.find((e) => e.label.includes("Maximum"));
+    expect(min?.label).toBe("Price range: Minimum (slider 0\u20131000)");
+    expect(max?.label).toBe("Price range: Maximum (slider 0\u20131000)");
+    expect(max?.ops).toEqual(["TYPE_TEXT"]);
+    expect(max?.value).toBe("900");
+    expect(min?.value).toBe("100");
+    const fine = snap.elements.find((e) => e.label.includes("Fine step"));
+    const noPage = snap.elements.find((e) => e.label.includes("No page keys"));
+    const offGrid = snap.elements.find((e) => e.label.includes("Off grid"));
+    const stuck = snap.elements.find((e) => e.label.includes("Stuck"));
+    expect(fine?.label).toBe("Fine step (slider 0\u20131000)");
+    expect(stuck).toBeTruthy();
+    // Value privacy: only the numeric aria-valuenow, never aria-valuetext.
+    expect(stuck?.value).toBe("500");
+    // Disabled native ranges (own attribute / disabled fieldset) are not offered.
+    expect(snap.elements.some((e) => e.label.includes("Disabled slider"))).toBe(false);
+    expect(snap.elements.some((e) => e.label.includes("Fieldset disabled"))).toBe(false);
+    // A text input with role=slider keeps the input branch's privacy rules.
+    const card = snap.elements.find((e) => e.label.includes("Card slider"));
+    expect(card).toBeTruthy();
+    expect(card?.value).toBeUndefined();
+
+    const type = async (el: { index: number } | undefined, text: string) =>
+      (await callBrowser(editorPage, "perform", {
+        snapshotId: snap.snapshotId,
+        index: el!.index,
+        operation: "TYPE_TEXT",
+        text,
+      })) as { error?: string; changed?: boolean; sliderValue?: number };
+    const now = (id: string) => page.evaluate((i) => Number(document.getElementById(i)!.getAttribute("aria-valuenow")), id);
+
+    // e.key variant, moving up.
+    const r1 = await type(min, "300");
+    expect(r1.error).toBeUndefined();
+    expect(await now("s-min")).toBe(300);
+    expect(r1.sliderValue).toBe(300);
+    expect(r1.changed).toBe(true);
+    await expect(page.locator("#aria-status")).toHaveText("Minimum=300");
+
+    // keyCode-only variant, moving down: constructed events would not work.
+    const r2 = await type(max, "300");
+    expect(r2.error).toBeUndefined();
+    expect(await now("s-max")).toBe(300);
+
+    // A formatted number equal to the max goes through End.
+    expect((await type(max, "\u20ac 1,000")).error).toBeUndefined();
+    expect(await now("s-max")).toBe(1000);
+
+    // Not on the 25 grid: lands on the nearest reachable value.
+    expect((await type(max, "310")).error).toBeUndefined();
+    expect(Math.abs((await now("s-max")) - 310)).toBeLessThanOrEqual(12.5);
+
+    const bad = await type(max, "cheap");
+    expect(bad.error).toContain("is a slider (0\u20131000); type a number.");
+
+    // Off-grid start (137, step 10): 137 -> 140 is a partial first step.
+    const off = await type(offGrid, "300");
+    expect(off.error).toBeUndefined();
+    expect(await now("s-offgrid")).toBe(300);
+
+    // A target exactly between two grid points (300 -> 305, step 10) is as
+    // close as it gets: success, not a swing back and forth.
+    const half = await type(offGrid, "305");
+    expect(half.error).toBeUndefined();
+    expect(Math.abs((await now("s-offgrid")) - 305)).toBeLessThanOrEqual(5);
+
+    // No aria-valuemin/max: nothing is clamped to the 0/100 spec defaults.
+    const free = snap.elements.find((e) => e.label.includes("Free"));
+    expect(free?.label).toBe("Free (slider)");
+    expect((await type(free, "700")).error).toBeUndefined();
+    expect(await now("s-free")).toBe(700);
+
+    // A widget that handles only arrows: the probes of Home/End/PageUp/
+    // PageDown it ignores must not leave the page scrolled.
+    const arrows = snap.elements.find((e) => e.label.includes("Arrows only"));
+    expect((await type(arrows, "400")).error).toBeUndefined();
+    expect(await now("s-arrows")).toBe(400);
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+
+    // Step 1 over 900 succeeds through PageUp/PageDown (+-100) plus arrows.
+    await page.evaluate(() => ((window as unknown as { __keydowns: number }).__keydowns = 0));
+    const paged = await type(fine, "900");
+    expect(paged.error).toBeUndefined();
+    expect(await now("s-fine")).toBe(900);
+    expect(await page.evaluate(() => (window as unknown as { __keydowns: number }).__keydowns)).toBeLessThan(300);
+
+    // The press cap still holds (and errors) when the widget has no page keys
+    // -- and the error still reports that the value moved.
+    await page.evaluate(() => ((window as unknown as { __keydowns: number }).__keydowns = 0));
+    const capped = await type(noPage, "500");
+    expect(capped.error).toMatch(/^slider stopped at \d+ \(target 500\) after the press limit/);
+    expect(capped.changed).toBe(true);
+    const presses = await page.evaluate(() => (window as unknown as { __keydowns: number }).__keydowns);
+    expect(presses).toBeLessThanOrEqual(300);
+    expect(presses).toBeGreaterThan(0);
+
+    // A native range disabled by its own attribute cannot be typed into.
+    const disabledType = (await callBrowser(editorPage, "act", {
+      action: "type",
+      target: "#r-disabled",
+      text: "80",
+    })) as { error?: string };
+    expect(disabledType.error).toContain("a disabled slider.");
+    expect(await page.evaluate(() => (document.getElementById("r-disabled") as HTMLInputElement).value)).toBe("30");
+
+    // A slider that ignores keys is reported, not looped on.
+    await page.evaluate(() => ((window as unknown as { __keydowns: number }).__keydowns = 0));
+    const dead = await type(stuck, "700");
+    expect(dead.error).toBe("slider stopped at 500 (target 700)");
+    expect(await page.evaluate(() => (window as unknown as { __keydowns: number }).__keydowns)).toBeLessThanOrEqual(4);
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser perform: an ARIA slider is still driven while the agent's browser tab is hidden (user is in the editor tab)", async () => {
+  const { app, editorPage, page } = await openReachFixture(ariaSliderUrl, "aria-slider-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const min = snap.elements.find((e) => e.label.includes("Minimum"));
+    // What TabManager.setActive does to a tab the user switched away from.
+    // (This shell keeps a hidden tab's document reporting focus, so an
+    // unfocused window itself can't be simulated here; the top-level path
+    // must not depend on document.hasFocus() either way.)
+    const hidden = await app.evaluate(({ BaseWindow }) => {
+      let n = 0;
+      for (const w of BaseWindow.getAllWindows()) {
+        for (const c of w.contentView.children) {
+          const wc = (c as unknown as { webContents?: Electron.WebContents }).webContents;
+          if (wc && wc.getURL().includes("aria-slider")) {
+            (c as unknown as { setVisible(v: boolean): void }).setVisible(false);
+            n++;
+          }
+        }
+      }
+      return n;
+    });
+    expect(hidden).toBe(1);
+    const res = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: min!.index,
+      operation: "TYPE_TEXT",
+      text: "300",
+    })) as { error?: string };
+    expect(res.error).toBeUndefined();
+    expect(await page.evaluate(() => Number(document.getElementById("s-min")!.getAttribute("aria-valuenow")))).toBe(300);
   } finally {
     await app.close().catch(() => {});
   }
