@@ -477,8 +477,15 @@ change in `pen-editor-backend`/`pen-editor`. `snapshot` runs `SNAPSHOT_JS`
 (a port of jev-ultrafast's `snapshot.js` concepts, credited in
 `pageScripts.ts`'s header) and returns an indexed table of visible,
 interactive elements (tag, role, label, ops, options, capped at
-`MAX_SNAPSHOT_ELEMENTS = 120`, nearest-to-viewport first) plus a freshly
-minted `snapshotId`. Addendum D governs what an element may report as
+`MAX_SNAPSHOT_ELEMENTS = 120`; what survives the cap is chosen in-viewport
+first, then by distance from the viewport edge, and the table itself is listed
+in reading order — top to bottom, left to right; ranking by distance from the
+viewport *centre* dropped the top rows of a dense page like Hacker News) plus a
+freshly minted `snapshotId`. Custom listbox/menu/date-picker controls are
+candidates too (`role=option|menuitemradio|menuitemcheckbox|switch|treeitem`,
+and a `gridcell` only when focusable or selectable); an `aria-disabled` option
+or day is skipped, and ARIA state (`aria-checked`, or `aria-selected` for
+option/gridcell/tab/treeitem) is reported as `checked`. Addendum D governs what an element may report as
 `value`: only a non-password `input[type=text]`, `input[type=search]`, or
 `textarea` — truncated to 100 chars, and only when `autocomplete` isn't one
 of `cc-*`, `one-time-code`, `current-password`, `new-password` — reports its

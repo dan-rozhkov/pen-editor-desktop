@@ -47,6 +47,8 @@ let rangeSliderUrl: string;
 let ariaSliderUrl: string;
 let ariaCardsUrl: string;
 let ariaHeaderUrl: string;
+let longListUrl: string;
+let ariaListboxUrl: string;
 // Wave 3 reliability item 2: a SECOND http server on a different port,
 // bound to "localhost" rather than "127.0.0.1" (the main server's own
 // bind), so the two are genuinely different origins/sites — a real
@@ -1037,6 +1039,71 @@ read as filled. -->
 <main><div role="slider" tabindex="0" aria-valuemin="0" aria-valuemax="100" aria-valuenow="30" style="width:200px;height:16px;border:1px solid #06c"></div></main>`);
       return;
     }
+    if (req.url && req.url.startsWith("/long-list")) {
+      // Hacker News shape: 150 dense 20px rows of 6 links each, far more
+      // than the 120 cap inside the viewport alone. The table used to keep
+      // the 120 nearest the viewport CENTRE, which dropped the top rows —
+      // the first thing a user sees — and listed them out of page order.
+      const rows = Array.from(
+        { length: 150 },
+        (_, r) =>
+          `<div style="height:20px;white-space:nowrap">` +
+          Array.from({ length: 6 }, (_, c) => `<a href="#r${r}c${c}">Row ${r} link ${c}</a>`).join(" ") +
+          `</div>`,
+      ).join("\n");
+      res.end(`<!doctype html><title>Long List</title><style>body{margin:0}h1{margin:0;height:20px;font-size:14px}</style>
+<h1 id="ready">long-list-ready</h1>${rows}`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/aria-listbox")) {
+      // Google Flights shape: a custom combobox whose options are
+      // role=option items (not a native <select>), plus a date grid of
+      // role=gridcell days (past days aria-disabled) and a role=switch.
+      res.end(`<!doctype html>
+<title>ARIA Listbox</title>
+<h1 id="ready">aria-listbox-ready</h1>
+<div id="trip" role="combobox" tabindex="0" aria-expanded="false" aria-controls="trip-list" aria-label="Trip type"
+  style="display:inline-block;padding:6px;border:1px solid #999">Round trip</div>
+<ul id="trip-list" role="listbox" style="display:none;list-style:none;margin:0;padding:0;border:1px solid #999;width:160px">
+  <li role="option" aria-selected="true" style="padding:6px">Round trip</li>
+  <li role="option" aria-selected="false" style="padding:6px">One way</li>
+  <li role="option" aria-selected="false" aria-disabled="true" style="padding:6px">Multi-city</li>
+</ul>
+<div role="switch" tabindex="0" aria-checked="true" aria-label="Nonstop only" style="width:40px;height:20px;border:1px solid #999"></div>
+<div role="grid" aria-label="November 2026" style="display:grid;grid-template-columns:repeat(7,32px)">
+  ${Array.from({ length: 14 }, (_, i) => {
+    const d = i + 1;
+    return `<div role="gridcell" tabindex="-1" aria-selected="false"${d < 10 ? ' aria-disabled="true"' : ""} aria-label="November ${d}, 2026" style="height:24px">${d}</div>`;
+  }).join("")}
+</div>
+<p id="chosen-date">none</p>
+<script>
+  var trip = document.getElementById('trip');
+  var list = document.getElementById('trip-list');
+  trip.addEventListener('click', function () {
+    var open = list.style.display === 'none';
+    list.style.display = open ? 'block' : 'none';
+    trip.setAttribute('aria-expanded', String(open));
+  });
+  list.querySelectorAll('[role=option]').forEach(function (o) {
+    o.addEventListener('click', function () {
+      if (o.getAttribute('aria-disabled') === 'true') return;
+      list.querySelectorAll('[role=option]').forEach(function (x) { x.setAttribute('aria-selected', String(x === o)); });
+      trip.textContent = o.textContent;
+      list.style.display = 'none';
+      trip.setAttribute('aria-expanded', 'false');
+    });
+  });
+  document.querySelectorAll('[role=gridcell]').forEach(function (c) {
+    c.addEventListener('click', function () {
+      if (c.getAttribute('aria-disabled') === 'true') return;
+      c.setAttribute('aria-selected', 'true');
+      document.getElementById('chosen-date').textContent = c.getAttribute('aria-label');
+    });
+  });
+</script>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/botcheck")) {
       // Wave 3 reliability item 4: title + body text matching the botCheck
       // heuristic's regex.
@@ -1112,6 +1179,8 @@ read as filled. -->
   ariaSliderUrl = `${baseUrl}/aria-slider`;
   ariaCardsUrl = `${baseUrl}/aria-cards`;
   ariaHeaderUrl = `${baseUrl}/aria-header`;
+  longListUrl = `${baseUrl}/long-list`;
+  ariaListboxUrl = `${baseUrl}/aria-listbox`;
 });
 
 test.afterAll(async () => {
@@ -4114,6 +4183,80 @@ test("browser snapshot: a lone bare ARIA slider under a site header/nav does not
     expect(sliders).toHaveLength(1);
     expect(sliders[0].label).not.toMatch(/Acme|Pricing|Home/);
     expect(sliders[0].label).toBe("slider 0\u2013100");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: a page denser than the cap keeps the top of the viewport and lists it in reading order", async () => {
+  const { app, editorPage } = await openReachFixture(longListUrl, "long-list-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(snap.elements.length).toBe(120);
+    const pos = snap.elements.map((e) => {
+      const m = /^Row (\d+) link (\d+)$/.exec(e.label);
+      expect(m, e.label).not.toBeNull();
+      return Number(m![1]) * 10 + Number(m![2]);
+    });
+    // The first row on the page is the first thing in the table...
+    expect(pos[0]).toBe(0);
+    // ...and the table follows the page: row by row, left to right.
+    expect(pos).toEqual([...pos].sort((a, b) => a - b));
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: custom listbox options, switches and date-grid days are listed with their state and clickable", async () => {
+  const { app, editorPage, page } = await openReachFixture(ariaListboxUrl, "aria-listbox-ready");
+  try {
+    const closed = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const combo = closed.elements.find((e) => e.role === "combobox");
+    expect(combo).toBeTruthy();
+    // Options of a closed list are hidden and never offered.
+    expect(closed.elements.filter((e) => e.role === "option")).toHaveLength(0);
+    const sw = closed.elements.find((e) => e.role === "switch");
+    expect(sw?.checked).toBe(true);
+    // Only the selectable days: past (aria-disabled) days are not offered.
+    const days = closed.elements.filter((e) => e.role === "gridcell");
+    expect(days.map((d) => d.label)).toEqual(
+      Array.from({ length: 5 }, (_, i) => `November ${i + 10}, 2026`),
+    );
+    expect(days.every((d) => d.checked === false && d.ops.includes("CLICK"))).toBe(true);
+
+    const opened = (await callBrowser(editorPage, "perform", {
+      snapshotId: closed.snapshotId,
+      index: combo!.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(opened.error).toBeUndefined();
+
+    const open = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const options = open.elements.filter((e) => e.role === "option");
+    expect(options.map((o) => [o.label, o.checked])).toEqual([
+      ["Round trip", true],
+      ["One way", false],
+    ]);
+    const oneWay = options.find((o) => o.label === "One way")!;
+    expect(oneWay.ops).toEqual(["CLICK"]);
+    const picked = (await callBrowser(editorPage, "perform", {
+      snapshotId: open.snapshotId,
+      index: oneWay.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(picked.error).toBeUndefined();
+    await expect(page.locator("#trip")).toHaveText("One way");
+
+    const day = days.find((d) => d.label === "November 14, 2026")!;
+    const again = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const day14 = again.elements.find((e) => e.label === day.label)!;
+    const clicked = (await callBrowser(editorPage, "perform", {
+      snapshotId: again.snapshotId,
+      index: day14.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(clicked.error).toBeUndefined();
+    await expect(page.locator("#chosen-date")).toHaveText("November 14, 2026");
   } finally {
     await app.close().catch(() => {});
   }
