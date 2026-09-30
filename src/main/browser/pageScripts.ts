@@ -1397,6 +1397,68 @@ const TARGET_BUSY_HELPER_JS = `
 `;
 
 /**
+ * Autocomplete probe for controller.ts's settleAutocomplete: is the stamped
+ * (`data-pen-sig-target`) field an autocomplete-style one, and how many
+ * suggestion options are visible right now? A field is autocomplete-style
+ * when it (or an ancestor wrapper — the ARIA 1.0 combobox shape) has
+ * role=combobox, `aria-autocomplete` list/both or `aria-haspopup`
+ * listbox. A native `<input list>` is deliberately NOT one: its datalist has
+ * no DOM options to wait for.
+ *
+ * Options are the `role=option` nodes under the listbox(es) the field names
+ * via `aria-controls`/`aria-owns`, else any visible `role=option` in the
+ * document (a popup portalled elsewhere). "Visible" = a non-empty rect, no
+ * display:none / visibility:hidden, no aria-hidden ancestor. `hash` digests
+ * the options' labels so the caller can tell a list that is still being
+ * replaced from one that has settled. A plain field answers
+ * `{ autocomplete: false }` and nothing else is computed.
+ */
+export const AUTOCOMPLETE_STATE_JS = `(() => {
+  ${SIG_TARGET_HELPER_JS}
+  var el = penFindSigTarget();
+  if (!el) return { autocomplete: false };
+  var combo = el.closest ? el.closest('[role="combobox"]') : null;
+  var auto = (el.getAttribute("aria-autocomplete") || "").toLowerCase();
+  var popup = (el.getAttribute("aria-haspopup") || "").toLowerCase();
+  if (!combo && auto !== "list" && auto !== "both" && popup !== "listbox") return { autocomplete: false };
+
+  function visible(node) {
+    var r = node.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    var cs = getComputedStyle(node);
+    if (cs.display === "none" || cs.visibility === "hidden") return false;
+    return !(node.closest && node.closest('[aria-hidden="true"]'));
+  }
+
+  var roots = [];
+  var host = combo || el;
+  var refs = ((host.getAttribute("aria-controls") || "") + " " + (host.getAttribute("aria-owns") || "") + " " +
+    (el.getAttribute("aria-controls") || "") + " " + (el.getAttribute("aria-owns") || "")).split(/\\s+/);
+  for (var ri = 0; ri < refs.length; ri++) {
+    var root = refs[ri] ? document.getElementById(refs[ri]) : null;
+    if (root) roots.push(root);
+  }
+  var candidates = [];
+  for (var ci = 0; ci < roots.length; ci++) {
+    if (roots[ci].getAttribute("role") === "option") candidates.push(roots[ci]);
+    var inner = roots[ci].querySelectorAll('[role="option"]');
+    for (var ii = 0; ii < inner.length; ii++) candidates.push(inner[ii]);
+  }
+  if (!candidates.length) candidates = Array.prototype.slice.call(document.querySelectorAll('[role="option"]'));
+
+  var count = 0;
+  var hash = 0;
+  for (var oi = 0; oi < candidates.length; oi++) {
+    if (!visible(candidates[oi])) continue;
+    count++;
+    var label = (candidates[oi].textContent || "").trim().slice(0, 80);
+    for (var li = 0; li < label.length; li++) hash = (hash * 31 + label.charCodeAt(li)) | 0;
+    hash = (hash * 31 + 7) | 0;
+  }
+  return { autocomplete: true, options: count, hash: hash };
+})()`;
+
+/**
  * Re-reads the busy state of the element the last action stamped
  * `data-pen-sig-target` (CLICK_JS/TYPE_JS/PERFORM_JS all stamp it). Polled
  * by controller.ts's settleWhileTargetBusy *only* when the acting script

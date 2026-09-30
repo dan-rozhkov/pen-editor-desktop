@@ -1448,6 +1448,20 @@ below).
   legacy fallback, and diffs against the new field's own before-signature.
   E2E: `/reveal-strip`, `/reveal-fold`, `/focus-overlay` fixtures.
 
+- **Autocomplete settle after typing** (Google Flights "Where to?"). After a
+  successful type (`perform` TYPE_TEXT incl. frame-routed, `act` type via
+  `runTypeWithEvidence`) `settleAutocomplete` probes the stamped target with
+  `AUTOCOMPLETE_STATE_JS`: `role=combobox` (or inside one), `aria-autocomplete`
+  list/both or `aria-haspopup=listbox` counts; a native `<input list>` does
+  not (no DOM options). For those it polls every 100 ms until the visible
+  `role=option` nodes (under the field's `aria-controls`/`aria-owns` listbox,
+  else anywhere) are present and their count + label hash is equal across two
+  polls, capped by `AUTOCOMPLETE_SETTLE_MS` (2 s) and the command deadline.
+  Suggestions arrive behind a debounced fetch, so without this the next
+  snapshot had no option to offer. Plain fields pay one probe, no wait.
+  Best-effort and report-silent: a failing probe never errors the type and
+  nothing is added to the result. E2E: `/autocomplete` fixture.
+
 - `CLICK_RESOLVE_JS` locates the element (visible text → CSS selector for a
   `target`, or the `data-pen-snap` stamp for `index`+`snapshotId`), stamps it
   `data-pen-sig-target` and captures its scoped signature (same as

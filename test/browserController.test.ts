@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   BrowserController,
+  AUTOCOMPLETE_SETTLE_MS,
   BROWSER_COMMAND_TIMEOUT_MS,
   BROWSER_OPEN_TIMEOUT_MS,
   MAX_SNAPSHOT_ELEMENTS,
@@ -4091,6 +4092,7 @@ describe("BrowserController — Wave 1 speed", () => {
             if (isSelectAllCall(code)) return Promise.resolve({ editable: true });
             if (isReadValueCall(code)) return Promise.resolve({ matches: true, present: true, retargeted: true });
             if (isBusyCall(code)) return Promise.resolve({ present: false, busy: false });
+            if (typeof code === "string" && code.includes("autocomplete: false")) return Promise.resolve({ autocomplete: false });
             legacy();
             return Promise.resolve({ url: "https://x/", title: "X" });
           }),
@@ -4659,5 +4661,110 @@ describe("BrowserController — Wave 3 reliability", () => {
       expect(result).not.toHaveProperty("error");
       expect(result).not.toHaveProperty("botCheck");
     });
+  });
+});
+
+// Autocomplete settle: a type into a combobox returned after the 50ms settle,
+// before the debounced suggestions existed, so the next snapshot had no
+// `role=option` to offer. The controller now waits (bounded) for the field's
+// visible options to appear and stop changing.
+describe("autocomplete settle after typing", () => {
+  /** AUTOCOMPLETE_STATE_JS is the only script containing this literal. */
+  function isAutocompleteCall(code: unknown): boolean {
+    return typeof code === "string" && code.includes("autocomplete: false");
+  }
+
+  function makeTypePage(answer: (call: number) => unknown) {
+    const order: string[] = [];
+    let calls = 0;
+    const page = makeFakePage({
+      executeJavaScript: vi.fn((code: string) => {
+        if (isSignatureCall(code)) {
+          order.push("signature");
+          return Promise.resolve({
+            url: "https://example.com/",
+            title: "Example",
+            nodeCount: 1,
+            textLength: 0,
+            textHash: 0,
+            mainImageSrc: "",
+            scrollY: 0,
+            focusedValueLength: 0,
+          });
+        }
+        if (isAutocompleteCall(code)) {
+          const n = calls++;
+          order.push("probe");
+          const value = answer(n);
+          return value instanceof Error ? Promise.reject(value) : Promise.resolve(value);
+        }
+        order.push("action");
+        return Promise.resolve({ url: "https://example.com/", title: "Example" });
+      }),
+    });
+    return { page, order, probes: () => calls };
+  }
+
+  async function typeInto(controller: BrowserController, advanceMs: number) {
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    const promise = controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "TYPE_TEXT", text: "Barcelona" });
+    await vi.advanceTimersByTimeAsync(advanceMs);
+    return promise;
+  }
+
+  it("polls an autocomplete field until its options are present and unchanged across two polls, before the after-capture", async () => {
+    vi.useFakeTimers();
+    try {
+      const answers = [
+        { autocomplete: true, options: 0, hash: 0 },
+        { autocomplete: true, options: 3, hash: 11 },
+        { autocomplete: true, options: 5, hash: 22 },
+        { autocomplete: true, options: 5, hash: 22 },
+      ];
+      const { page, order, probes } = makeTypePage((n) => answers[Math.min(n, answers.length - 1)]);
+      const result = await typeInto(new BrowserController(makeFakeTarget(page)), 1_000);
+
+      expect(probes()).toBe(4);
+      expect(order.slice(order.lastIndexOf("action"))).toEqual(["action", "probe", "probe", "probe", "probe", "signature"]);
+      expect(result).not.toHaveProperty("error");
+      expect(result).not.toHaveProperty("autocomplete");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a plain field costs one probe and no wait", async () => {
+    const { page, probes } = makeTypePage(() => ({ autocomplete: false }));
+    const controller = new BrowserController(makeFakeTarget(page));
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    // Real timers: anything beyond the 50ms settle would be a poll interval.
+    await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "TYPE_TEXT", text: "hi" });
+    expect(probes()).toBe(1);
+  });
+
+  it("gives up at the cap when no suggestion ever shows up, rather than hanging the command", async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, probes } = makeTypePage(() => ({ autocomplete: true, options: 0, hash: 0 }));
+      const promise = typeInto(new BrowserController(makeFakeTarget(page)), AUTOCOMPLETE_SETTLE_MS + 500);
+      const result = await promise;
+      expect(result).not.toHaveProperty("error");
+      // ~100ms interval inside a 2s cap: bounded, and more than one poll.
+      expect(probes()).toBeGreaterThan(1);
+      expect(probes()).toBeLessThanOrEqual(AUTOCOMPLETE_SETTLE_MS / 100 + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a throwing or error-returning probe never turns a successful type into an error", async () => {
+    for (const answer of [() => new Error("boom"), () => ({ error: "nope" })]) {
+      const { page } = makeTypePage(answer);
+      const controller = new BrowserController(makeFakeTarget(page));
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      const result = await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "TYPE_TEXT", text: "hi" });
+      expect(result).not.toHaveProperty("error");
+      expect(result).toMatchObject({ url: "https://example.com/" });
+    }
   });
 });

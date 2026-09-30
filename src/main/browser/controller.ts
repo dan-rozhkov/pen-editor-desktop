@@ -30,6 +30,7 @@ import {
   SIGNATURE_JS,
   READ_JS,
   TARGET_BUSY_JS,
+  AUTOCOMPLETE_STATE_JS,
   CURSOR_JS,
   MARKS_JS,
   REMOVE_MARKS_JS,
@@ -56,6 +57,7 @@ const SCRIPT_TEMPLATES = {
   PERFORM_JS,
   READ_JS,
   TARGET_BUSY_JS,
+  AUTOCOMPLETE_STATE_JS,
   CURSOR_JS,
   MARKS_JS,
   REMOVE_MARKS_JS,
@@ -192,6 +194,18 @@ function isPageSignature(value: unknown): value is PageSignature {
  * dead one both reported changed: false. Short, because unlike a click
  * there is no navigation to wait for, just a paint/reflow. */
 const NON_CLICK_SETTLE_MS = 50;
+
+/** After a type into an autocomplete-style field (role=combobox,
+ * aria-autocomplete, aria-haspopup=listbox): the suggestions are fetched
+ * asynchronously behind a debounce, so the 50ms settle above returns before
+ * any `role=option` exists and the next snapshot never offers the
+ * suggestion (Google Flights "Where to?"). `settleAutocomplete` polls every
+ * AUTOCOMPLETE_POLL_INTERVAL_MS until the visible options are present and
+ * unchanged across two polls, bounded by AUTOCOMPLETE_SETTLE_MS (and the
+ * command's own deadline) so a field that never suggests anything costs at
+ * most that much. Plain fields pay one cheap probe and no wait. */
+export const AUTOCOMPLETE_SETTLE_MS = 2_000;
+const AUTOCOMPLETE_POLL_INTERVAL_MS = 100;
 
 /** Spec `2026-09-18-browse-task-jev-loop-design.md` §1: the element table is
  * the whole request payload for /api/browse/step, so an uncapped snapshot on
@@ -3027,6 +3041,7 @@ export class BrowserController {
         const scopedBefore = extractScopedBefore(result);
         const selfDisabled = extractTargetSelfDisabled(result);
         await this.settleShort();
+        await this.settleAutocomplete(page, frameRoute.frameId, deadlineAt);
         if (selfDisabled) await this.settleWhileTargetBusy(page);
         const after = await this.captureSignature(page, "after");
         return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
@@ -3129,9 +3144,43 @@ export class BrowserController {
     const scopedBefore = extractScopedBefore(result);
     const selfDisabled = extractTargetSelfDisabled(result);
     await this.settleShort();
+    await this.settleAutocomplete(page, null, deadlineAt);
     if (selfDisabled) await this.settleWhileTargetBusy(page);
     const after = await this.captureSignature(page, "after");
     return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
+  }
+
+  /** Waits for an autocomplete field's suggestions after a successful type —
+   * see AUTOCOMPLETE_SETTLE_MS. Probes the stamped target
+   * (`AUTOCOMPLETE_STATE_JS`; after "typing follows the focus" that is the
+   * field the text actually landed in) and returns at once for anything that
+   * is not autocomplete-style. Otherwise polls until the visible option
+   * count + label hash is non-zero and equal across two consecutive polls —
+   * one poll can still be the stale pre-typing list, two equal ones with
+   * the debounce elapsed rarely are. Best-effort: a throwing or malformed
+   * script, the cap, or the command deadline just ends the wait (the type
+   * itself already succeeded), and nothing is added to the result. */
+  private async settleAutocomplete(page: BrowserPageHandle, frameId: number | null, deadlineAt: number): Promise<void> {
+    const until = Math.min(Date.now() + AUTOCOMPLETE_SETTLE_MS, deadlineAt);
+    let previous: string | null = null;
+    while (true) {
+      let state: BrowserCommandResult;
+      try {
+        state =
+          frameId === null
+            ? await this.executeScript(page, "AUTOCOMPLETE_STATE_JS", {})
+            : await this.executeScriptInFrame(page, frameId, "AUTOCOMPLETE_STATE_JS", {});
+      } catch {
+        return;
+      }
+      if ("error" in state || state.autocomplete !== true) return;
+      const options = typeof state.options === "number" ? state.options : 0;
+      const key = `${options}:${String(state.hash)}`;
+      if (options > 0 && key === previous) return;
+      previous = key;
+      if (Date.now() + AUTOCOMPLETE_POLL_INTERVAL_MS >= until) return;
+      await new Promise((resolve) => setTimeout(resolve, AUTOCOMPLETE_POLL_INTERVAL_MS));
+    }
   }
 
   /** Wave 3 reliability, item 4: runs BOT_CHECK_JS after `open` settles and

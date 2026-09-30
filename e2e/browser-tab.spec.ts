@@ -53,6 +53,7 @@ let ariaCalendarUrl: string;
 let revealStripUrl: string;
 let revealFoldUrl: string;
 let focusOverlayUrl: string;
+let autocompleteUrl: string;
 // Wave 3 reliability item 2: a SECOND http server on a different port,
 // bound to "localhost" rather than "127.0.0.1" (the main server's own
 // bind), so the two are genuinely different origins/sites — a real
@@ -1111,6 +1112,39 @@ read as filled. -->
 </script>`);
       return;
     }
+    if (req.url && req.url.startsWith("/autocomplete")) {
+      // Google Flights "Where to?" shape: a combobox whose role=option
+      // suggestions arrive ~400ms AFTER the input event (a debounced fetch),
+      // so a snapshot taken right after typing sees none unless the
+      // controller waits for them. #plain is an ordinary input.
+      res.end(`<!doctype html>
+<title>Autocomplete</title>
+<h1 id="ready">autocomplete-ready</h1>
+<input id="to" role="combobox" aria-autocomplete="list" aria-controls="lb" aria-expanded="false" aria-label="Where to?">
+<ul id="lb" role="listbox" aria-label="Suggestions" style="list-style:none;margin:0;padding:0"></ul>
+<input id="plain" aria-label="Plain field">
+<script>
+  var timer = 0;
+  document.getElementById("to").addEventListener("input", function (e) {
+    clearTimeout(timer);
+    var value = e.target.value;
+    timer = setTimeout(function () {
+      var lb = document.getElementById("lb");
+      lb.innerHTML = "";
+      if (value.toLowerCase().indexOf("barc") !== 0) return;
+      ["Barcelona, Spain", "Barcelona El Prat Airport"].forEach(function (label) {
+        var li = document.createElement("li");
+        li.setAttribute("role", "option");
+        li.style.padding = "6px";
+        li.textContent = label;
+        lb.appendChild(li);
+      });
+      e.target.setAttribute("aria-expanded", "true");
+    }, 400);
+  });
+</script>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/focus-overlay")) {
       // Google Flights' "Where from?" shape. ?mode=sync|async: clicking #from
       // opens a fixed overlay covering it and focuses a DIFFERENT input in
@@ -1336,6 +1370,7 @@ read as filled. -->
   revealStripUrl = `${baseUrl}/reveal-strip`;
   revealFoldUrl = `${baseUrl}/reveal-fold`;
   focusOverlayUrl = `${baseUrl}/focus-overlay`;
+  autocompleteUrl = `${baseUrl}/autocomplete`;
 });
 
 test.afterAll(async () => {
@@ -4593,6 +4628,51 @@ test("type: a plain input still types normally (no retarget), and typing into B 
     expect(b.retargeted).toBeUndefined();
     await expect(page.locator("#b")).toHaveValue("Bee");
     await expect(page.locator("#a")).toHaveValue("");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+// Autocomplete settle: suggestions are fetched behind a debounce, so an
+// immediate snapshot after typing used to miss the option the agent must pick.
+for (const via of ["act", "perform"] as const) {
+  test(`type (${via}): returns only once the autocomplete suggestions exist, so the very next snapshot offers them`, async () => {
+    const { app, editorPage } = await openReachFixture(autocompleteUrl, "autocomplete-ready");
+    try {
+      let res: { error?: string };
+      if (via === "act") {
+        res = (await callBrowser(editorPage, "act", { action: "type", target: "#to", text: "Barcelona" })) as { error?: string };
+      } else {
+        const first = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+        const to = first.elements.find((e) => e.label === "Where to?");
+        expect(to).toBeTruthy();
+        res = (await callBrowser(editorPage, "perform", {
+          snapshotId: first.snapshotId,
+          index: to!.index,
+          operation: "TYPE_TEXT",
+          text: "Barcelona",
+        })) as { error?: string };
+      }
+      expect(res.error).toBeUndefined();
+      const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+      expect(snap.elements.some((e) => e.label === "Barcelona, Spain")).toBe(true);
+    } finally {
+      await app.close().catch(() => {});
+    }
+  });
+}
+
+test("type: a plain input on the autocomplete page types normally and reports no autocomplete field", async () => {
+  const { app, editorPage, page } = await openReachFixture(autocompleteUrl, "autocomplete-ready");
+  try {
+    const res = (await callBrowser(editorPage, "act", { action: "type", target: "#plain", text: "hello" })) as {
+      error?: string;
+      via?: string;
+    };
+    expect(res.error).toBeUndefined();
+    expect(res.via).toBe("cdp");
+    expect(res).not.toHaveProperty("autocomplete");
+    await expect(page.locator("#plain")).toHaveValue("hello");
   } finally {
     await app.close().catch(() => {});
   }
