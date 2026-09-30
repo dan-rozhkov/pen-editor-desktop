@@ -4,6 +4,7 @@ import {
   AUTOCOMPLETE_SETTLE_MS,
   DIALOG_DISMISS_SETTLE_MS,
   LATE_CLICK_EFFECT_MS,
+  SETTLE_HEADROOM_MS,
   BROWSER_COMMAND_TIMEOUT_MS,
   BROWSER_OPEN_TIMEOUT_MS,
   MAX_SNAPSHOT_ELEMENTS,
@@ -4678,7 +4679,12 @@ describe("autocomplete settle after typing", () => {
     return typeof code === "string" && code.includes("autocomplete: false");
   }
 
-  function makeTypePage(answer: (call: number) => unknown) {
+  /** The pre-typing baseline probe is the only AUTOCOMPLETE_STATE_JS call carrying this arg. */
+  function isBaselineCall(code: unknown): boolean {
+    return typeof code === "string" && code.includes('"baseline":true');
+  }
+
+  function makeTypePage(answer: (call: number) => unknown, baselineAnswer: () => unknown = () => ({ docOptions: 0, docHash: 0 })) {
     const order: string[] = [];
     let calls = 0;
     const page = makeFakePage({
@@ -4695,6 +4701,10 @@ describe("autocomplete settle after typing", () => {
             scrollY: 0,
             focusedValueLength: 0,
           });
+        }
+        if (isAutocompleteCall(code) && isBaselineCall(code)) {
+          order.push("baseline");
+          return Promise.resolve(baselineAnswer());
         }
         if (isAutocompleteCall(code)) {
           const n = calls++;
@@ -4730,6 +4740,9 @@ describe("autocomplete settle after typing", () => {
 
       expect(probes()).toBe(4);
       expect(order.slice(order.lastIndexOf("action"))).toEqual(["action", "probe", "probe", "probe", "probe", "signature"]);
+      // The baseline is taken before the text goes in (before the action).
+      expect(order.indexOf("baseline")).toBeGreaterThan(-1);
+      expect(order.indexOf("baseline")).toBeLessThan(order.lastIndexOf("action"));
       expect(result).not.toHaveProperty("error");
       expect(result).not.toHaveProperty("autocomplete");
     } finally {
@@ -4737,13 +4750,59 @@ describe("autocomplete settle after typing", () => {
     }
   });
 
-  it("a plain field costs one probe and no wait", async () => {
-    const { page, probes } = makeTypePage(() => ({ autocomplete: false }));
+  it("a plain field costs one baseline probe before, one probe after, and no wait", async () => {
+    const { page, probes, order } = makeTypePage(() => ({ autocomplete: false }));
     const controller = new BrowserController(makeFakeTarget(page));
     const snapshot = (await controller.snapshot()) as { snapshotId: string };
     // Real timers: anything beyond the 50ms settle would be a poll interval.
     await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "TYPE_TEXT", text: "hi" });
     expect(probes()).toBe(1);
+    expect(order.filter((o) => o === "baseline")).toHaveLength(1);
+  });
+
+  it("does not take a stale focus-time list for the settled suggestions", async () => {
+    vi.useFakeTimers();
+    try {
+      const stale = { autocomplete: true, options: 3, hash: 5, docOptions: 3, docHash: 5 };
+      const real = { autocomplete: true, options: 4, hash: 9, docOptions: 4, docHash: 9 };
+      // Three stale polls (stable, yet the same as the baseline), then the real list.
+      const { page, probes } = makeTypePage((n) => (n < 3 ? stale : real), () => ({ docOptions: 3, docHash: 5 }));
+      const result = await typeInto(new BrowserController(makeFakeTarget(page)), 1_500);
+      expect(result).not.toHaveProperty("error");
+      // 3 stale + 2 real (changed, then stable across two polls).
+      expect(probes()).toBe(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits out the cap when the list never differs from the baseline", async () => {
+    vi.useFakeTimers();
+    try {
+      const stale = { autocomplete: true, options: 3, hash: 5, docOptions: 3, docHash: 5 };
+      const { page, probes } = makeTypePage(() => stale, () => ({ docOptions: 3, docHash: 5 }));
+      await typeInto(new BrowserController(makeFakeTarget(page)), AUTOCOMPLETE_SETTLE_MS + 500);
+      expect(probes()).toBeGreaterThan(10);
+      expect(probes()).toBeLessThanOrEqual(AUTOCOMPLETE_SETTLE_MS / 100 + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("skips the wait entirely when the command deadline has no headroom left", async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, probes } = makeTypePage(() => ({ autocomplete: true, options: 0, hash: 0 }));
+      const controller = new BrowserController(makeFakeTarget(page), { timeoutMs: SETTLE_HEADROOM_MS - 200, cursor: false });
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      const promise = controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "TYPE_TEXT", text: "hi" });
+      await vi.advanceTimersByTimeAsync(3_000);
+      const result = await promise;
+      expect(result).not.toHaveProperty("error");
+      expect(probes()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("gives up at the cap when no suggestion ever shows up, rather than hanging the command", async () => {
@@ -4868,6 +4927,73 @@ describe("late click effects", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("stops re-checking as soon as pageChanged shows up, even though changed stays false", async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, afters } = makeClickPage({ afterAnswer: (n) => (n >= 1 ? sig({ pageChanged: true, appeared: ["Added"] }) : sig()) });
+      const result = await clickWith(page, 2_000);
+      expect(result).toMatchObject({ changed: false, pageChanged: true });
+      expect(afters()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not start the late loop when a tab already opened", async () => {
+    const { page, afters } = makeClickPage({});
+    let listings = 0;
+    const target = makeFakeTarget(page);
+    target.listPages = vi.fn(async () => {
+      const tabs = [{ tabId: 1, url: "https://example.com/", title: "Example", current: true }];
+      return listings++ === 0 ? tabs : [...tabs, { tabId: 2, url: "https://popup/", title: "Popup", current: false }];
+    });
+    const controller = new BrowserController(target);
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    const result = await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+    expect(result).toMatchObject({ openedTab: { tabId: 2 } });
+    expect(afters()).toBe(1);
+  });
+
+  it("the late loop and the dialog wait stop before the command deadline (headroom) instead of timing the click out", async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, dialogProbes } = makeClickPage({ dismissDialog: true, dialogClosedAt: () => false });
+      const controller = new BrowserController(makeFakeTarget(page), { timeoutMs: SETTLE_HEADROOM_MS + 600, cursor: false });
+      const snapshot = (await controller.snapshot()) as { snapshotId: string };
+      const promise = controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+      await vi.advanceTimersByTimeAsync(SETTLE_HEADROOM_MS + 2_000);
+      const result = await promise;
+      expect(result).not.toHaveProperty("error");
+      // The dialog wait was capped at ~600ms minus what the click settle used.
+      expect(dialogProbes()).toBeLessThanOrEqual(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hands the before-capture's id to every after-capture, and sends none when the before failed", async () => {
+    const codes: string[] = [];
+    let failBefore = false;
+    const base = makeClickPage({ afterAnswer: () => sig({ scrollY: 5 }) });
+    const impl = (base.page.executeJavaScript as ReturnType<typeof vi.fn>).getMockImplementation() as (c: string) => Promise<unknown>;
+    (base.page.executeJavaScript as ReturnType<typeof vi.fn>).mockImplementation((code: string) => {
+      if (isSignatureCall(code)) {
+        codes.push(code);
+        if (failBefore && !code.includes('"phase":"after"')) return Promise.reject(new Error("boom"));
+        if (!code.includes('"phase":"after"')) return Promise.resolve(sig({ captureId: "cap-1" }));
+      }
+      return impl(code);
+    });
+    const controller = new BrowserController(makeFakeTarget(base.page));
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+    expect(codes[codes.length - 1]).toContain('"captureId":"cap-1"');
+    // A later action whose own before fails must not reuse cap-1's state.
+    failBefore = true;
+    await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+    expect(codes[codes.length - 1]).not.toContain('"captureId":');
   });
 
   it("an ordinary immediate change costs one capture and no extra wait", async () => {

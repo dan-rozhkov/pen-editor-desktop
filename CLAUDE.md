@@ -1456,9 +1456,17 @@ below).
   not (no DOM options). For those it polls every 100 ms until the visible
   `role=option` nodes (under the field's `aria-controls`/`aria-owns` listbox,
   else anywhere) are present and their count + label hash is equal across two
-  polls, capped by `AUTOCOMPLETE_SETTLE_MS` (2 s) and the command deadline.
-  Suggestions arrive behind a debounced fetch, so without this the next
-  snapshot had no option to offer. Plain fields pay one probe, no wait.
+  polls, capped by `AUTOCOMPLETE_SETTLE_MS` (2 s) and the command deadline
+  minus `SETTLE_HEADROOM_MS`. Suggestions arrive behind a debounced fetch, so
+  without this the next snapshot had no option to offer. A list already on
+  screen BEFORE the text goes in (a focus-time "popular destinations" list) is
+  perfectly stable, so stability alone would end the wait on it: the type
+  paths take a stamp-free document-wide `{ baseline: true }` probe after focus
+  settles and before the text goes in (`autocompleteBaseline`; inside
+  `dispatchType` just before `Input.insertText`, before the DOM path
+  elsewhere), and the wait also requires the document-wide options digest to
+  differ from it (a list that really equals the baseline waits out the cap).
+  Plain fields pay one baseline probe and one probe after, no wait.
   Best-effort and report-silent: a failing probe never errors the type and
   nothing is added to the result. E2E: `/autocomplete` fixture.
 
@@ -1473,23 +1481,41 @@ below).
      dialog `data-pen-dismiss-dialog` when the target sits in a
      role=dialog/alertdialog/aria-modal/open `<dialog>` AND its accessible
      name equals/starts with done/close/apply/ok/save/confirm/cancel (word
-     boundary), is a bare x-glyph, or its aria-label contains "close". After
-     the click `settleDialogDismiss` polls `DISMISS_DIALOG_STATE_JS` every
-     100 ms until the dialog is detached/hidden/zero-rect/has no visible
-     descendant, capped by `DIALOG_DISMISS_SETTLE_MS` (1 s) and the command
-     deadline. A closed dialog IS the effect: the hidden button's own
+     boundary), is a bare x-glyph, or its aria-label contains the WORD
+     "close" ("Closest airports" does not). The dialog is also kept as
+     `window.__penDismissDialog` (reaches a shadow root). After the click
+     `settleDialogDismiss` polls `DISMISS_DIALOG_STATE_JS` every 100 ms until
+     the dialog is detached, `<dialog>.open === false`, display:none on it or
+     an ancestor, visibility:hidden, or neither it nor a descendant has a
+     visible box (a bare zero-rect wrapper — display:contents, height:0 — is
+     NOT closed), capped by `DIALOG_DISMISS_SETTLE_MS` (1 s) and the command
+     deadline minus `SETTLE_HEADROOM_MS`. A closed dialog IS the effect: the hidden button's own
      signature rarely moves, so the result is `changed: true` with a
      `"dialog"` entry when nothing else changed. A day cell or any other
      click pays no probe.
   2. **Late effect re-check.** `captureClickEffect`: a same-URL click whose
      after-diff is `changed: false` re-captures every 150 ms until something
-     changed or `LATE_CLICK_EFFECT_MS` (800 ms) elapsed. The peeks pass
-     `keep` to `SIGNATURE_JS`, which then leaves `window.__penSigObserver`
-     and `__penSigState` alive (the usual "after" tears both down) so the
-     final capture still carries the whole dom/text evidence; the last poll
-     is non-`keep`. A click that changes something at once costs one
-     capture. A `keep` capture that already found a change leaves the
-     observer running until the next "before" replaces it.
+     changed or `LATE_CLICK_EFFECT_MS` (800 ms) elapsed (capped by the
+     command deadline minus `SETTLE_HEADROOM_MS`). It also stops on any other
+     signal the browse_task loop counts as an effect: `pageChanged: true`, or
+     an opened tab (checked before each poll, so a click that already opened
+     a tab never starts the loop; native JS dialogs cannot be peeked, their
+     drain is destructive). The peeks pass `keep` to `SIGNATURE_JS`, which
+     then leaves `window.__penSigObserver` and `__penSigState` alive (the
+     usual "after" tears both down) so the final capture still carries the
+     whole dom/text evidence; the last poll is non-`keep`. A click that
+     changes something at once costs one capture. A final `keep` capture
+     leaves state behind, made harmless three ways: the "before" capture
+     mints a `captureId` (the controller keeps it per page in
+     `signatureCaptureIds` and sends it with the "after"; a mismatch or a
+     failed "before" makes the page discard the stored state and observer as
+     unavailable), the next "before" replaces it, and the observer
+     disconnects itself after 10 s.
+  **`SETTLE_HEADROOM_MS` (1.5 s)**: the optional waits above (autocomplete,
+  dialog-dismiss, late re-check) stop at `deadlineAt - SETTLE_HEADROOM_MS` and
+  are skipped once past it, leaving time for the after-capture,
+  `detectOpenedTab` and `settleWhileTargetBusy`, so `withCommandTimeout`
+  never reports a timeout for an action that landed.
   Both are best-effort (a failing probe never errors the click). E2E:
   `/late-effect` fixture.
 

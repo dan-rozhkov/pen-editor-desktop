@@ -55,6 +55,7 @@ let revealFoldUrl: string;
 let focusOverlayUrl: string;
 let autocompleteUrl: string;
 let lateEffectUrl: string;
+let shadowDialogUrl: string;
 // Wave 3 reliability item 2: a SECOND http server on a different port,
 // bound to "localhost" rather than "127.0.0.1" (the main server's own
 // bind), so the two are genuinely different origins/sites — a real
@@ -1117,7 +1118,11 @@ read as filled. -->
       // Google Flights "Where to?" shape: a combobox whose role=option
       // suggestions arrive ~400ms AFTER the input event (a debounced fetch),
       // so a snapshot taken right after typing sees none unless the
-      // controller waits for them. #plain is an ordinary input.
+      // controller waits for them. Like Google Flights, focusing the field
+      // shows a "popular destinations" list at once; it stays (perfectly
+      // stable) until the real suggestions replace it, so "the list stopped
+      // changing" alone would end the wait on the stale list. #plain is an
+      // ordinary input.
       res.end(`<!doctype html>
 <title>Autocomplete</title>
 <h1 id="ready">autocomplete-ready</h1>
@@ -1126,6 +1131,17 @@ read as filled. -->
 <input id="plain" aria-label="Plain field">
 <script>
   var timer = 0;
+  document.getElementById("to").addEventListener("focus", function () {
+    var lb = document.getElementById("lb");
+    lb.innerHTML = "";
+    ["Paris, France", "London, United Kingdom", "New York, United States"].forEach(function (label) {
+      var li = document.createElement("li");
+      li.setAttribute("role", "option");
+      li.style.padding = "6px";
+      li.textContent = label;
+      lb.appendChild(li);
+    });
+  });
   document.getElementById("to").addEventListener("input", function (e) {
     clearTimeout(timer);
     var value = e.target.value;
@@ -1159,6 +1175,7 @@ read as filled. -->
 <button id="late">Apply filter</button>
 <div id="dlg" role="dialog" aria-modal="true" aria-label="Dates" style="position:fixed;inset:0;background:#fff;z-index:10">
   <button id="day">Pick day 12</button>
+  <button id="closest" aria-label="Closest airports">Nearby</button>
   <button id="done">Done</button>
 </div>
 <script>
@@ -1168,10 +1185,35 @@ read as filled. -->
   document.getElementById("day").addEventListener("click", function () {
     document.getElementById("day").setAttribute("aria-selected", "true");
   });
+  document.getElementById("closest").addEventListener("click", function () {
+    document.getElementById("closest").setAttribute("aria-selected", "true");
+  });
   document.getElementById("late").addEventListener("click", function () {
     setTimeout(function () {
       document.getElementById("late").setAttribute("aria-expanded", "true");
     }, 300);
+  });
+</script>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/shadow-dialog")) {
+      // A role=dialog wrapper with display:contents (no box of its own) living
+      // in an open shadow root; its panel's "Done" hides it ~300ms after the
+      // click. The controller must find the dialog through the shadow root
+      // and must not read the wrapper's zero rect as "already closed".
+      res.end(`<!doctype html>
+<title>Shadow dialog</title>
+<h1 id="ready">shadow-dialog-ready</h1>
+<button id="search">Search flights</button>
+<div id="host"></div>
+<script>
+  var root = document.getElementById("host").attachShadow({ mode: "open" });
+  root.innerHTML =
+    '<div role="dialog" aria-modal="true" aria-label="Dates" style="display:contents">' +
+    '<div id="panel" style="position:fixed;inset:0;background:#fff;z-index:10">' +
+    '<button id="done">Done</button></div></div>';
+  root.getElementById("done").addEventListener("click", function () {
+    setTimeout(function () { root.getElementById("panel").style.display = "none"; }, 300);
   });
 </script>`);
       return;
@@ -1403,6 +1445,7 @@ read as filled. -->
   focusOverlayUrl = `${baseUrl}/focus-overlay`;
   autocompleteUrl = `${baseUrl}/autocomplete`;
   lateEffectUrl = `${baseUrl}/late-effect`;
+  shadowDialogUrl = `${baseUrl}/shadow-dialog`;
 });
 
 test.afterAll(async () => {
@@ -4688,6 +4731,8 @@ for (const via of ["act", "perform"] as const) {
       expect(res.error).toBeUndefined();
       const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
       expect(snap.elements.some((e) => e.label === "Barcelona, Spain")).toBe(true);
+      // The focus-time "popular" list must be gone, not mistaken for the result.
+      expect(snap.elements.some((e) => e.label === "Paris, France")).toBe(false);
     } finally {
       await app.close().catch(() => {});
     }
@@ -4771,6 +4816,61 @@ test("click: a non-dismissing control inside a dialog reports its immediate effe
     expect(res.changed).toBe(true);
     // The dialog stays open (it never closes): a dialog wait would cost its 1s cap.
     expect(Date.now() - started).toBeLessThan(900);
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("click: Done in a shadow-root dialog (display:contents wrapper) waits for the dialog to really close", async () => {
+  const { app, editorPage, page } = await openReachFixture(shadowDialogUrl, "shadow-dialog-ready");
+  try {
+    const res = (await callBrowser(editorPage, "act", { action: "click", target: "Done" })) as {
+      error?: string;
+      changed?: boolean;
+    };
+    expect(res.error).toBeUndefined();
+    expect(res.changed).toBe(true);
+    // Reported only after the panel is gone: a zero-rect wrapper (or a dialog
+    // the probe cannot reach in the shadow root) used to read as closed at once.
+    const panelDisplay = await page.evaluate(() => {
+      const host = document.getElementById("host")!;
+      return getComputedStyle(host.shadowRoot!.getElementById("panel")!).display;
+    });
+    expect(panelDisplay).toBe("none");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("click: a control named 'Closest airports' inside a dialog is not treated as dismissing (no dialog wait)", async () => {
+  const { app, editorPage } = await openReachFixture(lateEffectUrl, "late-effect-ready");
+  try {
+    const started = Date.now();
+    const res = (await callBrowser(editorPage, "act", { action: "click", target: "#closest" })) as {
+      error?: string;
+      changed?: boolean;
+    };
+    expect(res.error).toBeUndefined();
+    expect(res.changed).toBe(true);
+    expect(Date.now() - started).toBeLessThan(900);
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("click: the signature MutationObserver a final keep-peek leaves behind disconnects itself", async () => {
+  test.setTimeout(60_000);
+  const { app, editorPage, page } = await openReachFixture(lateEffectUrl, "late-effect-ready");
+  try {
+    const res = (await callBrowser(editorPage, "act", { action: "click", target: "#day" })) as { changed?: boolean };
+    expect(res.changed).toBe(true);
+    // The change was found on a keep-peek, so nothing tore the observer down;
+    // its own timer must (and the state is unusable to any other capture id).
+    await page.waitForFunction(
+      () => !(window as unknown as { __penSigObserver?: unknown }).__penSigObserver,
+      null,
+      { timeout: 15_000 },
+    );
   } finally {
     await app.close().catch(() => {});
   }
