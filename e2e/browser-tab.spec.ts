@@ -9,6 +9,7 @@
 import { test, expect, _electron as electron, type Page } from "@playwright/test";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { ARGS_MARKER, AUTOCOMPLETE_STATE_JS, DISMISS_DIALOG_STATE_JS } from "../src/main/browser/pageScripts";
 
 let server: http.Server;
 let baseUrl: string;
@@ -56,6 +57,7 @@ let focusOverlayUrl: string;
 let autocompleteUrl: string;
 let lateEffectUrl: string;
 let shadowDialogUrl: string;
+let lateShellUrl: string;
 // Wave 3 reliability item 2: a SECOND http server on a different port,
 // bound to "localhost" rather than "127.0.0.1" (the main server's own
 // bind), so the two are genuinely different origins/sites — a real
@@ -1196,6 +1198,22 @@ read as filled. -->
 </script>`);
       return;
     }
+    if (req.url && req.url.startsWith("/late-shell")) {
+      // A dialog whose SHELL stays laid out (fixed, full-screen) while its
+      // only content is hidden ~300ms after "Done" (a CSS-transition shape).
+      res.end(`<!doctype html>
+<title>Late shell</title>
+<h1 id="ready">late-shell-ready</h1>
+<div id="dlg" role="dialog" aria-modal="true" aria-label="Dates" style="position:fixed;inset:0;z-index:10">
+  <div id="content" style="background:#fff;padding:20px"><button id="done">Done</button></div>
+</div>
+<script>
+  document.getElementById("done").addEventListener("click", function () {
+    setTimeout(function () { document.getElementById("content").style.display = "none"; }, 300);
+  });
+</script>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/shadow-dialog")) {
       // A role=dialog wrapper with display:contents (no box of its own) living
       // in an open shadow root; its panel's "Done" hides it ~300ms after the
@@ -1446,6 +1464,7 @@ read as filled. -->
   autocompleteUrl = `${baseUrl}/autocomplete`;
   lateEffectUrl = `${baseUrl}/late-effect`;
   shadowDialogUrl = `${baseUrl}/shadow-dialog`;
+  lateShellUrl = `${baseUrl}/late-shell`;
 });
 
 test.afterAll(async () => {
@@ -4821,6 +4840,51 @@ test("click: a non-dismissing control inside a dialog reports its immediate effe
   }
 });
 
+test("autocomplete probe: a field with its own list reports ownList and its own digest, apart from an unrelated option list", async () => {
+  const { app, page } = await openReachFixture(lateShellUrl, "late-shell-ready");
+  try {
+    await page.evaluate(() => {
+      document.body.insertAdjacentHTML(
+        "beforeend",
+        '<ul><li role="option">Unrelated A</li><li role="option">Unrelated B</li></ul>' +
+          '<input id="cb" role="combobox" aria-controls="lb"><ul id="lb" role="listbox"></ul>',
+      );
+      const cb = document.getElementById("cb")!;
+      cb.setAttribute("data-pen-sig-target", "1");
+      (window as unknown as { __penSigTarget: Element }).__penSigTarget = cb;
+    });
+    const probe = (args: object) =>
+      page.evaluate(AUTOCOMPLETE_STATE_JS.replace(ARGS_MARKER, JSON.stringify(args))) as Promise<Record<string, unknown>>;
+    const before = await probe({});
+    expect(before).toMatchObject({ autocomplete: true, ownList: true, options: 0, docOptions: 2 });
+    await page.evaluate(() => {
+      document.getElementById("lb")!.innerHTML = '<li role="option">Barcelona</li>';
+    });
+    const after = await probe({});
+    expect(after).toMatchObject({ ownList: true, options: 1, docOptions: 3 });
+    expect(await probe({ baseline: true })).toMatchObject({ docOptions: 3, ownOptions: 1 });
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("dialog state probe: a shell that stays laid out but loses all visible content reads as closed", async () => {
+  const { app, page } = await openReachFixture(lateShellUrl, "late-shell-ready");
+  try {
+    const probe = () => page.evaluate(`${DISMISS_DIALOG_STATE_JS}`) as Promise<{ closed: boolean }>;
+    await page.evaluate(() => document.getElementById("dlg")!.setAttribute("data-pen-dismiss-dialog", "1"));
+    expect(await probe()).toEqual({ closed: false });
+    await page.click("#done");
+    await page.waitForTimeout(450);
+    // The wrapper (fixed, inset 0) still has a box; only its content is gone.
+    const wrapperBox = await page.evaluate(() => document.getElementById("dlg")!.getBoundingClientRect().height);
+    expect(wrapperBox).toBeGreaterThan(0);
+    expect(await probe()).toEqual({ closed: true });
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
 test("click: Done in a shadow-root dialog (display:contents wrapper) waits for the dialog to really close", async () => {
   const { app, editorPage, page } = await openReachFixture(shadowDialogUrl, "shadow-dialog-ready");
   try {
@@ -4859,7 +4923,8 @@ test("click: a control named 'Closest airports' inside a dialog is not treated a
 });
 
 test("click: the signature MutationObserver a final keep-peek leaves behind disconnects itself", async () => {
-  test.setTimeout(60_000);
+  // The timer is command budget (20s) + margin (5s), so this waits ~25s.
+  test.setTimeout(90_000);
   const { app, editorPage, page } = await openReachFixture(lateEffectUrl, "late-effect-ready");
   try {
     const res = (await callBrowser(editorPage, "act", { action: "click", target: "#day" })) as { changed?: boolean };
@@ -4869,7 +4934,7 @@ test("click: the signature MutationObserver a final keep-peek leaves behind disc
     await page.waitForFunction(
       () => !(window as unknown as { __penSigObserver?: unknown }).__penSigObserver,
       null,
-      { timeout: 15_000 },
+      { timeout: 45_000 },
     );
   } finally {
     await app.close().catch(() => {});

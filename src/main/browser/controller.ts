@@ -179,6 +179,9 @@ interface PageSignature {
 /** See BrowserController.autocompleteBaseline. */
 interface AutocompleteBaseline {
   key: string | null;
+  /** The field's OWN list (aria-controls/aria-owns) digest, when it named one
+   * with visible options at baseline time. */
+  ownKey: string | null;
   taken: boolean;
   take(): Promise<void>;
 }
@@ -296,6 +299,11 @@ interface ResolvedFrame {
  * browser command timed out" message rather than a generic tool-loop
  * timeout with no detail. */
 export const BROWSER_COMMAND_TIMEOUT_MS = 20_000;
+
+/** Added to the command budget for the signature observer's self-disconnect
+ * timer (SIGNATURE_JS `ttlMs`), so it never fires before the command's final
+ * capture. */
+export const SIGNATURE_OBSERVER_MARGIN_MS = 5_000;
 
 /** `open`'s own, longer budget.
  *
@@ -3291,6 +3299,7 @@ export class BrowserController {
   private autocompleteBaseline(page: BrowserPageHandle, frameId: number | null): AutocompleteBaseline {
     const baseline: AutocompleteBaseline = {
       key: null,
+      ownKey: null,
       taken: false,
       take: async () => {
         if (baseline.taken) return;
@@ -3302,6 +3311,9 @@ export class BrowserController {
               : await this.executeScriptInFrame(page, frameId, "AUTOCOMPLETE_STATE_JS", { baseline: true });
           if (!("error" in state) && typeof state.docOptions === "number" && state.docOptions > 0) {
             baseline.key = `${state.docOptions}:${String(state.docHash)}`;
+          }
+          if (!("error" in state) && typeof state.ownOptions === "number" && state.ownOptions > 0) {
+            baseline.ownKey = `${state.ownOptions}:${String(state.ownHash)}`;
           }
         } catch {
           // Best-effort: no baseline ⇒ the plain "stable across two polls" rule.
@@ -3350,7 +3362,13 @@ export class BrowserController {
       const options = typeof state.options === "number" ? state.options : 0;
       const key = `${options}:${String(state.hash)}`;
       const docKey = `${String(state.docOptions)}:${String(state.docHash)}`;
-      const fresh = baseline?.key == null || docKey !== baseline.key;
+      // A field that names its own list is judged on that list alone; the
+      // document-wide digest only stands in when it falls back to page-wide
+      // options (an unrelated always-visible option list must not hold it).
+      const fresh =
+        state.ownList === true
+          ? baseline?.ownKey == null || key !== baseline.ownKey
+          : baseline?.key == null || docKey !== baseline.key;
       if (options > 0 && key === previous && fresh) return;
       previous = key;
       if (Date.now() + AUTOCOMPLETE_POLL_INTERVAL_MS >= until) return;
@@ -3593,6 +3611,9 @@ export class BrowserController {
     try {
       const captureId = phase === "after" ? this.signatureCaptureIds.get(page) : undefined;
       const scriptArgs: Record<string, unknown> = { phase };
+      // The page-side observer timer must outlive the longest command that can
+      // own this capture (click: timeout + cursor budget), plus a margin.
+      if (phase === "before") scriptArgs.ttlMs = this.timeoutMs + this.cursorBudgetMs + SIGNATURE_OBSERVER_MARGIN_MS;
       if (keep) scriptArgs.keep = true;
       if (captureId !== undefined) scriptArgs.captureId = captureId;
       const code = SIGNATURE_JS.replace(ARGS_MARKER, () => JSON.stringify(scriptArgs));
