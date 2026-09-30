@@ -679,6 +679,162 @@ const FIND_BY_SNAPSHOT_JS = `
 `;
 
 /**
+ * Composed hit-test + "related" test, shared by CLICK_RESOLVE_JS (is the
+ * click point really on the target?) and SNAPSHOT_JS (is a candidate covered
+ * by an overlay a user couldn't click through?) so the two can never drift —
+ * a control SNAPSHOT_JS offers must be one CLICK_RESOLVE_JS would accept.
+ *
+ * `elementFromPointDeep` walks into *open* shadow roots (a closed root is
+ * opaque, same as `elementFromPoint` itself). `penHitIsRelated(el, hit)`
+ * is true when the hit is el, a descendant, an ancestor (a click landing on a
+ * wrapper still bubbles to the target's listener), or a <label> that
+ * contains el / whose `for` equals el.id. `penOverlayLayerFor` / `penIsWall`
+ * classify what is on top of an element (see their comments).
+ */
+const HIT_TEST_HELPER_JS = `
+  function elementFromPointDeep(px, py) {
+    var node = document.elementFromPoint(px, py);
+    var guard = 0;
+    while (node && node.shadowRoot && guard < 20) {
+      var inner = node.shadowRoot.elementFromPoint(px, py);
+      if (!inner || inner === node) break;
+      node = inner;
+      guard++;
+    }
+    return node;
+  }
+
+  function penComposedParent(node) {
+    var parent = node.parentNode;
+    if (parent && parent.nodeType === 11 && parent.host) return parent.host; // ShadowRoot -> host
+    return parent;
+  }
+
+  function penComposedContains(container, node) {
+    var guard = 0;
+    while (node && guard < 500) {
+      if (node === container) return true;
+      node = penComposedParent(node);
+      guard++;
+    }
+    return false;
+  }
+
+  // The nearest fixed/sticky ancestor of hitEl that does NOT also contain el —
+  // an overlay layer (modal backdrop, cookie banner, sticky header) sitting on
+  // top of el rather than el's own positioned wrapper, skipping
+  // pointer-events:none layers. null if there is none (the hit is then not
+  // treated as a wall: the element stays listed).
+  // Cached per node: a page has few distinct layers but many candidates.
+  var penLayerCache = new Map();
+  function penOverlayLayerFor(hitEl, el) {
+    var node = hitEl;
+    var guard = 0;
+    while (node && node.nodeType === 1 && guard < 500) {
+      var info = penLayerCache.get(node);
+      if (info === undefined) {
+        var cs = getComputedStyle(node);
+        info = { pos: cs.position, none: cs.pointerEvents === "none" };
+        penLayerCache.set(node, info);
+      }
+      // pointer-events:none layers (toast containers: sonner, react-hot-toast
+      // — fixed, near viewport-sized) never receive the click, so they are
+      // never the occluder; keep walking to the next layer that does.
+      if ((info.pos === "fixed" || info.pos === "sticky") && !info.none && !penComposedContains(node, el)) return node;
+      node = penComposedParent(node);
+      guard++;
+    }
+    return null;
+  }
+
+  // A "wall" is an overlay layer covering at least 85% of the viewport (a
+  // modal backdrop, a full-page cookie wall): nothing behind it can be
+  // scrolled clear, so those controls really are unreachable. A partial bar
+  // (booking.com's OneTrust banner, div.otFlat: fixed, bottom, full width,
+  // ~200px of an 800px viewport, NOT aria-modal) is not a wall — the element
+  // under it can be scrolled out from beneath it, and a calendar popup's day
+  // cells can sit exactly there. An earlier version dropped anything under
+  // ANY fixed layer and hid every calendar day, so Jev kept re-toggling the
+  // date field. Area is the layer's rect clipped to the viewport.
+  function penIsWall(layer) {
+    var lr = layer.getBoundingClientRect();
+    var w = Math.min(lr.right, window.innerWidth) - Math.max(lr.left, 0);
+    var h = Math.min(lr.bottom, window.innerHeight) - Math.max(lr.top, 0);
+    if (w <= 0 || h <= 0) return false;
+    return (w * h) / (window.innerWidth * window.innerHeight) >= 0.85;
+  }
+
+  // Samples up to 5 viewport-clipped points of el (centre + the 25%/75%
+  // corners) through the shared hit-test. Returns how many were testable,
+  // whether any hit was related to el, and how many unrelated hits sit under
+  // a WALL layer. Elements outside the viewport have nothing testable.
+  //
+  // boxEl (optional) is the element whose rect is sampled when el has no
+  // usable box of its own — a visually hidden native range input is probed
+  // through its visible proxy, and a hit inside that proxy counts as related.
+  function penProbe(el, boxEl) {
+    var out = { testable: 0, related: false, walled: 0 };
+    var r = (boxEl || el).getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return out;
+    if (r.bottom <= 0 || r.top >= window.innerHeight || r.right <= 0 || r.left >= window.innerWidth) return out;
+    var fracs = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
+    for (var pi = 0; pi < fracs.length; pi++) {
+      var px = r.left + r.width * fracs[pi][0];
+      var py = r.top + r.height * fracs[pi][1];
+      if (px < 0 || py < 0 || px >= window.innerWidth || py >= window.innerHeight) continue;
+      var hit = elementFromPointDeep(px, py);
+      if (!hit) continue;
+      out.testable++;
+      if (penHitIsRelated(el, hit) || (boxEl && boxEl !== el && penHitIsRelated(boxEl, hit))) {
+        out.related = true;
+        return out;
+      }
+      var layer = penOverlayLayerFor(hit, el);
+      if (layer && penIsWall(layer)) out.walled++;
+    }
+    return out;
+  }
+
+  function penHitIsRelated(el, hitEl) {
+    if (!hitEl) return false;
+    if (hitEl === el || (el.contains && el.contains(hitEl)) || (hitEl.contains && hitEl.contains(el))) return true;
+    var labelAncestor = hitEl.closest && hitEl.closest("label");
+    if (labelAncestor) {
+      if (labelAncestor.contains(el)) return true;
+      var forId = labelAncestor.getAttribute("for");
+      if (forId && el.id === forId) return true;
+    }
+    return false;
+  }
+`;
+/**
+ * "Scroll only if needed" (Google Flights calendar bug): an unconditional
+ * \`scrollIntoView({ inline: "center" })\` on a target that was already fully
+ * visible scrolled the horizontal month strip it lives in, the site's own
+ * scroll handler snapped it back ~300 ms later, and the trusted click — whose
+ * coordinates were computed in between — landed on the gap between months.
+ * A reveal must therefore never move a target a user could already click:
+ * if its box is non-empty, lies fully inside the viewport AND a hit-test at
+ * its centre lands on it (or a related node, HIT_TEST_HELPER_JS), nothing is
+ * scrolled. Otherwise it scrolls with \`block: "center"\` but
+ * \`inline: "nearest"\`, so a carousel/strip is never centred horizontally
+ * just because. Always \`behavior: "instant"\` (see LOCATE_TARGET_JS).
+ * Returns true when it scrolled. Interpolates HIT_TEST_HELPER_JS itself.
+ */
+const REVEAL_IF_NEEDED_JS = `
+  ${HIT_TEST_HELPER_JS}
+
+  function penRevealIfNeeded(el) {
+    var r = el.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0 && r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight) {
+      if (penHitIsRelated(el, elementFromPointDeep(r.left + r.width / 2, r.top + r.height / 2))) return false;
+    }
+    el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+    return true;
+  }
+`;
+
+/**
  * Shared target-resolution + scroll-into-view helper for FOCUS_JS,
  * HOVER_TARGET_JS, CLICK_RESOLVE_JS and SCROLL_JS (second-pass review finding
  * 10 — before this, FOCUS_JS/HOVER_TARGET_JS each inlined an identical copy of
@@ -694,7 +850,7 @@ const FIND_BY_SNAPSHOT_JS = `
  * found was only reachable as a hidden fallback (see FIND_BY_TEXT_JS's doc
  * comment), and that has to survive through `locateTarget` for every caller
  * (hover/focus/click/scroll) to refuse acting on it instead of silently
- * proceeding. A hidden text match short-circuits before the scrollIntoView
+ * proceeding. A hidden text match short-circuits before the reveal
  * call — scrolling to reveal something the page itself is hiding is not
  * "revealing" it.
  *
@@ -706,8 +862,12 @@ const FIND_BY_SNAPSHOT_JS = `
  * would land on where the element WAS about to be, not where it actually is
  * yet. An instant jump makes the scroll's own effect on layout observable
  * before either script reads anything back.
+ *
+ * The reveal itself is \`penRevealIfNeeded\` (REVEAL_IF_NEEDED_JS): a target
+ * that is already fully visible and hit-testable is not scrolled at all.
  */
 const LOCATE_TARGET_JS = `
+  ${REVEAL_IF_NEEDED_JS}
   ${FIND_BY_TEXT_JS}
   ${FIND_BY_SNAPSHOT_JS}
 
@@ -738,7 +898,7 @@ const LOCATE_TARGET_JS = `
       }
     }
     if (hidden) return { el: null, hidden: true };
-    if (el) el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    if (el) penRevealIfNeeded(el);
     return { el: el, hidden: false, relocated: penRelocated };
   }
 `;
@@ -776,6 +936,48 @@ const SIG_TARGET_HELPER_JS = `
     var ref = window.__penSigTarget;
     if (ref && ref.isConnected && ref.hasAttribute("data-pen-sig-target")) return ref;
     return document.querySelector("[data-pen-sig-target]");
+  }
+`;
+
+/**
+ * "Typing follows the focus the click moved" helpers, shared by
+ * CLICK_RESOLVE_JS (records the pre-click focus), SELECT_ALL_CONTENT_JS and
+ * READ_TARGET_VALUE_JS. \`penDeepActive\` is \`document.activeElement\`
+ * descended through open shadow roots. \`penIsEditable\` is the one editable
+ * definition the type path uses everywhere: an input (range excluded — it is
+ * typed through the native setter), a textarea, or a contenteditable.
+ * \`penFollowableFocus(el)\` returns the deep active element when focus has
+ * been MOVED by the click onto a different editable than the target —
+ * not the target or inside it, and not whatever was already focused before
+ * the click (\`window.__penPreFocus\`), which a click that did not move focus
+ * leaves active — else null.
+ */
+const FOCUS_FOLLOW_HELPER_JS = `
+  function penDeepActive() {
+    var a = document.activeElement;
+    var guard = 0;
+    while (a && a.shadowRoot && a.shadowRoot.activeElement && guard < 20) {
+      a = a.shadowRoot.activeElement;
+      guard++;
+    }
+    return a;
+  }
+
+  function penIsEditable(n) {
+    if (!n || n.nodeType !== 1) return false;
+    var t = (n.tagName || "").toLowerCase();
+    return (
+      (t === "input" && (n.getAttribute("type") || "").toLowerCase() !== "range") ||
+      t === "textarea" ||
+      n.isContentEditable === true
+    );
+  }
+
+  function penFollowableFocus(el) {
+    var a = penDeepActive();
+    if (!a || a === el || !penIsEditable(a) || (el.contains && el.contains(a))) return null;
+    if (a === window.__penPreFocus) return null;
+    return a;
   }
 `;
 
@@ -1225,6 +1427,7 @@ export const CLICK_JS = `(() => {
   ${FIND_BY_TEXT_JS}
   ${SCOPED_SIGNATURE_JS}
   ${TARGET_BUSY_HELPER_JS}
+  ${REVEAL_IF_NEEDED_JS}
 
   // Text first, selector as fallback (not the reverse): a bare word like
   // "Search", "Map", "Details", "Select", "Menu", "Address" or "Video" is
@@ -1259,7 +1462,7 @@ export const CLICK_JS = `(() => {
   var scopedBefore = scopedSignatureOf(el);
   var busyBefore = penTargetIsBusy(el);
 
-  el.scrollIntoView({ block: "center" });
+  penRevealIfNeeded(el);
   el.click();
   return {
     url: location.href,
@@ -1406,6 +1609,7 @@ export const TYPE_JS = `(() => {
   ${FIND_BY_TEXT_JS}
   ${SCOPED_SIGNATURE_JS}
   ${TARGET_BUSY_HELPER_JS}
+  ${REVEAL_IF_NEEDED_JS}
   ${ARIA_SLIDER_HELPER_JS}
   ${RANGE_TYPE_HELPER_JS}
 
@@ -1439,7 +1643,7 @@ export const TYPE_JS = `(() => {
       __slider: sliderPrep.slider,
     };
   }
-  el.scrollIntoView({ block: "center" });
+  penRevealIfNeeded(el);
   el.focus();
   var tag = (el.tagName || "").toLowerCase();
   var rangeInfo = null;
@@ -1476,136 +1680,6 @@ export const TYPE_JS = `(() => {
   }
   return typedResult;
 })()`;
-
-/**
- * Composed hit-test + "related" test, shared by CLICK_RESOLVE_JS (is the
- * click point really on the target?) and SNAPSHOT_JS (is a candidate covered
- * by an overlay a user couldn't click through?) so the two can never drift —
- * a control SNAPSHOT_JS offers must be one CLICK_RESOLVE_JS would accept.
- *
- * `elementFromPointDeep` walks into *open* shadow roots (a closed root is
- * opaque, same as `elementFromPoint` itself). `penHitIsRelated(el, hit)`
- * is true when the hit is el, a descendant, an ancestor (a click landing on a
- * wrapper still bubbles to the target's listener), or a <label> that
- * contains el / whose `for` equals el.id. `penOverlayLayerFor` / `penIsWall`
- * classify what is on top of an element (see their comments).
- */
-const HIT_TEST_HELPER_JS = `
-  function elementFromPointDeep(px, py) {
-    var node = document.elementFromPoint(px, py);
-    var guard = 0;
-    while (node && node.shadowRoot && guard < 20) {
-      var inner = node.shadowRoot.elementFromPoint(px, py);
-      if (!inner || inner === node) break;
-      node = inner;
-      guard++;
-    }
-    return node;
-  }
-
-  function penComposedParent(node) {
-    var parent = node.parentNode;
-    if (parent && parent.nodeType === 11 && parent.host) return parent.host; // ShadowRoot -> host
-    return parent;
-  }
-
-  function penComposedContains(container, node) {
-    var guard = 0;
-    while (node && guard < 500) {
-      if (node === container) return true;
-      node = penComposedParent(node);
-      guard++;
-    }
-    return false;
-  }
-
-  // The nearest fixed/sticky ancestor of hitEl that does NOT also contain el —
-  // an overlay layer (modal backdrop, cookie banner, sticky header) sitting on
-  // top of el rather than el's own positioned wrapper, skipping
-  // pointer-events:none layers. null if there is none (the hit is then not
-  // treated as a wall: the element stays listed).
-  // Cached per node: a page has few distinct layers but many candidates.
-  var penLayerCache = new Map();
-  function penOverlayLayerFor(hitEl, el) {
-    var node = hitEl;
-    var guard = 0;
-    while (node && node.nodeType === 1 && guard < 500) {
-      var info = penLayerCache.get(node);
-      if (info === undefined) {
-        var cs = getComputedStyle(node);
-        info = { pos: cs.position, none: cs.pointerEvents === "none" };
-        penLayerCache.set(node, info);
-      }
-      // pointer-events:none layers (toast containers: sonner, react-hot-toast
-      // — fixed, near viewport-sized) never receive the click, so they are
-      // never the occluder; keep walking to the next layer that does.
-      if ((info.pos === "fixed" || info.pos === "sticky") && !info.none && !penComposedContains(node, el)) return node;
-      node = penComposedParent(node);
-      guard++;
-    }
-    return null;
-  }
-
-  // A "wall" is an overlay layer covering at least 85% of the viewport (a
-  // modal backdrop, a full-page cookie wall): nothing behind it can be
-  // scrolled clear, so those controls really are unreachable. A partial bar
-  // (booking.com's OneTrust banner, div.otFlat: fixed, bottom, full width,
-  // ~200px of an 800px viewport, NOT aria-modal) is not a wall — the element
-  // under it can be scrolled out from beneath it, and a calendar popup's day
-  // cells can sit exactly there. An earlier version dropped anything under
-  // ANY fixed layer and hid every calendar day, so Jev kept re-toggling the
-  // date field. Area is the layer's rect clipped to the viewport.
-  function penIsWall(layer) {
-    var lr = layer.getBoundingClientRect();
-    var w = Math.min(lr.right, window.innerWidth) - Math.max(lr.left, 0);
-    var h = Math.min(lr.bottom, window.innerHeight) - Math.max(lr.top, 0);
-    if (w <= 0 || h <= 0) return false;
-    return (w * h) / (window.innerWidth * window.innerHeight) >= 0.85;
-  }
-
-  // Samples up to 5 viewport-clipped points of el (centre + the 25%/75%
-  // corners) through the shared hit-test. Returns how many were testable,
-  // whether any hit was related to el, and how many unrelated hits sit under
-  // a WALL layer. Elements outside the viewport have nothing testable.
-  //
-  // boxEl (optional) is the element whose rect is sampled when el has no
-  // usable box of its own — a visually hidden native range input is probed
-  // through its visible proxy, and a hit inside that proxy counts as related.
-  function penProbe(el, boxEl) {
-    var out = { testable: 0, related: false, walled: 0 };
-    var r = (boxEl || el).getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return out;
-    if (r.bottom <= 0 || r.top >= window.innerHeight || r.right <= 0 || r.left >= window.innerWidth) return out;
-    var fracs = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
-    for (var pi = 0; pi < fracs.length; pi++) {
-      var px = r.left + r.width * fracs[pi][0];
-      var py = r.top + r.height * fracs[pi][1];
-      if (px < 0 || py < 0 || px >= window.innerWidth || py >= window.innerHeight) continue;
-      var hit = elementFromPointDeep(px, py);
-      if (!hit) continue;
-      out.testable++;
-      if (penHitIsRelated(el, hit) || (boxEl && boxEl !== el && penHitIsRelated(boxEl, hit))) {
-        out.related = true;
-        return out;
-      }
-      var layer = penOverlayLayerFor(hit, el);
-      if (layer && penIsWall(layer)) out.walled++;
-    }
-    return out;
-  }
-
-  function penHitIsRelated(el, hitEl) {
-    if (!hitEl) return false;
-    if (hitEl === el || (el.contains && el.contains(hitEl)) || (hitEl.contains && hitEl.contains(el))) return true;
-    var labelAncestor = hitEl.closest && hitEl.closest("label");
-    if (labelAncestor) {
-      if (labelAncestor.contains(el)) return true;
-      var forId = labelAncestor.getAttribute("for");
-      if (forId && el.id === forId) return true;
-    }
-    return false;
-  }
-`;
 
 /**
  * Wave 2 reliability, item 1/2: resolves a click/type target — by `target`
@@ -1649,7 +1723,7 @@ export const CLICK_RESOLVE_JS = `(() => {
   ${LOCATE_TARGET_JS}
   ${SCOPED_SIGNATURE_JS}
   ${TARGET_BUSY_HELPER_JS}
-  ${HIT_TEST_HELPER_JS}
+  ${FOCUS_FOLLOW_HELPER_JS}
 
   var located = locateTarget(args);
   if (located.hidden) return { error: "target is not visible (hidden element)" };
@@ -1680,6 +1754,12 @@ export const CLICK_RESOLVE_JS = `(() => {
 
   var scopedBefore = scopedSignatureOf(el);
   var busyBefore = penTargetIsBusy(el);
+
+  // What was focused BEFORE the trusted click: lets SELECT_ALL_CONTENT_JS /
+  // READ_TARGET_VALUE_JS tell "the click moved focus to another field" (an
+  // overlay input opened by the click) from "focus was already there". No
+  // side effect beyond this page-global note.
+  window.__penPreFocus = penDeepActive();
 
   // Code review finding 4: computed here, ahead of any click, so
   // \`controller.ts\`'s \`dispatchType\` can refuse a non-editable target
@@ -1737,7 +1817,6 @@ export const REVEAL_TARGET_JS = `(() => {
   var args = ${ARGS_MARKER};
 
   ${LOCATE_TARGET_JS}
-  ${HIT_TEST_HELPER_JS}
 
   var located = locateTarget(args);
   if (!located.el) return { found: false, hidden: located.hidden === true };
@@ -1765,21 +1844,43 @@ export const REVEAL_TARGET_JS = `(() => {
  * field at all (`editable`), which `controller.ts`'s `dispatchType` uses to
  * decide between proceeding with the trusted-input path and returning the
  * same "Element is not editable" error TYPE_JS/PERFORM_JS already report.
+ *
+ * Args `{ followFocus }`: see the in-script comment — after a landed trusted
+ * click, typing follows a focus the click moved to another editable.
  */
 export const SELECT_ALL_CONTENT_JS = `(() => {
-  ${SIG_TARGET_HELPER_JS}
+  var args = ${ARGS_MARKER};
+  ${SCOPED_SIGNATURE_JS}
+  ${FOCUS_FOLLOW_HELPER_JS}
   var el = penFindSigTarget();
   if (!el) return { error: "Target element not found for typing." };
-  if (typeof el.focus === "function") el.focus();
+  // followFocus (only sent after a TRUSTED click really landed): the click
+  // may have opened an overlay and focused a DIFFERENT field in it (a
+  // "Where from?" box that hands off to a search input). Calling el.focus()
+  // then would pull focus back to the covered original and the text would be
+  // typed into the wrong field, so typing follows the focus instead: the new
+  // field is re-stamped as the target and el is left alone. \`retargeted\`
+  // and that field's own before-signature (\`__scopedBefore\`, taken before
+  // any text is inserted) go back to the controller.
+  var retargeted = false;
+  if (args.followFocus === true) {
+    var moved = penFollowableFocus(el);
+    if (moved) {
+      penStampSigTarget(moved);
+      el = moved;
+      retargeted = true;
+    }
+  }
+  if (!retargeted && typeof el.focus === "function") el.focus();
   var tag = (el.tagName || "").toLowerCase();
+  var result = { editable: false };
   if (tag === "input" || tag === "textarea") {
     try {
       if (typeof el.select === "function") el.select();
       else if (typeof el.setSelectionRange === "function") el.setSelectionRange(0, String(el.value || "").length);
     } catch (e) {}
-    return { editable: true };
-  }
-  if (el.isContentEditable) {
+    result = { editable: true };
+  } else if (el.isContentEditable) {
     try {
       var range = document.createRange();
       range.selectNodeContents(el);
@@ -1787,9 +1888,13 @@ export const SELECT_ALL_CONTENT_JS = `(() => {
       sel.removeAllRanges();
       sel.addRange(range);
     } catch (e) {}
-    return { editable: true };
+    result = { editable: true };
   }
-  return { editable: false };
+  if (retargeted) {
+    result.retargeted = true;
+    result.__scopedBefore = scopedSignatureOf(el);
+  }
+  return result;
 })()`;
 
 /**
@@ -1807,15 +1912,32 @@ export const SELECT_ALL_CONTENT_JS = `(() => {
 export const READ_TARGET_VALUE_JS = `(() => {
   var args = ${ARGS_MARKER};
   var expected = args.text;
-  ${SIG_TARGET_HELPER_JS}
+  ${SCOPED_SIGNATURE_JS}
+  ${FOCUS_FOLLOW_HELPER_JS}
+  function penReadText(n) {
+    var t = (n.tagName || "").toLowerCase();
+    if (t === "input" || t === "textarea") return n.value;
+    if (n.isContentEditable) return n.textContent;
+    return null;
+  }
   var el = penFindSigTarget();
   if (!el) return { matches: false, present: false };
-  var tag = (el.tagName || "").toLowerCase();
-  var actual;
-  if (tag === "input" || tag === "textarea") actual = el.value;
-  else if (el.isContentEditable) actual = el.textContent;
-  else actual = null;
-  return { matches: actual === expected, present: true };
+  var actual = penReadText(el);
+  if (actual === expected) return { matches: true, present: true };
+  // The click's focus move can land AFTER SELECT_ALL_CONTENT_JS ran (a slow
+  // overlay): the text then went into the newly focused field, not the
+  // stamped one. If that field holds exactly the expected text, adopt it as
+  // the target (same boolean-only privacy rule). Its before-signature is
+  // synthesized as "empty": the insert replaced the selection, and an empty
+  // before vs. a non-empty after is what makes the type count as a change.
+  var moved = penFollowableFocus(el);
+  if (moved && penReadText(moved) === expected) {
+    penStampSigTarget(moved);
+    var before = scopedSignatureOf(moved);
+    if (expected.length > 0) before.valueLength = 0;
+    return { matches: true, present: true, retargeted: true, __scopedBefore: before };
+  }
+  return { matches: false, present: true };
 })()`;
 
 /**
@@ -2640,6 +2762,7 @@ export const PERFORM_JS = `(() => {
   ${SCOPED_SIGNATURE_JS}
   ${TARGET_BUSY_HELPER_JS}
   ${FIND_BY_SNAPSHOT_JS}
+  ${REVEAL_IF_NEEDED_JS}
   ${SCROLL_CONTAINER_HELPER_JS}
   ${RANGE_TYPE_HELPER_JS}
 
@@ -2697,7 +2820,7 @@ export const PERFORM_JS = `(() => {
   }
 
   if (operation === "CLICK") {
-    el.scrollIntoView({ block: "center" });
+    penRevealIfNeeded(el);
     el.click();
     return penResult();
   }
@@ -2712,7 +2835,7 @@ export const PERFORM_JS = `(() => {
       sliderResult.__targetSelfDisabled = false;
       return sliderResult;
     }
-    el.scrollIntoView({ block: "center" });
+    penRevealIfNeeded(el);
     el.focus();
     var tag = (el.tagName || "").toLowerCase();
     var rangeInfo = null;

@@ -1542,6 +1542,12 @@ export class BrowserController {
    * (TYPE_JS/PERFORM_JS's TYPE_TEXT branch) otherwise — mirrors
    * `dispatchClick`'s structure and reasoning.
    *
+   * Typing follows the focus the click moved: when the trusted click opens
+   * an overlay and focuses a *different* editable, SELECT_ALL_CONTENT_JS
+   * (`followFocus`) and READ_TARGET_VALUE_JS re-stamp that field as the
+   * target instead of pulling focus back; the result then carries
+   * `retargeted: true` (still `via: "cdp"`, no legacy fallback).
+   *
    * Focus is attempted two ways in sequence, not either/or: a trusted CDP
    * click at the resolved point (when the hit-test passed and a CDP session
    * exists) *and then* `SELECT_ALL_CONTENT_JS`'s own `el.focus()` — the CDP
@@ -1594,9 +1600,14 @@ export class BrowserController {
       return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
     }
 
-    const scopedBefore = extractScopedBefore(located);
+    let scopedBefore = extractScopedBefore(located);
     const busyBefore = extractBusyBefore(located);
 
+    // "Typing follows the focus the click moved": only a click that really
+    // landed can have moved focus (e.g. opened an overlay with its own
+    // input), so only then may SELECT_ALL_CONTENT_JS / the verify adopt a
+    // different focused field. Without a trusted click behaviour is unchanged.
+    let clickDispatched = false;
     if (located.hitOk === true) {
       try {
         const x = located.x as number;
@@ -1604,6 +1615,7 @@ export class BrowserController {
         await page.sendCdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" });
         await page.sendCdp("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
         await page.sendCdp("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+        clickDispatched = true;
       } catch {
         // Fall through — SELECT_ALL_CONTENT_JS's own el.focus() below is
         // still attempted even if the trusted click itself failed.
@@ -1612,11 +1624,17 @@ export class BrowserController {
 
     let selectResult: BrowserCommandResult;
     try {
-      selectResult = await this.executeScript(page, "SELECT_ALL_CONTENT_JS", {});
+      selectResult = await this.executeScript(page, "SELECT_ALL_CONTENT_JS", { followFocus: clickDispatched });
     } catch (err) {
       return errorResult(`Failed to focus target before typing: ${toMessage(err)}`);
     }
     if ("error" in selectResult) return selectResult;
+    // The click opened a different field and focus is there: the stamp moved
+    // with it, so the change is measured against THAT field's own
+    // before-signature (the original's is meaningless for the diff).
+    let retargeted = selectResult.retargeted === true;
+    const retargetedBefore = extractScopedBefore(selectResult);
+    if (retargeted && retargetedBefore) scopedBefore = retargetedBefore;
     if (selectResult.editable !== true) {
       return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
     }
@@ -1640,6 +1658,14 @@ export class BrowserController {
     if ("error" in verify || verify.matches !== true) {
       return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
     }
+    // Focus moved AFTER the select step (slow overlay): the text landed in
+    // the new field and the verify adopted it — same outcome, no legacy
+    // fallback (which would write into the original covered field too).
+    if (verify.retargeted === true) {
+      retargeted = true;
+      const verifyBefore = extractScopedBefore(verify);
+      if (verifyBefore) scopedBefore = verifyBefore;
+    }
 
     let busyAfter = busyBefore;
     try {
@@ -1654,6 +1680,7 @@ export class BrowserController {
       title: page.getTitle(),
       matched: located.matched,
       via: "cdp",
+      ...(retargeted ? { retargeted: true } : {}),
       __scopedBefore: scopedBefore,
       __targetSelfDisabled: !busyBefore && busyAfter,
     };

@@ -3791,21 +3791,23 @@ describe("BrowserController — Wave 1 speed", () => {
   // Wave 2 reliability (desktop/src/main/browser/controller.ts,
   // pageScripts.ts) — trusted CDP click/type, hidden-target text resolution,
   // and scroll-container targeting. `CLICK_RESOLVE_JS`'s code always
-  // contains "elementFromPointDeep" (its hit-test helper — unique to that
-  // script); `SELECT_ALL_CONTENT_JS`'s always contains "Target element not
-  // found for typing." (its own error message); `READ_TARGET_VALUE_JS`'s
-  // always contains "matches: actual === expected" (its comparison
-  // expression) — used below to give each script call a distinct canned
+  // contains "__busyBefore: busyBefore" (unique to that script);
+  // `SELECT_ALL_CONTENT_JS`'s always contains "Target element not found for
+  // typing." (its own error message); `READ_TARGET_VALUE_JS`'s always
+  // contains "penReadText(moved) === expected" (its retarget comparison) — used below to give each script call a distinct canned
   // response without depending on call order.
   describe("Wave 2 reliability", () => {
     function isResolveCall(code: unknown): boolean {
-      return typeof code === "string" && code.includes("elementFromPointDeep");
+      // CLICK_RESOLVE_JS (`__busyBefore`) or REVEAL_TARGET_JS — NOT every
+      // script that merely interpolates the hit-test helper (LOCATE_TARGET_JS
+      // and CLICK_JS/TYPE_JS/PERFORM_JS carry it for penRevealIfNeeded).
+      return typeof code === "string" && (code.includes("__busyBefore: busyBefore") || code.includes("var __penReveal = true"));
     }
     function isSelectAllCall(code: unknown): boolean {
       return typeof code === "string" && code.includes("Target element not found for typing.");
     }
     function isReadValueCall(code: unknown): boolean {
-      return typeof code === "string" && code.includes("matches: actual === expected");
+      return typeof code === "string" && code.includes("penReadText(moved) === expected");
     }
     function isBusyCall(code: unknown): boolean {
       return typeof code === "string" && code.includes("present: true, busy: penTargetIsBusy(el)");
@@ -4025,6 +4027,77 @@ describe("BrowserController — Wave 1 speed", () => {
         expect(firstCharCall).toBeTruthy();
         expect((firstCharCall![1] as Record<string, unknown>).text).toBeUndefined();
         expect(sendCdp).toHaveBeenCalledWith("Input.insertText", { text: "hi@example.com" });
+      });
+
+      it("act type: passes followFocus: true to SELECT_ALL_CONTENT_JS only after a trusted click landed", async () => {
+        async function run(hitOk: boolean): Promise<string> {
+          let selectCode = "";
+          const page = makeFakePage({
+            getURL: vi.fn(() => "https://x/"),
+            getTitle: vi.fn(() => "X"),
+            sendCdp: vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({})),
+            executeJavaScript: vi.fn((code: string) => {
+              if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+              if (isResolveCall(code)) return Promise.resolve({ found: true, x: 5, y: 6, hitOk, matched: "Email", editable: true });
+              if (isSelectAllCall(code)) {
+                selectCode = code;
+                return Promise.resolve({ editable: true });
+              }
+              if (isReadValueCall(code)) return Promise.resolve({ matches: true, present: true });
+              if (isBusyCall(code)) return Promise.resolve({ present: false, busy: false });
+              return Promise.resolve({ ok: true });
+            }),
+          });
+          await new BrowserController(makeFakeTarget(page)).act({ action: "type", target: "Email", text: "a" });
+          return selectCode;
+        }
+        expect(await run(true)).toMatch(/"followFocus":\s*true/);
+        expect(await run(false)).toMatch(/"followFocus":\s*false/);
+      });
+
+      it("act type: a retargeted select (click moved focus to an overlay input) types there, reports retargeted, and uses the new field's before-signature", async () => {
+        const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+        const sig = { nodeCount: 1, textHash: 0, src: "", valueLength: 0, ariaExpanded: "", ariaSelected: "", ariaValueNow: "", checked: false };
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://x/"),
+          getTitle: vi.fn(() => "X"),
+          sendCdp,
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            if (isResolveCall(code)) return Promise.resolve({ found: true, x: 5, y: 6, hitOk: true, matched: "Where from?", editable: true });
+            if (isSelectAllCall(code)) return Promise.resolve({ editable: true, retargeted: true, __scopedBefore: sig });
+            if (isReadValueCall(code)) return Promise.resolve({ matches: true, present: true });
+            if (isBusyCall(code)) return Promise.resolve({ present: false, busy: false });
+            // Anything else would be the legacy TYPE_JS fallback.
+            return Promise.resolve({ url: "https://x/", title: "X", legacy: true });
+          }),
+        });
+        const result = await new BrowserController(makeFakeTarget(page)).act({ action: "type", target: "Where from?", text: "Berlin" });
+        expect(result).toMatchObject({ via: "cdp", retargeted: true });
+        expect(result).not.toHaveProperty("legacy");
+        expect(sendCdp).toHaveBeenCalledWith("Input.insertText", { text: "Berlin" });
+      });
+
+      it("act type: a retargeted VERIFY (focus moved after the select step) succeeds via cdp without the legacy fallback", async () => {
+        const sendCdp = vi.fn((_method: string, _params?: Record<string, unknown>) => Promise.resolve({}));
+        const legacy = vi.fn();
+        const page = makeFakePage({
+          getURL: vi.fn(() => "https://x/"),
+          getTitle: vi.fn(() => "X"),
+          sendCdp,
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            if (isResolveCall(code)) return Promise.resolve({ found: true, x: 5, y: 6, hitOk: true, matched: "Where from?", editable: true });
+            if (isSelectAllCall(code)) return Promise.resolve({ editable: true });
+            if (isReadValueCall(code)) return Promise.resolve({ matches: true, present: true, retargeted: true });
+            if (isBusyCall(code)) return Promise.resolve({ present: false, busy: false });
+            legacy();
+            return Promise.resolve({ url: "https://x/", title: "X" });
+          }),
+        });
+        const result = await new BrowserController(makeFakeTarget(page)).act({ action: "type", target: "Where from?", text: "Berlin" });
+        expect(result).toMatchObject({ via: "cdp", retargeted: true });
+        expect(legacy).not.toHaveBeenCalled();
       });
 
       it("act type: verifies the typed value and falls back to the native-setter path (TYPE_JS) on a mismatch", async () => {

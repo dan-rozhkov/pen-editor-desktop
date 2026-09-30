@@ -1432,6 +1432,22 @@ step both use, built on the same `locateTarget` (`LOCATE_TARGET_JS`) every
 other indexed/targeted action already shares (hover, focus, scroll — see
 below).
 
+- **Reveal only if needed; typing follows the focus the click moved** (Google
+  Flights fixes). `locateTarget` calls `penRevealIfNeeded` (`pageScripts.ts`):
+  a target whose box is fully inside the viewport and hit-testable at its
+  centre is NOT scrolled; otherwise `{ block: "center", inline: "nearest",
+  behavior: "instant" }` (never horizontally centred — a scroll strip's own
+  snap-back handler used to move the target between coordinates and click).
+  The DOM-fallback click/type scripts use the same helper. For typing,
+  `CLICK_RESOLVE_JS` records `window.__penPreFocus`; after a trusted click
+  that landed, `SELECT_ALL_CONTENT_JS({ followFocus: true })` re-stamps a
+  DIFFERENT editable the click focused (an overlay input) instead of calling
+  `el.focus()` on the covered original, and `READ_TARGET_VALUE_JS` adopts such
+  a field when focus moved later (slow/cloud) and it holds the typed text.
+  `dispatchType` then returns `via: "cdp"` plus `retargeted: true` with no
+  legacy fallback, and diffs against the new field's own before-signature.
+  E2E: `/reveal-strip`, `/reveal-fold`, `/focus-overlay` fixtures.
+
 - `CLICK_RESOLVE_JS` locates the element (visible text → CSS selector for a
   `target`, or the `data-pen-snap` stamp for `index`+`snapshotId`), stamps it
   `data-pen-sig-target` and captures its scoped signature (same as

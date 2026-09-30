@@ -50,6 +50,9 @@ let ariaHeaderUrl: string;
 let longListUrl: string;
 let ariaListboxUrl: string;
 let ariaCalendarUrl: string;
+let revealStripUrl: string;
+let revealFoldUrl: string;
+let focusOverlayUrl: string;
 // Wave 3 reliability item 2: a SECOND http server on a different port,
 // bound to "localhost" rather than "127.0.0.1" (the main server's own
 // bind), so the two are genuinely different origins/sites — a real
@@ -1056,6 +1059,102 @@ read as filled. -->
 <h1 id="ready">long-list-ready</h1>${rows}`);
       return;
     }
+    if (req.url && req.url.startsWith("/reveal-strip")) {
+      // Google Flights' calendar shape: a horizontal strip of month panels in
+      // an overflow-x container. The first panel's buttons are already fully
+      // visible; the site's own scroll handler snaps the strip back to 0
+      // ~200ms after ANY scroll. A reveal that centres a visible button
+      // would scroll the strip, so the trusted click (computed in between)
+      // would land on the moved/snapped layout. #max-scroll records the
+      // furthest scrollLeft ever seen.
+      res.end(`<!doctype html>
+<title>Reveal strip</title>
+<style>
+  body { margin: 0; }
+  #strip { width: 500px; overflow-x: auto; white-space: nowrap; }
+  .month { display: inline-block; width: 500px; vertical-align: top; }
+  .month button { margin: 8px; padding: 8px 16px; }
+</style>
+<h1 id="ready">reveal-strip-ready</h1>
+<div id="strip">
+  <div class="month"><button id="d1">Day One</button><button id="d2">Day Two</button></div>
+  <div class="month"><button id="d3">Day Three</button></div>
+  <div class="month"><button id="d4">Day Four</button></div>
+</div>
+<div id="chosen">none</div>
+<div id="max-scroll">0</div>
+<script>
+  var strip = document.getElementById("strip");
+  var max = 0;
+  strip.addEventListener("scroll", function () {
+    if (strip.scrollLeft > max) max = strip.scrollLeft;
+    document.getElementById("max-scroll").textContent = String(max);
+    setTimeout(function () { strip.scrollLeft = 0; }, 200);
+  });
+  document.querySelectorAll("button").forEach(function (b) {
+    b.addEventListener("click", function () { document.getElementById("chosen").textContent = b.id; });
+  });
+</script>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/reveal-fold")) {
+      res.end(`<!doctype html>
+<title>Reveal fold</title>
+<h1 id="ready">reveal-fold-ready</h1>
+<div style="height:3000px">spacer</div>
+<button id="below">Below Fold</button>
+<div id="chosen">none</div>
+<script>
+  document.getElementById("below").addEventListener("click", function () {
+    document.getElementById("chosen").textContent = "below";
+  });
+</script>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/focus-overlay")) {
+      // Google Flights' "Where from?" shape. ?mode=sync|async: clicking #from
+      // opens a fixed overlay covering it and focuses a DIFFERENT input in
+      // it (synchronously, or late — see the select listener). ?mode=none: a plain input. The
+      // overlay input renders a suggestion on input, like a real combobox;
+      // #from must stay empty. #a/#b: two plain fields for the "don't
+      // retarget into the previously focused one" regression.
+      res.end(`<!doctype html>
+<title>Focus overlay</title>
+<h1 id="ready">focus-overlay-ready</h1>
+<input id="from" aria-label="Where from?" placeholder="Where from?">
+<input id="a" aria-label="Field A"><input id="b" aria-label="Field B">
+<div id="overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:10">
+  <input id="overlay-input" aria-label="Where from search">
+  <div id="suggest"></div>
+</div>
+<script>
+  var mode = new URLSearchParams(location.search).get("mode") || "none";
+  var overlayInput = document.getElementById("overlay-input");
+  overlayInput.addEventListener("input", function () {
+    document.getElementById("suggest").textContent =
+      overlayInput.value.toLowerCase().indexOf("berl") === 0 ? "Berlin, Germany" : "";
+  });
+  document.getElementById("from").addEventListener("click", function () {
+    if (mode === "none") return;
+    document.getElementById("overlay").style.display = "block";
+    if (mode === "sync") overlayInput.focus();
+  });
+  // async: the focus move lands late — synchronously inside the
+  // controller's select-all step on #from (el.select() is wrapped), i.e.
+  // between SELECT_ALL_CONTENT_JS and Input.insertText, like a high-latency
+  // cloud browser. Deterministic, unlike a timer race. #from is prefilled so
+  // "unchanged" is checkable.
+  if (mode === "async") {
+    var from = document.getElementById("from");
+    from.value = "Munich";
+    from.select = function () {
+      HTMLInputElement.prototype.select.call(from);
+      overlayInput.focus();
+    };
+  }
+</script>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/aria-calendar")) {
       // Google Flights' date picker shape: a scrolling list of months, each
       // day a role=gridcell (past days aria-hidden) wrapping a role=button
@@ -1234,6 +1333,9 @@ read as filled. -->
   longListUrl = `${baseUrl}/long-list`;
   ariaListboxUrl = `${baseUrl}/aria-listbox`;
   ariaCalendarUrl = `${baseUrl}/aria-calendar`;
+  revealStripUrl = `${baseUrl}/reveal-strip`;
+  revealFoldUrl = `${baseUrl}/reveal-fold`;
+  focusOverlayUrl = `${baseUrl}/focus-overlay`;
 });
 
 test.afterAll(async () => {
@@ -4376,6 +4478,121 @@ test("browser snapshot: an open calendar's many visible days never crowd out its
     expect(snap.elements.some((e) => e.label === "Done")).toBe(true);
     // A date field that opens its picker on click has no attribute saying so.
     expect(snap.elements.find((e) => e.label === "Departure")?.ops).toEqual(["TYPE_TEXT", "CLICK"]);
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+// "Scroll only if needed" (Google Flights calendar): a reveal must never move
+// a target that is already fully visible. The strip's own scroll handler
+// snaps it back after ~200ms, so any scroll here would move the click target
+// between the coordinates being computed and the click landing.
+test("reveal: an already-visible target in a horizontal strip is clicked without scrolling the strip", async () => {
+  const { app, editorPage, page } = await openReachFixture(revealStripUrl, "reveal-strip-ready");
+  try {
+    const res = (await callBrowser(editorPage, "act", { action: "click", target: "Day Two" })) as {
+      error?: string;
+      via?: string;
+    };
+    expect(res.error).toBeUndefined();
+    expect(res.via).toBe("cdp");
+    await expect(page.locator("#chosen")).toHaveText("d2");
+    // Let any (wrongly) triggered snap-back handler fire, then check nothing ever scrolled.
+    await page.waitForTimeout(400);
+    await expect(page.locator("#max-scroll")).toHaveText("0");
+    expect(await page.evaluate(() => document.getElementById("strip")!.scrollLeft)).toBe(0);
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("reveal: a target below the fold is still scrolled into view and clicked", async () => {
+  const { app, editorPage, page } = await openReachFixture(revealFoldUrl, "reveal-fold-ready");
+  try {
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    const res = (await callBrowser(editorPage, "act", { action: "click", target: "Below Fold" })) as {
+      error?: string;
+      via?: string;
+    };
+    expect(res.error).toBeUndefined();
+    await expect(page.locator("#chosen")).toHaveText("below");
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+// "Typing follows the focus the click moved" (Google Flights "Where from?"):
+// the click opens an overlay and focuses a different input; the text must end
+// up there, not in the covered original.
+for (const mode of ["sync", "async"] as const) {
+  test(`type: a click that opens an overlay and focuses another input (${mode}) types into the overlay input`, async () => {
+    const { app, editorPage, page } = await openReachFixture(`${focusOverlayUrl}?mode=${mode}`, "focus-overlay-ready");
+    try {
+      const res = (await callBrowser(editorPage, "act", {
+        action: "type",
+        target: "#from",
+        text: "Berlin",
+      })) as { error?: string; via?: string; retargeted?: boolean; changed?: boolean };
+      expect(res.error).toBeUndefined();
+      expect(res.via).toBe("cdp");
+      expect(res.retargeted).toBe(true);
+      expect(res.changed).toBe(true);
+      await expect(page.locator("#overlay-input")).toHaveValue("Berlin");
+      await expect(page.locator("#suggest")).toHaveText("Berlin, Germany");
+      // The covered original is left exactly as it was.
+      await expect(page.locator("#from")).toHaveValue(mode === "async" ? "Munich" : "");
+    } finally {
+      await app.close().catch(() => {});
+    }
+  });
+}
+
+test("type: perform TYPE_TEXT by snapshot index also follows the focus an overlay-opening click moved", async () => {
+  const { app, editorPage, page } = await openReachFixture(`${focusOverlayUrl}?mode=sync`, "focus-overlay-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const from = snap.elements.find((e) => e.label === "Where from?");
+    expect(from).toBeTruthy();
+    const res = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: from!.index,
+      operation: "TYPE_TEXT",
+      text: "Berlin",
+    })) as { error?: string; via?: string; retargeted?: boolean };
+    expect(res.error).toBeUndefined();
+    expect(res.via).toBe("cdp");
+    expect(res.retargeted).toBe(true);
+    await expect(page.locator("#overlay-input")).toHaveValue("Berlin");
+    await expect(page.locator("#suggest")).toHaveText("Berlin, Germany");
+    await expect(page.locator("#from")).toHaveValue("");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("type: a plain input still types normally (no retarget), and typing into B does not retarget into the previously focused A", async () => {
+  const { app, editorPage, page } = await openReachFixture(`${focusOverlayUrl}?mode=none`, "focus-overlay-ready");
+  try {
+    const plain = (await callBrowser(editorPage, "act", { action: "type", target: "#from", text: "Paris" })) as {
+      error?: string;
+      via?: string;
+      retargeted?: boolean;
+    };
+    expect(plain.error).toBeUndefined();
+    expect(plain.via).toBe("cdp");
+    expect(plain.retargeted).toBeUndefined();
+    await expect(page.locator("#from")).toHaveValue("Paris");
+
+    await page.evaluate(() => document.getElementById("a")!.focus());
+    const b = (await callBrowser(editorPage, "act", { action: "type", target: "#b", text: "Bee" })) as {
+      error?: string;
+      retargeted?: boolean;
+    };
+    expect(b.error).toBeUndefined();
+    expect(b.retargeted).toBeUndefined();
+    await expect(page.locator("#b")).toHaveValue("Bee");
+    await expect(page.locator("#a")).toHaveValue("");
   } finally {
     await app.close().catch(() => {});
   }
