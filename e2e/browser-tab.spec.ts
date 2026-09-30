@@ -54,6 +54,7 @@ let revealStripUrl: string;
 let revealFoldUrl: string;
 let focusOverlayUrl: string;
 let autocompleteUrl: string;
+let lateEffectUrl: string;
 // Wave 3 reliability item 2: a SECOND http server on a different port,
 // bound to "localhost" rather than "127.0.0.1" (the main server's own
 // bind), so the two are genuinely different origins/sites — a real
@@ -1145,6 +1146,36 @@ read as filled. -->
 </script>`);
       return;
     }
+    if (req.url && req.url.startsWith("/late-effect")) {
+      // Google Flights' calendar shape: a modal dialog whose "Done" hides it
+      // ~300ms AFTER the click (a CSS-transition-like setTimeout), with the
+      // page's own controls (#search) behind it. #late is a plain button
+      // outside any dialog whose effect also lands after 300ms; #day is a
+      // dialog control that is not dismissing and changes the page at once.
+      res.end(`<!doctype html>
+<title>Late effect</title>
+<h1 id="ready">late-effect-ready</h1>
+<button id="search">Search flights</button>
+<button id="late">Apply filter</button>
+<div id="dlg" role="dialog" aria-modal="true" aria-label="Dates" style="position:fixed;inset:0;background:#fff;z-index:10">
+  <button id="day">Pick day 12</button>
+  <button id="done">Done</button>
+</div>
+<script>
+  document.getElementById("done").addEventListener("click", function () {
+    setTimeout(function () { document.getElementById("dlg").style.display = "none"; }, 300);
+  });
+  document.getElementById("day").addEventListener("click", function () {
+    document.getElementById("day").setAttribute("aria-selected", "true");
+  });
+  document.getElementById("late").addEventListener("click", function () {
+    setTimeout(function () {
+      document.getElementById("late").setAttribute("aria-expanded", "true");
+    }, 300);
+  });
+</script>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/focus-overlay")) {
       // Google Flights' "Where from?" shape. ?mode=sync|async: clicking #from
       // opens a fixed overlay covering it and focuses a DIFFERENT input in
@@ -1371,6 +1402,7 @@ read as filled. -->
   revealFoldUrl = `${baseUrl}/reveal-fold`;
   focusOverlayUrl = `${baseUrl}/focus-overlay`;
   autocompleteUrl = `${baseUrl}/autocomplete`;
+  lateEffectUrl = `${baseUrl}/late-effect`;
 });
 
 test.afterAll(async () => {
@@ -4673,6 +4705,72 @@ test("type: a plain input on the autocomplete page types normally and reports no
     expect(res.via).toBe("cdp");
     expect(res).not.toHaveProperty("autocomplete");
     await expect(page.locator("#plain")).toHaveValue("hello");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+// Late click effects: the site closes a dialog (or renders a result) ~300ms
+// AFTER the click, past the controller's settle. The click must still report
+// the effect, and the very next snapshot must no longer be scoped to the
+// closing dialog.
+for (const via of ["act", "perform"] as const) {
+  test(`click (${via}): a dialog's Done that hides it after 300ms reports changed and leaves no stale modal`, async () => {
+    const { app, editorPage } = await openReachFixture(lateEffectUrl, "late-effect-ready");
+    try {
+      let res: { error?: string; changed?: boolean };
+      if (via === "act") {
+        res = (await callBrowser(editorPage, "act", { action: "click", target: "#done" })) as typeof res;
+      } else {
+        const first = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+        const done = first.elements.find((e) => e.label === "Done");
+        expect(done).toBeTruthy();
+        res = (await callBrowser(editorPage, "perform", {
+          snapshotId: first.snapshotId,
+          index: done!.index,
+          operation: "CLICK",
+        })) as typeof res;
+      }
+      expect(res.error).toBeUndefined();
+      expect(res.changed).toBe(true);
+      const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult & { modal?: string };
+      expect(snap.modal).toBeUndefined();
+      expect(snap.elements.some((e) => e.label === "Search flights")).toBe(true);
+    } finally {
+      await app.close().catch(() => {});
+    }
+  });
+}
+
+test("click: a button outside any dialog whose effect lands after 300ms reports changed", async () => {
+  const { app, editorPage } = await openReachFixture(lateEffectUrl, "late-effect-ready");
+  try {
+    // Dismiss the dialog first so #late is reachable; its own 300ms close is
+    // already covered above, and the next click below starts on a quiet page.
+    await callBrowser(editorPage, "act", { action: "click", target: "#done" });
+    const res = (await callBrowser(editorPage, "act", { action: "click", target: "#late" })) as {
+      error?: string;
+      changed?: boolean;
+    };
+    expect(res.error).toBeUndefined();
+    expect(res.changed).toBe(true);
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("click: a non-dismissing control inside a dialog reports its immediate effect without waiting for the dialog", async () => {
+  const { app, editorPage } = await openReachFixture(lateEffectUrl, "late-effect-ready");
+  try {
+    const started = Date.now();
+    const res = (await callBrowser(editorPage, "act", { action: "click", target: "#day" })) as {
+      error?: string;
+      changed?: boolean;
+    };
+    expect(res.error).toBeUndefined();
+    expect(res.changed).toBe(true);
+    // The dialog stays open (it never closes): a dialog wait would cost its 1s cap.
+    expect(Date.now() - started).toBeLessThan(900);
   } finally {
     await app.close().catch(() => {});
   }

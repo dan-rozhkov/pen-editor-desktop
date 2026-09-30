@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   BrowserController,
   AUTOCOMPLETE_SETTLE_MS,
+  DIALOG_DISMISS_SETTLE_MS,
+  LATE_CLICK_EFFECT_MS,
   BROWSER_COMMAND_TIMEOUT_MS,
   BROWSER_OPEN_TIMEOUT_MS,
   MAX_SNAPSHOT_ELEMENTS,
@@ -1861,12 +1863,14 @@ describe("self-disabling control", () => {
       const controller = new BrowserController(makeFakeTarget(page));
       const snapshot = (await controller.snapshot()) as { snapshotId: string };
       const promise = controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
-      await vi.advanceTimersByTimeAsync(1_000);
+      // Past the busy polls AND the late-effect re-check (nothing changes in
+      // this fake, so the click keeps re-capturing until that cap).
+      await vi.advanceTimersByTimeAsync(2_000);
       const result = await promise;
 
       // The busy polls sit between the action and the after-capture, and the
       // after-capture only runs once the control reported itself free.
-      expect(order.slice(order.lastIndexOf("action"))).toEqual([
+      expect(order.slice(order.lastIndexOf("action"), order.lastIndexOf("action") + 5)).toEqual([
         "action",
         "busy:true",
         "busy:true",
@@ -1934,7 +1938,7 @@ describe("self-disabling control", () => {
       const controller = new BrowserController(makeFakeTarget(page));
       const snapshot = (await controller.snapshot()) as { snapshotId: string };
       const promise = controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(2_000);
 
       expect(await promise).not.toHaveProperty("error");
     } finally {
@@ -4766,5 +4770,168 @@ describe("autocomplete settle after typing", () => {
       expect(result).not.toHaveProperty("error");
       expect(result).toMatchObject({ url: "https://example.com/" });
     }
+  });
+});
+
+// Late click effects: a site that animates a change behind a CSS transition
+// (Google Flights' calendar "Done") changes the page AFTER the settle, so the
+// single after-capture reported "no effect". A same-URL `changed: false` click
+// now re-captures (bounded); a click on a dialog-dismissing control also waits
+// for that dialog to close first.
+describe("late click effects", () => {
+  /** DISMISS_DIALOG_STATE_JS is the only script containing this literal. */
+  function isDialogStateCall(code: unknown): boolean {
+    return typeof code === "string" && code.includes("return { closed: true }");
+  }
+
+  function sig(extra: Record<string, unknown> = {}) {
+    return {
+      url: "https://example.com/",
+      title: "Example",
+      nodeCount: 0,
+      textLength: 0,
+      textHash: 0,
+      mainImageSrc: "",
+      scrollY: 0,
+      focusedValueLength: 0,
+      ...extra,
+    };
+  }
+
+  /** `afterAnswer(n)` answers the n-th "after" capture (0-based). */
+  function makeClickPage(opts: {
+    afterAnswer?: (n: number) => Record<string, unknown>;
+    dismissDialog?: boolean;
+    dialogClosedAt?: (probe: number) => boolean;
+  }) {
+    const order: string[] = [];
+    let afters = 0;
+    let dialogProbes = 0;
+    const keeps: boolean[] = [];
+    const page = makeFakePage({
+      executeJavaScript: vi.fn((code: string) => {
+        if (isSignatureCall(code)) {
+          if (code.includes('"phase":"after"')) {
+            keeps.push(code.includes('"keep":true'));
+            order.push("after");
+            const n = afters++;
+            return Promise.resolve(sig(opts.afterAnswer ? opts.afterAnswer(n) : {}));
+          }
+          order.push("before");
+          return Promise.resolve(sig());
+        }
+        if (isRevealCall(code)) return Promise.resolve({ found: true, hitOk: true, dismissDialog: opts.dismissDialog === true });
+        if (isDialogStateCall(code)) {
+          order.push("dialog");
+          return Promise.resolve({ closed: opts.dialogClosedAt ? opts.dialogClosedAt(dialogProbes++) : true });
+        }
+        if (isCursorCall(code)) return Promise.resolve({ ok: true });
+        order.push("action");
+        return Promise.resolve({ url: "https://example.com/", title: "Example" });
+      }),
+    });
+    return { page, order, keeps, afters: () => afters, dialogProbes: () => dialogProbes };
+  }
+
+  async function clickWith(page: BrowserPageHandle, advanceMs: number) {
+    const controller = new BrowserController(makeFakeTarget(page));
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    const promise = controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+    await vi.advanceTimersByTimeAsync(advanceMs);
+    return promise;
+  }
+
+  it("re-captures until a late effect shows up and reports it as changed", async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, keeps } = makeClickPage({ afterAnswer: (n) => (n >= 2 ? sig({ scrollY: 40 }) : sig()) });
+      const result = await clickWith(page, 2_000);
+      expect(result).toMatchObject({ changed: true });
+      expect((result as { changes: string[] }).changes).toContain("scroll");
+      // The observer is kept across the peeks so the final capture still has the dom/text evidence.
+      expect(keeps.slice(0, 2)).toEqual([true, true]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns changed:false after the cap when nothing ever changes", async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, keeps, afters } = makeClickPage({});
+      const result = await clickWith(page, LATE_CLICK_EFFECT_MS + 1_000);
+      expect(result).toMatchObject({ changed: false, changes: [] });
+      expect(afters()).toBeGreaterThan(2);
+      expect(afters()).toBeLessThanOrEqual(LATE_CLICK_EFFECT_MS / 150 + 2);
+      // The last capture releases the observer.
+      expect(keeps[keeps.length - 1]).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an ordinary immediate change costs one capture and no extra wait", async () => {
+    const { page, afters } = makeClickPage({ afterAnswer: () => sig({ scrollY: 10 }) });
+    const controller = new BrowserController(makeFakeTarget(page));
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    // Real timers: a re-check poll would add 150 ms and a second capture.
+    const result = await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+    expect(result).toMatchObject({ changed: true });
+    expect(afters()).toBe(1);
+  });
+
+  it("waits for a dismissed dialog to close before the after-capture", async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, order, dialogProbes } = makeClickPage({
+        dismissDialog: true,
+        dialogClosedAt: (n) => n >= 3,
+      });
+      const result = await clickWith(page, 2_000);
+      expect(dialogProbes()).toBe(4);
+      const actionAt = order.lastIndexOf("action");
+      expect(order.slice(actionAt, actionAt + 6)).toEqual(["action", "dialog", "dialog", "dialog", "dialog", "after"]);
+      // Nothing else moved (the hidden button's own signature is unchanged):
+      // the closed dialog itself is the reported effect, with no late polling.
+      expect(result).toMatchObject({ changed: true, changes: ["dialog"] });
+      expect(order.filter((o) => o === "after")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up on a dialog that never closes at the cap", async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, dialogProbes } = makeClickPage({ dismissDialog: true, dialogClosedAt: () => false });
+      await clickWith(page, DIALOG_DISMISS_SETTLE_MS + LATE_CLICK_EFFECT_MS + 1_000);
+      expect(dialogProbes()).toBeGreaterThan(1);
+      expect(dialogProbes()).toBeLessThanOrEqual(DIALOG_DISMISS_SETTLE_MS / 100 + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a click inside a dialog that is not dismissing (a day cell) never probes the dialog", async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, dialogProbes } = makeClickPage({ dismissDialog: false, afterAnswer: () => sig({ scrollY: 5 }) });
+      await clickWith(page, 500);
+      expect(dialogProbes()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a failing dialog probe never turns the click into an error", async () => {
+    const { page } = makeClickPage({ dismissDialog: true, afterAnswer: () => sig({ scrollY: 5 }) });
+    const original = page.executeJavaScript as ReturnType<typeof vi.fn>;
+    const impl = original.getMockImplementation()!;
+    original.mockImplementation((code: string) => (isDialogStateCall(code) ? Promise.reject(new Error("boom")) : (impl as (c: string) => Promise<unknown>)(code)));
+    const controller = new BrowserController(makeFakeTarget(page));
+    const snapshot = (await controller.snapshot()) as { snapshotId: string };
+    const result = await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "CLICK" });
+    expect(result).not.toHaveProperty("error");
+    expect(result).toMatchObject({ changed: true });
   });
 });

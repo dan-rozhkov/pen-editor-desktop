@@ -31,6 +31,7 @@ import {
   READ_JS,
   TARGET_BUSY_JS,
   AUTOCOMPLETE_STATE_JS,
+  DISMISS_DIALOG_STATE_JS,
   CURSOR_JS,
   MARKS_JS,
   REMOVE_MARKS_JS,
@@ -58,6 +59,7 @@ const SCRIPT_TEMPLATES = {
   READ_JS,
   TARGET_BUSY_JS,
   AUTOCOMPLETE_STATE_JS,
+  DISMISS_DIALOG_STATE_JS,
   CURSOR_JS,
   MARKS_JS,
   REMOVE_MARKS_JS,
@@ -206,6 +208,26 @@ const NON_CLICK_SETTLE_MS = 50;
  * most that much. Plain fields pay one cheap probe and no wait. */
 export const AUTOCOMPLETE_SETTLE_MS = 2_000;
 const AUTOCOMPLETE_POLL_INTERVAL_MS = 100;
+
+/** A click whose effect lands after the settle: the site animates the
+ * change behind a CSS transition / `setTimeout` (Google Flights' calendar
+ * "Done" hides its dialog ~300 ms after the click), so the after-capture
+ * taken at ~540 ms saw nothing and the step was recorded "(no effect)".
+ * When a same-URL click diffs as `changed: false`, `captureClickEffect`
+ * re-captures every LATE_CLICK_POLL_MS until something changed or
+ * LATE_CLICK_EFFECT_MS elapsed (also bounded by the command deadline). A
+ * click that changes anything at once pays no extra wait. */
+export const LATE_CLICK_EFFECT_MS = 800;
+const LATE_CLICK_POLL_MS = 150;
+
+/** After a click on a dialog-dismissing control (REVEAL_TARGET_JS's
+ * `dismissDialog`), `settleDialogDismiss` polls every DIALOG_DISMISS_POLL_MS
+ * until the dialog is hidden/detached, capped by DIALOG_DISMISS_SETTLE_MS:
+ * while a closing dialog is still mounted the next snapshot scopes to it as
+ * `modal` and hides the page behind it. A click that dismisses nothing (a
+ * day cell, anything outside a dialog) never polls. */
+export const DIALOG_DISMISS_SETTLE_MS = 1_000;
+const DIALOG_DISMISS_POLL_MS = 100;
 
 /** Spec `2026-09-18-browse-task-jev-loop-design.md` §1: the element table is
  * the whole request payload for /api/browse/step, so an uncapped snapshot on
@@ -1404,7 +1426,7 @@ export class BrowserController {
         this.timeoutMs + this.cursorBudgetMs,
       );
     }
-    return this.withCommandTimeout(() => this.runClick(target), this.timeoutMs + this.cursorBudgetMs);
+    return this.withCommandTimeout((deadlineAt) => this.runClick(target, deadlineAt), this.timeoutMs + this.cursorBudgetMs);
   }
 
   /** Wave 2 reliability, item 1: performs a click via trusted CDP mouse
@@ -1469,11 +1491,67 @@ export class BrowserController {
   private async revealTarget(
     page: BrowserPageHandle,
     locateArgs: { target?: string; index?: number; snapshotId?: string },
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
-      await this.executeScript(page, "REVEAL_TARGET_JS", locateArgs);
+      const revealed = await this.executeScript(page, "REVEAL_TARGET_JS", locateArgs);
+      return revealed.dismissDialog === true;
     } catch {
       // Best-effort.
+      return false;
+    }
+  }
+
+  /** Waits for the dialog a dismissing click (REVEAL_TARGET_JS's
+   * `dismissDialog`) is closing — see DIALOG_DISMISS_SETTLE_MS. Probes at
+   * once (an already-closed dialog costs one probe), then every
+   * DIALOG_DISMISS_POLL_MS. Best-effort: a throwing/malformed probe, the cap
+   * or the command deadline just ends the wait. Returns true only when the
+   * probe saw the dialog closed — the caller then reports that as the click's
+   * effect (the dismissed button's own signature rarely moves once hidden). */
+  private async settleDialogDismiss(page: BrowserPageHandle, deadlineAt: number): Promise<boolean> {
+    const until = Math.min(Date.now() + DIALOG_DISMISS_SETTLE_MS, deadlineAt);
+    while (true) {
+      try {
+        const state = await this.executeScript(page, "DISMISS_DIALOG_STATE_JS", {});
+        if ("error" in state) return false;
+        if (state.closed !== false) return state.closed === true;
+      } catch {
+        return false;
+      }
+      if (Date.now() + DIALOG_DISMISS_POLL_MS >= until) return false;
+      await new Promise((resolve) => setTimeout(resolve, DIALOG_DISMISS_POLL_MS));
+    }
+  }
+
+  /** The click's after-capture + diff, with the late-effect re-check (see
+   * LATE_CLICK_EFFECT_MS). The first capture is a `keep` peek whenever the
+   * click stayed on the same URL, so SIGNATURE_JS's MutationObserver keeps
+   * accumulating dom/text evidence across re-checks; the last capture (the
+   * one that found a change, or the final poll at the cap) is non-`keep`
+   * and tears it down. `dialogClosed` (settleDialogDismiss saw the dismissed
+   * dialog go away) is itself the effect: the capture is then final, and a
+   * diff that found nothing else is reported `changed` with a "dialog" entry. A click that already changed something, or navigated,
+   * returns after the single capture it always did — and leaves the observer
+   * running only until the next "before" capture replaces it. */
+  private async captureClickEffect(
+    page: BrowserPageHandle,
+    before: PageSignature | null,
+    previousUrl: string,
+    scopedBefore: ScopedSignature | null,
+    deadlineAt: number,
+    dialogClosed = false,
+  ): Promise<EffectEvidence> {
+    const until = Math.min(Date.now() + LATE_CLICK_EFFECT_MS, deadlineAt);
+    while (true) {
+      const currentUrl = page.getURL();
+      const keep = !dialogClosed && currentUrl === previousUrl && Date.now() + LATE_CLICK_POLL_MS < until;
+      const after = await this.captureSignature(page, "after", keep);
+      const evidence = this.diffSignatures(before, after, { previousUrl, currentUrl: page.getURL(), scopedBefore });
+      if (dialogClosed && !evidence.changed) return { ...evidence, changed: true, changes: [...evidence.changes, "dialog"] };
+      // No "before" (or "after") evidence to re-compare against: nothing a
+      // re-check could add.
+      if (evidence.changed || !keep || !before || !after) return evidence;
+      await new Promise((resolve) => setTimeout(resolve, LATE_CLICK_POLL_MS));
     }
   }
 
@@ -2133,7 +2211,7 @@ export class BrowserController {
    * so diffSignatures can compare it against the same element's after
    * state, the real evidence on a page whose whole-document dom/text moves
    * on its own. */
-  private async runClick(target: string): Promise<BrowserCommandResult> {
+  private async runClick(target: string, deadlineAt: number): Promise<BrowserCommandResult> {
     const page = this.target.currentPage();
     if (!page) return errorResult("No browser tab is open — call browse_open first.");
     const previousUrl = page.getURL();
@@ -2145,7 +2223,7 @@ export class BrowserController {
     // Before the before-signature capture, deliberately — see CURSOR_JS's
     // doc comment (pageScripts.ts) for why the overlay's own DOM/scroll
     // footprint must never land between the two evidence-of-effect captures.
-    await this.revealTarget(page, { target });
+    const dismissDialog = await this.revealTarget(page, { target });
     await this.moveCursor(page, { action: "click", target });
     const before = await this.captureSignature(page, "before");
     // Armed/captured before CLICK_JS runs — Wave 1 speed: a navigation, or a
@@ -2170,14 +2248,15 @@ export class BrowserController {
       // here. It returns immediately when nothing is loading.
       await this.waitForLoadStop(page, CLICK_LOAD_SETTLE_TIMEOUT_MS);
     }
-    const after = await this.captureSignature(page, "after");
+    const dialogClosed = dismissDialog && (await this.settleDialogDismiss(page, deadlineAt));
+    const evidence = await this.captureClickEffect(page, before, previousUrl, scopedBefore, deadlineAt, dialogClosed);
     const currentUrl = page.getURL();
     const openedTab = await this.detectOpenedTab(tabsBefore);
     const merged: BrowserCommandResult = {
       ...result,
       url: currentUrl,
       title: page.getTitle(),
-      ...this.diffSignatures(before, after, { previousUrl, currentUrl, scopedBefore }),
+      ...evidence,
     };
     if (openedTab) merged.openedTab = openedTab;
     return merged;
@@ -2982,7 +3061,8 @@ export class BrowserController {
         // the same treatment as a target-based one.
         const tabsBefore = await this.listPagesSafe();
         // Before the before-signature capture — see runClick's comment.
-        if (frameRoute.frameId === null) await this.revealTarget(page, { index, snapshotId });
+        const dismissDialog =
+          frameRoute.frameId === null ? await this.revealTarget(page, { index, snapshotId }) : false;
         await this.moveCursor(page, { action: "click", snapshotId, index, point: cursorPoint });
         const before = await this.captureSignature(page, "before");
         // Armed/captured before the click runs — see runClick's comment.
@@ -3011,14 +3091,15 @@ export class BrowserController {
           // See runClick: the navigation can start after the busy wait.
           await this.waitForLoadStop(page, CLICK_LOAD_SETTLE_TIMEOUT_MS);
         }
-        const after = await this.captureSignature(page, "after");
+        const dialogClosed = dismissDialog && (await this.settleDialogDismiss(page, deadlineAt));
+        const evidence = await this.captureClickEffect(page, before, previousUrl, scopedBefore, deadlineAt, dialogClosed);
         const currentUrl = page.getURL();
         const openedTab = await this.detectOpenedTab(tabsBefore);
         const merged: BrowserCommandResult = {
           ...result,
           url: currentUrl,
           title: page.getTitle(),
-          ...this.diffSignatures(before, after, { previousUrl, currentUrl, scopedBefore }),
+          ...evidence,
         };
         if (openedTab) merged.openedTab = openedTab;
         return merged;
@@ -3397,10 +3478,16 @@ export class BrowserController {
    * Review finding 4: SIGNATURE_JS now takes `phase` (via ARGS_MARKER, like
    * every other script here) — it needs to know "before" from "after" to
    * coordinate the `data-pen-sig-mainimg`/`data-pen-sig-target` identity
-   * markers across the two calls (see SIGNATURE_JS's doc comment). */
-  private async captureSignature(page: BrowserPageHandle, phase: "before" | "after"): Promise<PageSignature | null> {
+   * markers across the two calls (see SIGNATURE_JS's doc comment). `keep`
+   * (an "after" peek, see captureClickEffect) leaves the dom/text observer
+   * and its state running for a later capture. */
+  private async captureSignature(
+    page: BrowserPageHandle,
+    phase: "before" | "after",
+    keep = false,
+  ): Promise<PageSignature | null> {
     try {
-      const code = SIGNATURE_JS.replace(ARGS_MARKER, () => JSON.stringify({ phase }));
+      const code = SIGNATURE_JS.replace(ARGS_MARKER, () => JSON.stringify(keep ? { phase, keep } : { phase }));
       const result = await page.executeJavaScript(code);
       return isPageSignature(result) ? result : null;
     } catch {

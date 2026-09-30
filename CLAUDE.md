@@ -1462,6 +1462,37 @@ below).
   Best-effort and report-silent: a failing probe never errors the type and
   nothing is added to the result. E2E: `/autocomplete` fixture.
 
+- **Late click effects + dialog-dismiss settle** (Google Flights calendar
+  "Done"). The site hides the dialog ~300 ms AFTER the click (CSS
+  transition), past the click settle, so the after-capture said
+  `changed: false` and the next snapshot was still scoped to the closing
+  dialog as `modal`. Two bounded, generic waits in `runClick` and `perform`
+  CLICK (frame-routed clicks get only the first):
+  1. **Dismiss-in-dialog.** `REVEAL_TARGET_JS` (already run before the
+     before-capture) reports `dismissDialog: true` and stamps the enclosing
+     dialog `data-pen-dismiss-dialog` when the target sits in a
+     role=dialog/alertdialog/aria-modal/open `<dialog>` AND its accessible
+     name equals/starts with done/close/apply/ok/save/confirm/cancel (word
+     boundary), is a bare x-glyph, or its aria-label contains "close". After
+     the click `settleDialogDismiss` polls `DISMISS_DIALOG_STATE_JS` every
+     100 ms until the dialog is detached/hidden/zero-rect/has no visible
+     descendant, capped by `DIALOG_DISMISS_SETTLE_MS` (1 s) and the command
+     deadline. A closed dialog IS the effect: the hidden button's own
+     signature rarely moves, so the result is `changed: true` with a
+     `"dialog"` entry when nothing else changed. A day cell or any other
+     click pays no probe.
+  2. **Late effect re-check.** `captureClickEffect`: a same-URL click whose
+     after-diff is `changed: false` re-captures every 150 ms until something
+     changed or `LATE_CLICK_EFFECT_MS` (800 ms) elapsed. The peeks pass
+     `keep` to `SIGNATURE_JS`, which then leaves `window.__penSigObserver`
+     and `__penSigState` alive (the usual "after" tears both down) so the
+     final capture still carries the whole dom/text evidence; the last poll
+     is non-`keep`. A click that changes something at once costs one
+     capture. A `keep` capture that already found a change leaves the
+     observer running until the next "before" replaces it.
+  Both are best-effort (a failing probe never errors the click). E2E:
+  `/late-effect` fixture.
+
 - `CLICK_RESOLVE_JS` locates the element (visible text → CSS selector for a
   `target`, or the `data-pen-snap` stamp for `index`+`snapshotId`), stamps it
   `data-pen-sig-target` and captures its scoped signature (same as

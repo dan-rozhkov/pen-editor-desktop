@@ -1857,6 +1857,60 @@ export const CLICK_RESOLVE_JS = `(() => {
 })()`;
 
 /**
+ * Used by REVEAL_TARGET_JS (DISMISS_DIALOG_STATE_JS reads the stamp): is `el` a dialog-dismissing control inside an open dialog? The dialog is
+ * the nearest ancestor (composed, so through shadow roots) with
+ * role=dialog/alertdialog, aria-modal=true or an open <dialog>; the control
+ * dismisses when its accessible name (aria-label, else text/value/title,
+ * trimmed, case-insensitive) equals or starts with done/close/apply/ok/save/
+ * confirm/cancel (a word boundary — "Done, 2 adults" yes, "Okinawa" no), is a
+ * bare x-glyph, or its aria-label contains "close". A day cell, a field or a
+ * "Next month" button inside the same dialog is not. `penMarkDismissDialog`
+ * stamps the dialog `data-pen-dismiss-dialog` (stale stamps cleared first)
+ * and returns true; false leaves nothing stamped.
+ */
+const DISMISS_DIALOG_HELPER_JS = `
+  function penDialogOf(node) {
+    var cur = node;
+    while (cur) {
+      if (cur.nodeType === 1) {
+        var role = (cur.getAttribute("role") || "").toLowerCase();
+        var tag = (cur.tagName || "").toLowerCase();
+        if (
+          role === "dialog" ||
+          role === "alertdialog" ||
+          cur.getAttribute("aria-modal") === "true" ||
+          (tag === "dialog" && cur.open === true)
+        ) {
+          return cur;
+        }
+      }
+      cur = cur.parentNode || cur.host || null;
+    }
+    return null;
+  }
+
+  function penLooksDismissing(el) {
+    var control = el.closest ? el.closest("button, [role='button'], a, input[type='button'], input[type='submit']") || el : el;
+    var aria = (control.getAttribute("aria-label") || "").trim().toLowerCase();
+    if (aria.indexOf("close") !== -1) return true;
+    var name = (aria || control.value || control.textContent || control.getAttribute("title") || "")
+      .toString().replace(/\\s+/g, " ").trim().toLowerCase();
+    if (!name) return false;
+    if (name === "×" || name === "✕" || name === "✖" || name === "✗") return true;
+    return /^(done|close|apply|ok|okay|save|confirm|cancel)(?![\\p{L}\\p{N}])/u.test(name);
+  }
+
+  function penMarkDismissDialog(el) {
+    var stale = document.querySelectorAll("[data-pen-dismiss-dialog]");
+    for (var si = 0; si < stale.length; si++) stale[si].removeAttribute("data-pen-dismiss-dialog");
+    var dialog = penDialogOf(el);
+    if (!dialog || !penLooksDismissing(el)) return false;
+    dialog.setAttribute("data-pen-dismiss-dialog", "1");
+    return true;
+  }
+`;
+
+/**
  * Runs BEFORE the controller's before-signature capture on every path that
  * goes through dispatchClick/dispatchType (target-based act click/type,
  * perform CLICK/TYPE_TEXT), so scrolling the target into view is never
@@ -1869,7 +1923,9 @@ export const CLICK_RESOLVE_JS = `(() => {
  * `locateTarget` scrolls the element to the viewport centre — that scroll is
  * the reveal; CLICK_RESOLVE_JS's own locate afterwards is then a no-op), and
  * reports whether the click point now passes the shared hit-test. Read-only
- * otherwise: no stamping, no signatures. Never an error the controller acts
+ * otherwise: no signatures, and the only stamp is `data-pen-dismiss-dialog`
+ * on the enclosing dialog when the target is a dialog-dismissing control
+ * (DISMISS_DIALOG_HELPER_JS; reported as `dismissDialog: true`). Never an error the controller acts
  * on — a miss is left for CLICK_RESOLVE_JS to report. `__penReveal` is the
  * marker the unit tests use to tell this call from the action scripts.
  * Top document only (frame-routed targets skip it).
@@ -1879,6 +1935,7 @@ export const REVEAL_TARGET_JS = `(() => {
   var args = ${ARGS_MARKER};
 
   ${LOCATE_TARGET_JS}
+  ${DISMISS_DIALOG_HELPER_JS}
 
   var located = locateTarget(args);
   if (!located.el) return { found: false, hidden: located.hidden === true };
@@ -1891,7 +1948,36 @@ export const REVEAL_TARGET_JS = `(() => {
       : false;
   var revealResult = { found: true, hitOk: hitOk };
   if (located.relocated) revealResult.relocated = true;
+  if (penMarkDismissDialog(located.el)) revealResult.dismissDialog = true;
   return revealResult;
+})()`;
+
+
+/**
+ * Polled by controller.ts's settleDialogDismiss after a click
+ * REVEAL_TARGET_JS flagged as dismissing a dialog: is the stamped dialog
+ * gone? Closed = no longer in the document, `open` false on a <dialog>,
+ * display:none / visibility:hidden, a zero rect, or no descendant with a
+ * visible box left (a dialog shell whose content a CSS transition just
+ * hid). `{ closed: true }` also when the stamp vanished. Read-only.
+ */
+export const DISMISS_DIALOG_STATE_JS = `(() => {
+  var dialog = document.querySelector("[data-pen-dismiss-dialog]");
+  if (!dialog || !dialog.isConnected) return { closed: true };
+  if ((dialog.tagName || "").toLowerCase() === "dialog" && dialog.open === false) return { closed: true };
+  function boxVisible(node) {
+    var r = node.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    var cs = getComputedStyle(node);
+    return cs.display !== "none" && cs.visibility !== "hidden";
+  }
+  if (!boxVisible(dialog)) return { closed: true };
+  var inner = dialog.querySelectorAll("*");
+  var limit = inner.length < 300 ? inner.length : 300;
+  for (var i = 0; i < limit; i++) {
+    if (boxVisible(inner[i])) return { closed: false };
+  }
+  return { closed: inner.length > 0 };
 })()`;
 
 /**
@@ -3232,9 +3318,13 @@ export const SIGNATURE_JS = `(() => {
         // by the time this executes), this can't miss a mutation regardless
         // of microtask timing.
         penSigProcessRecords(activeObserver.takeRecords());
-        activeObserver.disconnect();
+        // args.keep: a non-final "after" peek (controller.ts's late-effect
+        // re-check) — the observer keeps running so the final capture still
+        // sees the whole dom/text evidence, not just what landed after the
+        // peek. The next "before" (or a later non-keep "after") tears it down.
+        if (!args.keep) activeObserver.disconnect();
       } catch (e) {}
-      window.__penSigObserver = null;
+      if (!args.keep) window.__penSigObserver = null;
     }
     textLength = penSigState.textChanged ? 1 : 0;
     hash = penSigState.textChanged ? 1 : 0;
@@ -3299,7 +3389,7 @@ export const SIGNATURE_JS = `(() => {
     // at that point would see the previous action's leftover evidence.
     // Clearing it here, once \`result\` has already been built from it, means
     // there's nothing to leak.
-    window.__penSigState = null;
+    if (!args.keep) window.__penSigState = null;
   }
 
   return result;
