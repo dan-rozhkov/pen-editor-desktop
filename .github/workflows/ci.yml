@@ -37,7 +37,10 @@ jobs:
       # on a runner, so a sandboxed launch aborts. This relaxes the OS sandbox
       # for the test process only — the shipped app's per-view
       # `sandbox: true` is unaffected.
-      - run: xvfb-run --auto-servernum npm run test:e2e
+      # xvfb-run's default screen is 640x480x8, smaller than the app's
+      # 1440x900 window, so the window was clamped and viewport-dependent
+      # specs (e.g. the tall aria-calendar's "Done" button) fell off-screen.
+      - run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" npm run test:e2e
         env:
           ELECTRON_DISABLE_SANDBOX: "1"
       - uses: actions/upload-artifact@v4
