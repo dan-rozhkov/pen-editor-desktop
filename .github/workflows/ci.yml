@@ -38,8 +38,8 @@ jobs:
       # for the test process only — the shipped app's per-view
       # `sandbox: true` is unaffected.
       # xvfb-run's default screen is 640x480x8, smaller than the app's
-      # 1440x900 window, so the window was clamped and viewport-dependent
-      # specs (e.g. the tall aria-calendar's "Done" button) fell off-screen.
+      # 1440x900 window and only 8-bit colour; give it a real desktop-sized
+      # 24-bit screen so the e2e window matches what users run.
       - run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" npm run test:e2e
         env:
           ELECTRON_DISABLE_SANDBOX: "1"

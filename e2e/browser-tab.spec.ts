@@ -1314,11 +1314,16 @@ read as filled. -->
             `</div>`,
         )
         .join("");
+      // `tall` must still show more day cells than MAX_SNAPSHOT_ELEMENTS (120)
+      // while keeping "Done" well inside the 1440x900 window's viewport
+      // (~829px). At 720px "Done" sat at y≈823 of 829 — inside only by its
+      // top 6px — and Linux fonts pushed it off-screen on CI, where it then
+      // lost its slot to in-viewport cells. 600px leaves ~125px of margin.
       res.end(`<!doctype html>
 <title>ARIA Calendar</title>
 <h1 id="ready">aria-calendar-ready</h1>
 <input type="text" aria-label="Departure" placeholder="Departure">
-<div id="scroller" role="grid" style="height:${req.url.includes("tall") ? 720 : 120}px;overflow-y:auto;width:260px;border:1px solid #999">${grid}</div>
+<div id="scroller" role="grid" style="height:${req.url.includes("tall") ? 600 : 120}px;overflow-y:auto;width:260px;border:1px solid #999">${grid}</div>
 <button id="done" onclick="this.textContent='Confirmed'">Done</button>
 <p id="chosen-day">none</p>
 <script>
