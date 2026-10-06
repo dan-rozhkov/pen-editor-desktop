@@ -1001,6 +1001,62 @@ so the motion is frame-rate independent. The math is derived from
 | `magnetic` | bow 0.04, capture radius `min(40, len/2)`, pull 0.45, enter speed 300; records the lock-on time | physics-driven | magnet + ripple |
 | `classic` | the pre-engine look: bowed quadratic, easeInOutCubic, tiny overshoot | `90 + 0.7·D`, 260–900ms | ripple + squish |
 
+**Heading rotation (cua "heading Tangent").** `planMove` adds a `rot` (radians)
+to every sample (`applyHeading` in `CURSOR_PLAN_JS`, derived from cua
+`trajectory.rs finish()` / motion-lab `applyHeading`, MIT). The arrow art rests
+tip up-left (`TIP_ANGLE = -0.75π`). **Model (we deliberately differ from cua):**
+`rot` is always wrapped into (-π, π]. Per sample (velocity from samples i±2),
+while speed > 40 px/s and up to arrival, `rot` chases the travel heading along
+the shortest arc: `target = wrapAngle(atan2(vy,vx) - TIP_ANGLE)`,
+`rot = wrapAngle(rot + wrapAngle(target - rot)·k)`, `k = 1 - exp(-dt·22)`;
+below 40 px/s, and after arrival, `rot` is held. cua instead scales
+`wrapAngle(h - TIP_ANGLE)` by a speed ramp, which flips sign at `TIP_ANGLE + π`
+(moving down-right) and spins the arrow on carried headings; that ramp (and the
+unwrap patches we tried on it) is gone. Guarantees, all enforced by the sweep
+test (8 directions × rot0 ∈ {−3,−2.5,0,2.5,3} × the three tangent styles ×
+600/80px): |rot| ≤ π always; |Δrot| per sample ≤ 0.55 (shortest arc); the arrow
+keeps pointing along travel until arrival (tip leads); the total rotation is
+the turn into the heading plus the turn home plus the arc's bow (the travel
+heading itself swings across an arc, so the test budgets a per-style slack:
+1.45 / 1.1 / 2.1 rad for signature_arc / spring_settle / comet_swoop). After the
+last sample a settle tail (120 Hz, ≤36 samples, until |rot| < 0.002; none if
+rot is already ~0) eases rot home along the shortest arc — at most a half-turn
+— and the final sample is exactly 0. The tail only extends playback after
+arrival: arrival is still the first sample within 1px of the target and still
+≤700ms, and the plan's `motionEndMs` is the pre-tail end that trail/glow
+lifetimes key off (the tail extends only the arrow transform; the trail canvas
+is cleared once its redraw window ends). Styles: `signature_arc`,
+`spring_settle`, `comet_swoop` rotate (`tangent`); `magnetic` and `classic` never
+chase a heading (`rotates:false` in `STYLE_EFFECTS`): a carried rot0 eases toward 0
+from sample 0 during the move (same shortest-arc chase, target 0), and the tail
+exists only if rot has not reached 0 by the last sample; reduced
+motion plans rot 0 (`planMove`'s `opts.reduce ? 0 : rot0`, the single place),
+so it snaps at its first sample. `sampleAt` interpolates rot along the shortest
+arc. `CURSOR_JS` sets one composed transform `rotate(rot rad) scale(squish)` on
+the arrow SVG (`arrowTransform`), with `transform-origin` = `ARROW_PIVOT` =
+(0,0) of the 22×26 viewBox: the hotspot that lands on the target. The "within
+1px" pivot guarantee covers the blue fill's rounded tip
+(`test/cursorMotion.test.ts` checks it, and that the pivot is fixed under
+rotate+scale); the white rim's rounded tip extends ~1.5–2px past it, as it
+always did. The drop-shadow filter sits on the non-rotating carrier so the
+shadow always falls downward. The current rot is stored on
+`window.__penCursor.rot`. **Carry-over:** a new move starts from it (cua
+`from_heading`, no snap) only when the previous move had already *arrived* and
+its settle tail was still playing. A move cancelled mid-flight goes through the
+backstop/cancel `settleAtTarget`, which always resets rot to 0 and applies the
+transform (as do the error paths), consistent with the snap-to-target
+invariant. A moving call cancels the previous animation and starts from where
+that one rests (`state.pos` is re-read AFTER the cancel, which snaps an
+in-flight move to its target). A non-moving call (scroll, unresolvable target)
+leaves a move that has already *arrived* (only its settle tail playing,
+`state.abort` null) alone so it eases home, but cancels a not-yet-arrived one
+as usual; either way it resolves `{moved:false}` at a point where the cursor
+actually rests, never mid-path. Target lookup before the cancel cannot throw
+(null on error), and the outer catch resets rot only if the call owns the
+animation. `sampleAt` wraps the interpolated rot so `state.rot` stays in (-π, π]. Glow and trail stay velocity-based
+(offset back along the velocity, as in cua), independent of rot.
+`CURSOR_VERSION` is `"5"`.
+
 `dc_ms = clamp(150 + 120·log2(D/W + 1), 300, 1000) × scale`, W = the target
 rect's smaller side (min 4), or a 24px box for an `args.point` (Fitts-aware:
 small targets slower, big ones faster). There is no duration override
@@ -1018,7 +1074,10 @@ effects are already underway when the click lands. The resolved x/y and
 `state.pos` are always the final target point, never a mid-wobble point. A
 new CURSOR_JS call cancels the previous animation (a token + rAF id on
 `window.__penCursor`; a still-pending older Promise is settled `moved:false`),
-and the new move starts from the previous move's final point. **The cancel
+and the new move starts from the previous move's final point (a non-moving call
+— scroll, unresolvable target — does not cancel an *arrived* move whose settle
+tail is still playing, only a not-yet-arrived one; see "Heading rotation").
+**The cancel
 path and the backstop path both settle at the move's planned FINAL target and
 snap the overlay there** (`place()`), never at a mid-path point; only a call
 cancelled before its target was planned (still waiting on scroll frames) falls
