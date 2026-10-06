@@ -5061,3 +5061,124 @@ describe("late click effects", () => {
     expect(result).toMatchObject({ changed: true });
   });
 });
+
+describe("human cursor motion style and live settings", () => {
+  const cursorCodes = (page: BrowserPageHandle) =>
+    (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as string)
+      .filter((code) => isCursorCall(code));
+
+  it("passes the configured style through in the CURSOR_JS args", async () => {
+    const page = makeFakePage();
+    const controller = new BrowserController(makeFakeTarget(page), { cursorMotion: "comet_swoop" });
+    await controller.act({ action: "click", target: "Buy now" });
+    expect(cursorCodes(page)[0]).toContain(
+      JSON.stringify({ action: "click", target: "Buy now", from: null, style: "comet_swoop" }),
+    );
+  });
+
+  it("omits style entirely when none is configured", async () => {
+    const page = makeFakePage();
+    const controller = new BrowserController(makeFakeTarget(page));
+    await controller.act({ action: "click", target: "Buy now" });
+    expect(cursorCodes(page)[0]).not.toContain('"style"');
+  });
+
+  it("re-reads a style getter on every move", async () => {
+    const page = makeFakePage();
+    let style: string | undefined = "magnetic";
+    const controller = new BrowserController(makeFakeTarget(page), { cursorMotion: () => style });
+    await controller.act({ action: "click", target: "One" });
+    style = "classic";
+    await controller.act({ action: "click", target: "Two" });
+    style = undefined;
+    await controller.act({ action: "click", target: "Three" });
+    const codes = cursorCodes(page);
+    expect(codes[0]).toContain('"style":"magnetic"');
+    expect(codes[1]).toContain('"style":"classic"');
+    expect(codes[2]).not.toContain('"style"');
+  });
+
+  it("reads the enabled getter ONCE per command: a flip mid-command cannot desync budget and cursor step", async () => {
+    // true on the first read, false on any later one. A command that read it
+    // twice (budget, then cursor step) would grant the budget but skip the step.
+    const page = makeFakePage();
+    let reads = 0;
+    const controller = new BrowserController(makeFakeTarget(page), {
+      cursor: () => ++reads === 1,
+    });
+    await controller.act({ action: "click", target: "One" });
+    expect(cursorCodes(page).length).toBe(1);
+    expect(reads).toBe(1);
+
+    // And the opposite flip: false first (no budget) -> the cursor step is skipped too.
+    const page2 = makeFakePage();
+    let reads2 = 0;
+    const controller2 = new BrowserController(makeFakeTarget(page2), { cursor: () => ++reads2 !== 1 });
+    await controller2.act({ action: "click", target: "One" });
+    expect(cursorCodes(page2).length).toBe(0);
+    expect(reads2).toBe(1);
+  });
+
+  it("re-reads an enabled getter: toggling it off stops cursor calls, on resumes them", async () => {
+    const page = makeFakePage();
+    let enabled = true;
+    const controller = new BrowserController(makeFakeTarget(page), { cursor: () => enabled });
+    await controller.act({ action: "click", target: "One" });
+    enabled = false;
+    await controller.act({ action: "click", target: "Two" });
+    expect(cursorCodes(page).length).toBe(1);
+    enabled = true;
+    await controller.act({ action: "click", target: "Three" });
+    expect(cursorCodes(page).length).toBe(2);
+  });
+});
+
+describe("cursor overlay around screenshots and menu toggles", () => {
+  const isVisibilityCall = (code: unknown) => typeof code === "string" && code.includes("wasHidden");
+  const shotPage = (order: string[], changed = true) =>
+    makeFakePage({
+      executeJavaScript: vi.fn((code: string) => {
+        if (isVisibilityCall(code)) {
+          order.push(code.includes('"hidden":true') ? "hide" : "restore");
+          return Promise.resolve({ changed });
+        }
+        return Promise.resolve({ ok: true });
+      }),
+      capture: vi.fn(() => {
+        order.push("capture");
+        return Promise.resolve({ imageData: "data:image/jpeg;base64,X", width: 1, height: 1 });
+      }),
+    });
+
+  it("hides the overlay around the capture and restores it after", async () => {
+    const order: string[] = [];
+    const controller = new BrowserController(makeFakeTarget(shotPage(order)));
+    await controller.screenshot(undefined);
+    expect(order).toEqual(["hide", "capture", "restore"]);
+  });
+
+  it("skips the hide step entirely when the cursor is disabled", async () => {
+    const order: string[] = [];
+    const controller = new BrowserController(makeFakeTarget(shotPage(order)), { cursor: false });
+    await controller.screenshot(undefined);
+    expect(order).toEqual(["capture"]);
+  });
+
+  it("does not restore when the overlay reported no change (absent or already faded)", async () => {
+    const order: string[] = [];
+    const controller = new BrowserController(makeFakeTarget(shotPage(order, false)));
+    await controller.screenshot(undefined);
+    expect(order).toEqual(["hide", "capture"]);
+  });
+
+  it("hideCursorOverlay hides on the current page, never throws, and tolerates no page", async () => {
+    const order: string[] = [];
+    const page = shotPage(order);
+    await new BrowserController(makeFakeTarget(page)).hideCursorOverlay();
+    expect(order).toEqual(["hide"]);
+    await expect(new BrowserController(makeFakeTarget(null)).hideCursorOverlay()).resolves.toBeUndefined();
+    const bad = makeFakePage({ executeJavaScript: vi.fn(() => Promise.reject(new Error("boom"))) });
+    await expect(new BrowserController(makeFakeTarget(bad)).hideCursorOverlay()).resolves.toBeUndefined();
+  });
+});

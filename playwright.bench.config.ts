@@ -1,4 +1,8 @@
 import { defineConfig } from "@playwright/test";
+import { isolateUserData } from "./e2e/userDataIsolation";
+
+// Fresh userData dir per run, deleted afterwards (e2e/userDataIsolation.ts).
+isolateUserData();
 
 // Opt-in config for the jev-vs-nojev browse benchmark: it launches the real
 // Electron shell against the deployed frontend, drives an actual AI chat
@@ -11,6 +15,7 @@ export default defineConfig({
   testMatch: /[\\/]bench-[^\\/]*\.spec\.ts$/,
   timeout: 900_000, // 15 minutes per test — comfortably above the spec's own 12-minute per-run cap.
   workers: 1,
+  globalTeardown: "./e2e/globalTeardown.ts",
   // A single failing/slow run should not burn tokens on a retry.
   retries: 0,
 });

@@ -904,8 +904,8 @@ and invisibly — nothing on screen showed the user what the agent was doing.
 rounded arrow in pen-editor's own UI accent (`#0d99ff`, written out as a
 literal since a third-party page has no access to the editor's custom
 properties) over a white rim that keeps it readable on dark pages — animates
-it along a bowed, eased path to the resolved target's center, and gives it a
-small press/ripple pulse on arrival before resolving. Its corners are rounded
+it to the resolved target's center with a planned, human-like motion (see
+"Motion engine" below) and gives it ripple/press feedback on arrival. Its corners are rounded
 by stroking each polygon in its own fill colour with `stroke-linejoin:round`,
 so the stroke widths, not a radius, are what "more rounded" means here.
 
@@ -935,12 +935,11 @@ including a `{ error }` shape) and always settles within ~1.15s via its own
 internal backstop timer, since `requestAnimationFrame` can simply stop
 firing in a backgrounded tab. Every settle path — `finish()` — is what
 clears the backstop, never a caller of `finish()`: an earlier version
-cleared it in `arrive()` *before* scheduling the final `setTimeout(finish,
-120)`, which meant that last, unguarded 120ms timer had nothing bounding it
-if a throttled/hidden renderer delayed it past 1s (Chromium clamps
-backgrounded timers to a ≥1s floor) — the backstop is now only ever
-disarmed once something has actually settled, so it genuinely bounds every
-path, including that one. `moveCursor` wraps the call in its own timeout
+cleared it before scheduling a final unguarded `setTimeout(finish, 120)`,
+which a throttled/hidden renderer (Chromium clamps backgrounded timers to a
+≥1s floor) could delay past 1s — the backstop is only ever disarmed once
+something has actually settled, so it genuinely bounds every path. (The
+120ms post-arrival timer is gone now — see "Early arrival".) `moveCursor` wraps the call in its own timeout
 (`CURSOR_TIMEOUT_MS`, bounded further by the controller's own `timeoutMs`)
 and swallows every failure — a rejecting/throwing/timed-out cursor call must
 never turn a working browser command into an error or a timeout of its own.
@@ -983,6 +982,120 @@ Disabled with `PEN_DESKTOP_BROWSER_CURSOR=off` (also `0`/`false`,
 case-insensitive — `config.ts`'s `resolveBrowserCursorEnabled`), wired into
 `window.ts`'s `new BrowserController(...)` call as the `cursor` option
 (default on).
+
+**Motion engine (2026-10-06).** The move is *planned once*, then played by
+time: `planMove` builds an array of `{t(ms), x, y}` samples at 120 Hz (cua
+`DT_MS`) and every `requestAnimationFrame` frame interpolates by elapsed time,
+so the motion is frame-rate independent. The math is derived from
+**trycua/cua** (MIT) `cursor-overlay/src/trajectory.rs` (`cua_path`,
+`bow_path`, `natural_side`, `bump_profile`, `wobble_profile`, the arc-length
+`Path`, `glide`, `magnetic`, `dc_ms`) and `motion.rs` (`default_effects`);
+`CURSOR_JS` carries a credit comment. `args.style` picks the style
+(unknown/absent → `signature_arc`):
+
+| style | path / profile | duration | default effects |
+| --- | --- | --- | --- |
+| `signature_arc` (default) | cua bezier, arc 0.16 × natural side, flow 0.15, handles 0.3/0.3; min-jerk + late overshoot bump (`min(0.018, 8/D)` at 0.82) | `dc_ms` ×1.1 | glow + ripple + squish |
+| `spring_settle` | arc 0.12, flow 0; wobble profile (amp `min(0.05, 6/D)`, 1.3 cycles, decay 2.6, from 0.55) | `dc_ms` ×1.35 | glow + squish |
+| `comet_swoop` | arc 0.24, flow 0.2, easeInOutCubic | `dc_ms` ×1.15 | trail + ripple |
+| `magnetic` | bow 0.04, capture radius `min(40, len/2)`, pull 0.45, enter speed 300; records the lock-on time | physics-driven | magnet + ripple |
+| `classic` | the pre-engine look: bowed quadratic, easeInOutCubic, tiny overshoot | `90 + 0.7·D`, 260–900ms | ripple + squish |
+
+`dc_ms = clamp(150 + 120·log2(D/W + 1), 300, 1000) × scale`, W = the target
+rect's smaller side (min 4), or a 24px box for an `args.point` (Fitts-aware:
+small targets slower, big ones faster). There is no duration override
+(`args.durationMs` was removed; no caller sent it). **Hard cap: whatever the
+style, the *arrival* moment is retimed to ≤700ms**, so the 1150ms backstop never wins in a visible tab (two rAFs for
+`scrollIntoView` come before the move). The magnetic style also fogs
+(glow) like cua's renderer does.
+
+**Early arrival and cancellation.** The Promise resolves through `finish()`
+with `{moved:true, x, y}` at the first sample whose hotspot is within 1px of
+the target (cua: "arrival fires when the hotspot reaches the target"); the
+follow-through, settle, ripple and squish keep animating *during* the click.
+The old 120ms post-arrival delay is dropped: arrival is honest now and the
+effects are already underway when the click lands. The resolved x/y and
+`state.pos` are always the final target point, never a mid-wobble point. A
+new CURSOR_JS call cancels the previous animation (a token + rAF id on
+`window.__penCursor`; a still-pending older Promise is settled `moved:false`),
+and the new move starts from the previous move's final point. **The cancel
+path and the backstop path both settle at the move's planned FINAL target and
+snap the overlay there** (`place()`), never at a mid-path point; only a call
+cancelled before its target was planned (still waiting on scroll frames) falls
+back to the current position. The backstop also cancels the pending animation
+(token bump + `cancelAnimationFrame`) before settling, so a throttled or hidden
+tab cannot replay the stale move when it becomes visible.
+
+**Effects** (all pre-created in `ensureOverlay()` under `[data-pen-cursor]`,
+`pointer-events:none`, never DOM inserted per frame; the trail canvas is the one
+exception — created lazily the first time a trail style draws): `trail` — one viewport
+`<canvas>` (sized only while a trail draws; `clearTrail` sets its width/height to
+0 to free the backing store; styles without a trail never allocate it), ~240ms of history anchored at the arrow's *body* (offset back
+along velocity, weight `clamp((speed-40)/260, 0, 1)`), width growing to the
+head, opacity k²·0.45, faded out when shorter than 60px; `glow` — one radial
+gradient div offset against velocity, radius/alpha growing with speed
+(alpha is ramped by speed so it is exactly 0 at rest — no lingering halo);
+`magnet` — outline of the target rect when magnetic locks on, fades over
+700ms; `ripple` — ring 8→52px radius over 520ms, opacity 0.75→0, line width
+5→1 (click/select); `squish` — arrow scales to 0.88 over 50ms then springs
+out over ~220ms (click/select; a lighter 0.94 for type). **Reduced motion**
+(`prefers-reduced-motion`): a 120ms straight glide with no effects (cua
+`REDUCED_MOTION_MS`), instead of a jump. The arrow artwork (polygon points,
+stroke widths, colours) is unchanged and never rotated. **Screenshots never show
+the effects:** the `screenshot` command hides the whole `[data-pen-cursor]` root
+(`CURSOR_VISIBILITY_JS`, `visibility:hidden`) for the capture and restores it
+afterwards, best effort and never throwing. The hide is skipped when the cursor
+is disabled for that command, `CURSOR_VISIBILITY_JS` reports `changed:false`
+when there is no overlay or it is already faded out (`opacity:0`), and the
+paint wait runs only when it reports `changed:true`; with `annotate` the hide
+runs before the marks, so one paint wait covers both DOM changes. Every move's
+`show()` also clears `visibility`, so a failed restore heals on the next move.
+Unticking "Show Agent Cursor" calls `BrowserController.hideCursorOverlay()`
+(same script, best effort, outside the command queue) to hide the overlay on
+the current page at once.
+
+**Settings: env vars and the View menu.** Style:
+`PEN_DESKTOP_BROWSER_CURSOR_MOTION` = one of `signature_arc | spring_settle |
+magnetic | comet_swoop | classic` (`config.ts`'s `resolveBrowserCursorMotion`:
+trimmed, lower-cased). On/off: `PEN_DESKTOP_BROWSER_CURSOR=off` (also
+`0`/`false`, case-insensitive — `resolveBrowserCursorEnabled`). **An empty or
+whitespace-only value of either var counts as UNSET** (no menu lock, the saved
+setting applies); an unknown motion value is ignored (the menu/saved setting
+applies, unlocked) with one `console.warn` per process (macOS `activate`
+re-creates the window). The user can also choose in the native menu **View ▸
+Agent Cursor Motion** (five radio items plus a "Show Agent Cursor" checkbox;
+`menu.ts`). The choice is saved to `cursor-settings.json` in
+`app.getPath("userData")` as `{ "motion": "<style>", "enabled": true }`
+(`src/main/cursorSettings.ts`, pure path-taking read/write helpers;
+missing/corrupt file or invalid style → defaults). **Precedence** lives in the
+pure `resolveCursorSettings(env, saved)` (`cursorSettings.ts`, unit-tested):
+a set env var wins and its menu items render `enabled: false` so the user can
+see why the choice does not change; otherwise the saved setting applies.
+`window.ts` only wires it: it passes getters (`cursor: () => boolean`,
+`cursorMotion: () => string | undefined`) to `new BrowserController(...)`,
+which reads them on every move / command, so a menu change applies without a
+restart. The controller latches the enabled flag on its FIRST read in a
+command (the budget read at command entry); the latch is reset inside the
+queued function (after any overrun from a timed-out command has settled) and
+when the command ends,
+so `cursorBudgetMs` and the cursor step always agree even if the user flips the
+setting mid-command. `controller.ts` forwards the style to CURSOR_JS as
+`args.style` (omitted when unset). Keep `controller.ts` / `pageScripts.ts` free
+of electron imports (vendored verbatim into the backend repo). Tests:
+`test/cursorMotion.test.ts` evaluates `CURSOR_PLAN_JS` — the pure planner
+(constants, easing/path math, `planMove`, `sampleAt`, `velocityAt`) that
+`pageScripts.ts` exports as its own fragment and CURSOR_JS embeds the way it
+embeds `FIND_BY_TEXT_JS`. Production CURSOR_JS has no test hook.
+
+**`PEN_DESKTOP_USER_DATA_DIR`** overrides Electron's `userData` directory
+(`config.ts`'s `resolveUserDataDir`, applied in `index.ts` via
+`app.setPath("userData", …)` before `app.ready`; empty = unset).
+`e2e/userDataIsolation.ts` (called from all three Playwright configs) sets it to
+a temp dir that is fresh per Playwright RUN and shared by that run's launches
+(every spec spreads `process.env` into its `electron.launch` env) — enough to
+keep a developer's saved cursor settings out of e2e. `e2e/globalTeardown.ts`
+deletes the dir afterwards (only one the helper created; an explicitly set
+`PEN_DESKTOP_USER_DATA_DIR` is left alone).
 
 ### Full browser use (2026-09-23)
 

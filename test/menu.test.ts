@@ -18,6 +18,8 @@ describe("buildMenuTemplate", () => {
       prevTab: vi.fn(),
       forwardToActiveTab: vi.fn(),
       useThisAppForMcp: vi.fn(),
+      setCursorMotion: vi.fn(),
+      setCursorEnabled: vi.fn(),
     };
   });
 
@@ -103,6 +105,55 @@ describe("buildMenuTemplate", () => {
       const i = item(mcpStatusLabelFor(status), status);
       expect(String(i.label)).not.toMatch(/\d/);
     }
+  });
+
+  describe("View > Agent Cursor Motion", () => {
+    const state = { motion: "magnetic" as const, enabled: true, motionLocked: false, enabledLocked: false };
+    const submenu = (cursor = state) => {
+      const view = buildMenuTemplate(actions, { isMac: true }, "off", cursor).find((m) => m.label === "View")!;
+      const sub = (view.submenu as MenuItemConstructorOptions[]).find((i) => i.label === "Agent Cursor Motion");
+      if (!sub) throw new Error("Agent Cursor Motion submenu missing");
+      return sub.submenu as MenuItemConstructorOptions[];
+    };
+
+    it("lists five radio styles, a separator and a Show Agent Cursor checkbox", () => {
+      const items = submenu();
+      expect(items.map((i) => i.label ?? i.type)).toEqual([
+        "Signature Arc",
+        "Spring Settle",
+        "Magnetic",
+        "Comet Swoop",
+        "Classic",
+        "separator",
+        "Show Agent Cursor",
+      ]);
+      expect(items.slice(0, 5).every((i) => i.type === "radio")).toBe(true);
+      expect(items[6].type).toBe("checkbox");
+    });
+
+    it("checks only the current style and the current enabled flag", () => {
+      const items = submenu();
+      expect(items.slice(0, 5).map((i) => i.checked)).toEqual([false, false, true, false, false]);
+      expect(items[6].checked).toBe(true);
+      expect(submenu({ ...state, enabled: false })[6].checked).toBe(false);
+    });
+
+    it("clicking forwards the style / the new checkbox state", () => {
+      const items = submenu();
+      (items[1].click as () => void)();
+      expect(actions.setCursorMotion).toHaveBeenCalledWith("spring_settle");
+      (items[6].click as (i: { checked: boolean }) => void)({ checked: false });
+      expect(actions.setCursorEnabled).toHaveBeenCalledWith(false);
+    });
+
+    it("disables the matching items when an env var locks the value", () => {
+      const locked = submenu({ ...state, motionLocked: true });
+      expect(locked.slice(0, 5).every((i) => i.enabled === false)).toBe(true);
+      expect(locked[6].enabled).toBe(true);
+      const off = submenu({ ...state, enabledLocked: true });
+      expect(off[6].enabled).toBe(false);
+      expect(off.slice(0, 5).every((i) => i.enabled === true)).toBe(true);
+    });
   });
 
   it("Use this app for MCP triggers useThisAppForMcp", () => {

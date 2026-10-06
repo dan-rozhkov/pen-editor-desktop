@@ -1,5 +1,24 @@
 import type { MenuItemConstructorOptions } from "electron";
 import type { McpStatus } from "./tabManager";
+import { CURSOR_MOTION_STYLES, type CursorMotionStyle } from "./config";
+import { defaultCursorSettings } from "./cursorSettings";
+
+/** What the View > Agent Cursor Motion submenu shows. `*Locked` = an env var
+ * decides that value, so its items render disabled. */
+export interface CursorMenuState {
+  motion: CursorMotionStyle;
+  enabled: boolean;
+  motionLocked: boolean;
+  enabledLocked: boolean;
+}
+
+const CURSOR_MOTION_LABELS: Record<CursorMotionStyle, string> = {
+  signature_arc: "Signature Arc",
+  spring_settle: "Spring Settle",
+  magnetic: "Magnetic",
+  comet_swoop: "Comet Swoop",
+  classic: "Classic",
+};
 
 export interface MenuActions {
   newTab(): void;
@@ -11,6 +30,10 @@ export interface MenuActions {
   forwardToActiveTab(commandId: string): void;
   /** "Use this app for MCP" — force-publishes over a live owner (see mcp/service.ts's forcePublish, design doc §5.3). */
   useThisAppForMcp(): void;
+  /** Saves + applies the agent cursor's motion style (View menu). */
+  setCursorMotion(style: CursorMotionStyle): void;
+  /** Saves + applies the agent cursor's on/off switch (View menu). */
+  setCursorEnabled(enabled: boolean): void;
 }
 
 // No terminal in a packaged app, so this label plus the tab-strip indicator
@@ -63,6 +86,7 @@ export function buildMenuTemplate(
   actions: MenuActions,
   opts: { isMac: boolean },
   mcpStatus: McpStatus = "off",
+  cursor: CursorMenuState = { ...defaultCursorSettings(), motionLocked: false, enabledLocked: false },
 ): MenuItemConstructorOptions[] {
   const fileMenu: MenuItemConstructorOptions = {
     label: "File",
@@ -119,6 +143,31 @@ export function buildMenuTemplate(
       { type: "separator" },
       { role: "togglefullscreen" },
       { role: "toggleDevTools" },
+      { type: "separator" },
+      {
+        label: "Agent Cursor Motion",
+        submenu: [
+          ...CURSOR_MOTION_STYLES.map(
+            (style): MenuItemConstructorOptions => ({
+              label: CURSOR_MOTION_LABELS[style],
+              type: "radio",
+              checked: cursor.motion === style,
+              enabled: !cursor.motionLocked,
+              click: () => actions.setCursorMotion(style),
+            }),
+          ),
+          { type: "separator" },
+          {
+            label: "Show Agent Cursor",
+            type: "checkbox",
+            checked: cursor.enabled,
+            enabled: !cursor.enabledLocked,
+            // `item` may be absent: pen-editor's contract test clicks every
+            // menu item bare, and that must not throw.
+            click: (item) => actions.setCursorEnabled(item?.checked ?? !cursor.enabled),
+          },
+        ],
+      },
     ],
   };
 

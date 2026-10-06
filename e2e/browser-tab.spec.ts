@@ -3298,6 +3298,48 @@ test("addendum 3 §2 (upstream PR #58): a click on a control that disables itsel
 
 // --- Full browser use (design doc `2026-09-23-full-browser-use-design.md`) ---
 
+test("browse_screenshot hides the agent cursor overlay during capture and restores it after", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === snapshotUrl }),
+      callBrowser(editorPage, "open", { url: snapshotUrl }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("snapshot-ready");
+
+    // A click creates the overlay.
+    await callBrowser(editorPage, "act", { action: "click", target: "#ready" });
+    expect(await fixturePage.evaluate(() => document.querySelectorAll("[data-pen-cursor]").length)).toBe(1);
+
+    // Record every visibility value the overlay root takes during the screenshot.
+    await fixturePage.evaluate(() => {
+      const root = document.querySelector("[data-pen-cursor]") as HTMLElement;
+      const log: string[] = [];
+      (window as unknown as { __visLog: string[] }).__visLog = log;
+      new MutationObserver(() => log.push(root.style.visibility)).observe(root, {
+        attributes: true,
+        attributeFilter: ["style"],
+      });
+    });
+    const shot = (await callBrowser(editorPage, "screenshot")) as { imageData: string };
+    expect(shot.imageData).toMatch(/^data:image\/jpeg;base64,/);
+    const log = await fixturePage.evaluate(() => (window as unknown as { __visLog: string[] }).__visLog);
+    expect(log).toContain("hidden");
+    expect(log[log.length - 1]).toBe("");
+    expect(await fixturePage.evaluate(() => (document.querySelector("[data-pen-cursor]") as HTMLElement).style.visibility)).toBe("");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
 test("browse_screenshot: returns a non-empty image, and annotate marks never leak into a later snapshot", async () => {
   const app = await electron.launch({
     args: ["."],

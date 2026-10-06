@@ -1,5 +1,5 @@
 import { app, BaseWindow, session } from "electron";
-import { resolveEditorUrl } from "./config";
+import { resolveEditorUrl, resolveUserDataDir } from "./config";
 import { createMainWindow } from "./window";
 import { createMcpService } from "./mcp/service";
 import { denyAllPermissions } from "./browser/permissions";
@@ -9,6 +9,11 @@ const editorUrl = resolveEditorUrl(process.env);
 // `electron .` otherwise appears as "Electron" in the macOS menu bar during
 // development. Packaged builds also use the same user-facing product name.
 app.setName("Pineapple Editor");
+
+// e2e gives every run a fresh userData dir so saved settings never leak in
+// (PEN_DESKTOP_USER_DATA_DIR). Must run before app.ready.
+const userDataDir = resolveUserDataDir(process.env);
+if (userDataDir) app.setPath("userData", userDataDir);
 
 // App-scoped, not window-scoped (see mcp/service.ts's header): created once
 // here and handed to every createMainWindow call, including the macOS dock

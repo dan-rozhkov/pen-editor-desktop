@@ -1,4 +1,9 @@
 import { defineConfig } from "@playwright/test";
+import { isolateUserData } from "./e2e/userDataIsolation";
+
+// Fresh userData dir per run (shared by its launches), deleted afterwards:
+// see e2e/userDataIsolation.ts.
+isolateUserData();
 
 export default defineConfig({
   testDir: "e2e",
@@ -13,4 +18,5 @@ export default defineConfig({
   timeout: 60_000,
   // Electron tests must not run in parallel against the same built output.
   workers: 1,
+  globalTeardown: "./e2e/globalTeardown.ts",
 });

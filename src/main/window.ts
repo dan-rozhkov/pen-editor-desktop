@@ -1,5 +1,5 @@
 import path from "node:path";
-import { BaseWindow, View, WebContentsView, Menu, ipcMain, nativeTheme, shell } from "electron";
+import { app, BaseWindow, View, WebContentsView, Menu, ipcMain, nativeTheme, shell } from "electron";
 import {
   TabManager,
   shouldFocusAddressBar,
@@ -19,7 +19,7 @@ import {
   shouldForwardNavigationEvent,
 } from "./navigation";
 import { BrowserController, type BrowserTarget, type BrowserPageHandle } from "./browser/controller";
-import { resolveBrowserCursorEnabled } from "./config";
+import { CURSOR_SETTINGS_FILE, type CursorSettings, readCursorSettings, resolveCursorSettings, writeCursorSettings } from "./cursorSettings";
 import type { McpService, IpcListenerGateway } from "./mcp/service";
 
 export const TABBAR_HEIGHT = 38;
@@ -855,8 +855,21 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       return entries;
     },
   };
+  // Agent cursor settings: the View menu's saved choice, with the env vars
+  // (PEN_DESKTOP_BROWSER_CURSOR / _CURSOR_MOTION) winning when set. The
+  // controller reads both through getters on every move, so a menu change
+  // applies with no restart.
+  const cursorSettingsPath = path.join(app.getPath("userData"), CURSOR_SETTINGS_FILE);
+  let cursorSettings = readCursorSettings(cursorSettingsPath);
+  const effectiveCursor = () => resolveCursorSettings(process.env, cursorSettings);
+  const updateCursorSettings = (patch: Partial<CursorSettings>) => {
+    cursorSettings = { ...cursorSettings, ...patch };
+    writeCursorSettings(cursorSettingsPath, cursorSettings);
+    rebuildMenu();
+  };
   const browserController = new BrowserController(browserTarget, {
-    cursor: resolveBrowserCursorEnabled(process.env),
+    cursor: () => effectiveCursor().enabled,
+    cursorMotion: () => effectiveCursor().motion,
   });
 
   const onBrowserCommand = async (event: Electron.IpcMainInvokeEvent, payload: unknown) => {
@@ -1022,9 +1035,18 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
           prevTab: () => tabs.prevTab(),
           forwardToActiveTab: (commandId) => tabs.activeHandle()?.sendMenuCommand(commandId),
           useThisAppForMcp: () => void mcpService.forcePublish(),
+          setCursorMotion: (motion) => updateCursorSettings({ motion }),
+          setCursorEnabled: (enabled) => {
+            updateCursorSettings({ enabled });
+            // Unticked: hide the overlay on the current page right away
+            // (best effort). Re-enabling needs nothing: the next move's
+            // show() makes it visible again.
+            if (!enabled) void browserController.hideCursorOverlay();
+          },
         },
         { isMac: process.platform === "darwin" },
         mcpService.getStatus(),
+        effectiveCursor(),
       ),
     );
     Menu.setApplicationMenu(menu);
