@@ -130,6 +130,17 @@ anything window-scoped would die and never come back — the same shape as
 the `Menu.setApplicationMenu` wart noted above. `window.ts` only *reports*
 tab create/destroy/active into the service; it never owns MCP state itself.
 
+`tools/list` serves the static `src/main/mcp/toolManifest.json` (32 tools: the
+28 backend `BRIDGED_TOOL_NAMES`, the 3 static guideline tools, and desktop-only
+`list_editor_tabs`; every tool except `list_editor_tabs` also gets an optional
+`tabId`). Do not edit the JSON: it is written by `npx tsx
+scripts/gen-tool-manifest.ts` from the hand-maintained `TOOLS` array and
+`TOOL_META` table (title + annotations, mirroring the backend's
+`src/mcp/toolAnnotations.ts`; `destructiveHint` must match). The script then
+greps the sibling backend for drift (set `PEN_BACKEND_DIR` to point it at a
+backend worktree). `test/toolManifest.test.ts` pins the names against the
+backend's `toolNames.ts` (same `PEN_BACKEND_DIR` override).
+
 Identity on `mcp:register`/`mcp:result` comes from `event.sender.id` checked
 against tabs the service itself created via `registerTab()` — the same
 pattern as `window.ts`'s `fromOurTabbar` check — so a page cannot register

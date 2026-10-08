@@ -25,8 +25,10 @@ export const ERROR_CODES = {
 
 export interface ToolManifestEntry {
   name: string;
+  title?: string;
   description: string;
   inputSchema: unknown;
+  annotations?: Record<string, boolean>;
 }
 
 export interface JsonRpcDeps {

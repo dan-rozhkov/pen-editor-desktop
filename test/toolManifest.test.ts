@@ -179,12 +179,52 @@ describe("tool manifest — layers / embed HTML / canvas layout tools", () => {
   });
 });
 
+describe("tool manifest — design system / style / component tools", () => {
+  const byName = (name: string) => {
+    const t = (manifest.tools as Array<ToolDef & { annotations?: Record<string, boolean> }>).find((x) => x.name === name);
+    if (!t) throw new Error(`Tool "${name}" not found in manifest`);
+    return t;
+  };
+  const READ = ["get_design_system", "lint_design", "get_styles", "get_text_styles"];
+  const DESTRUCTIVE = ["set_styles", "set_text_styles", "define_component", "extract_component", "detach_instance", "delete_component"];
+  const NON_DESTRUCTIVE = ["apply_fill_style", "apply_text_style", "apply_effect_style"];
+
+  it("read tools are read-only; writers carry the backend's destructive flags", () => {
+    for (const n of READ) expect(byName(n).annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+    for (const n of DESTRUCTIVE) expect(byName(n).annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    for (const n of NON_DESTRUCTIVE) expect(byName(n).annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+  });
+
+  it("every tool declares annotations and a title", () => {
+    for (const t of manifest.tools as Array<ToolDef & { title?: string; annotations?: object }>) {
+      expect(t.annotations, t.name).toBeTruthy();
+      expect(t.title, t.name).toBeTruthy();
+    }
+  });
+
+  it("required arguments match the backend shapes", () => {
+    expect(byName("get_design_system").inputSchema.required ?? []).toEqual([]);
+    expect(byName("lint_design").inputSchema.required ?? []).toEqual([]);
+    expect(byName("set_text_styles").inputSchema.required).toEqual(["textStyles"]);
+    expect(byName("apply_fill_style").inputSchema.required).toEqual(["nodeIds", "styleId"]);
+    expect(byName("apply_text_style").inputSchema.required).toEqual(["nodeIds", "textStyleId"]);
+    expect(byName("apply_effect_style").inputSchema.required).toEqual(["nodeIds", "styleId"]);
+    expect(byName("define_component").inputSchema.required).toEqual(["key", "name", "html"]);
+    expect(byName("extract_component").inputSchema.required).toEqual(["nodeId", "selector", "key", "name"]);
+    expect(byName("detach_instance").inputSchema.required).toEqual(["nodeId", "selector"]);
+    expect(byName("delete_component").inputSchema.required).toEqual(["key"]);
+  });
+});
+
 // Vitest runs with cwd = pen-editor-desktop/, the sibling backend repo lives
 // next to it. BRIDGED_TOOL_NAMES/STATIC_TOOL_NAMES live in toolNames.ts
 // (server.ts just re-exports them) — read from there directly rather than
 // from server.ts, which no longer contains the `export const NAME = [...]`
 // declarations these need to match against.
-const toolNamesPath = resolve(process.cwd(), "../pen-editor-backend/src/mcp/toolNames.ts");
+const toolNamesPath = resolve(
+  process.env.PEN_BACKEND_DIR ?? resolve(process.cwd(), "../pen-editor-backend"),
+  "src/mcp/toolNames.ts",
+);
 const backendExists = existsSync(toolNamesPath);
 
 /** Extracts the string literals of a `export const NAME = [...] as const;` array. */
