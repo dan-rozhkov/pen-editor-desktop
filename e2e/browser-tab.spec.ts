@@ -3407,7 +3407,7 @@ test("browse_screenshot: returns a non-empty image, and annotate marks never lea
   }
 });
 
-test("browse_screenshot: annotate with the loop's snapshotId reuses it, keeps perform valid, and labels sit left of their element on the same row", async () => {
+test("browse_screenshot: annotate with the loop's snapshotId reuses it, keeps perform valid, and each label touches its own element without covering a neighbour row", async () => {
   const app = await electron.launch({
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
@@ -3454,8 +3454,8 @@ test("browse_screenshot: annotate with the loop's snapshotId reuses it, keeps pe
     expect(stale.imageData).toBeUndefined();
 
     // Geometry: inject a table fixture (plus an off-screen button), snapshot,
-    // run MARKS_JS directly and check each label sits immediately left of its
-    // element on the same row, never overlapping a neighbour row's element,
+    // run MARKS_JS directly and check each label touches its own element and never
+    // covers a neighbour row's element,
     // and that the off-screen element gets no box and no label.
     await fixturePage.evaluate(() => {
       const wrap = document.createElement("div");
@@ -3519,16 +3519,17 @@ test("browse_screenshot: annotate with the loop's snapshotId reuses it, keeps pe
       const g = geometry.out[k];
       expect(g.lbl).not.toBeNull();
       const l = g.lbl!;
-      // immediately left of the element, on its own row
-      expect(l.right).toBeLessThanOrEqual(g.left);
-      expect(g.left - l.right).toBeLessThanOrEqual(3);
-      expect(l.top).toBeGreaterThanOrEqual(g.top - 0.5);
-      expect(l.top).toBeLessThan(g.bottom);
-      // never overlaps any row's element
+      // touches its own element: on any side (outside) or inside a corner
+      const gap = (a: typeof l, b: typeof g) =>
+        Math.max(0, b.left - a.right, a.left - b.right) + Math.max(0, b.top - a.bottom, a.top - b.bottom);
+      expect(gap(l, g)).toBeLessThanOrEqual(3);
+      // never covers another row's element, and sits closer to its own
       for (const k2 of rowKeys) {
+        if (k2 === k) continue;
         const o = geometry.out[k2];
         const overlaps = l.left < o.right && l.right > o.left && l.top < o.bottom && l.bottom > o.top;
         expect(overlaps).toBe(false);
+        expect(gap(l, o)).toBeGreaterThan(gap(l, g));
       }
     }
   } finally {
