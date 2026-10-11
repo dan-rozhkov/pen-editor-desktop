@@ -2325,6 +2325,96 @@ describe("screenshot", () => {
     expect(result).toHaveProperty("error");
   });
 
+  it("rejects snapshotId without annotate, and a non-string snapshotId", async () => {
+    const capture = vi.fn(() => Promise.resolve({ imageData: "data:image/jpeg;base64,AA", width: 1, height: 1 }));
+    const controller = new BrowserController(makeFakeTarget(makeFakePage({ capture })));
+    expect(await controller.screenshot({ snapshotId: "abc" })).toHaveProperty("error");
+    expect(await controller.screenshot({ annotate: false, snapshotId: "abc" })).toHaveProperty("error");
+    expect(await controller.screenshot({ annotate: true, snapshotId: 5 })).toHaveProperty("error");
+    expect(await controller.screenshot({ annotate: true, snapshotId: "  " })).toHaveProperty("error");
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  describe("annotate with a caller-supplied snapshotId", () => {
+    function setup(marked: number) {
+      let snapshots = 0;
+      const executeJavaScript = vi.fn((code: string) => {
+        if (isSignatureCall(code) || isCursorCall(code) || isRevealCall(code)) return Promise.resolve({ ok: true });
+        if (code.includes("maxElements")) {
+          snapshots++;
+          return Promise.resolve({
+            url: "https://example.com/",
+            title: "Example",
+            elements: [{ index: 0, tag: "button", label: "Go", ops: ["CLICK"] }],
+            scroll: { y: 0, height: 100, atBottom: true },
+          });
+        }
+        if (code.includes("position:fixed;left:0;top:0")) return Promise.resolve({ marked });
+        return Promise.resolve({ ok: true });
+      });
+      const capture = vi.fn(() => Promise.resolve({ imageData: "data:image/jpeg;base64,CC", width: 10, height: 20 }));
+      const page = makeFakePage({ executeJavaScript, capture });
+      const controller = new BrowserController(makeFakeTarget(page));
+      return { controller, executeJavaScript, capture, snapshotCount: () => snapshots };
+    }
+
+    it("marks the given snapshot without taking a new one, returns that id, and keeps it valid for perform", async () => {
+      const { controller, executeJavaScript, capture, snapshotCount } = setup(1);
+      const snap = (await controller.snapshot()) as { snapshotId: string };
+      expect(snapshotCount()).toBe(1);
+
+      const shot = (await controller.screenshot({ annotate: true, snapshotId: snap.snapshotId })) as {
+        snapshotId: string;
+        imageData: string;
+      };
+      expect(shot.snapshotId).toBe(snap.snapshotId);
+      expect(shot.imageData).toBe("data:image/jpeg;base64,CC");
+      expect((shot as { marked?: number }).marked).toBe(1);
+      expect(snapshotCount()).toBe(1);
+      const marksCall = executeJavaScript.mock.calls.map((c) => c[0] as string).find((c) => c.includes("position:fixed;left:0;top:0"));
+      expect(marksCall).toContain(snap.snapshotId);
+      expect(capture).toHaveBeenCalledTimes(1);
+
+      const performed = (await controller.perform({ snapshotId: snap.snapshotId, index: 0, operation: "CLICK" })) as {
+        error?: string;
+      };
+      expect(performed.error ?? "").not.toMatch(/stale/i);
+    });
+
+    it("refuses an unknown or superseded snapshotId without capturing", async () => {
+      const { controller, capture } = setup(1);
+      const old = (await controller.snapshot()) as { snapshotId: string };
+      await controller.snapshot();
+      for (const id of ["nope", old.snapshotId]) {
+        const r = (await controller.screenshot({ annotate: true, snapshotId: id })) as { error?: string };
+        expect(r.error).toMatch(/stale|unknown/i);
+      }
+      expect(capture).not.toHaveBeenCalled();
+    });
+
+    it("a current snapshot that marks 0 (iframe/off-screen) still returns the image, with marked: 0, and removes marks", async () => {
+      const { controller, executeJavaScript, capture } = setup(0);
+      const snap = (await controller.snapshot()) as { snapshotId: string };
+      const r = (await controller.screenshot({ annotate: true, snapshotId: snap.snapshotId })) as {
+        error?: string;
+        imageData?: string;
+        marked?: number;
+        snapshotId?: string;
+      };
+      expect(r.error).toBeUndefined();
+      expect(r.imageData).toBe("data:image/jpeg;base64,CC");
+      expect(r.marked).toBe(0);
+      expect(r.snapshotId).toBe(snap.snapshotId);
+      expect(capture).toHaveBeenCalledTimes(1);
+      const calls = executeJavaScript.mock.calls.map((c) => c[0] as string);
+      expect(calls.filter((c) => c.includes("data-pen-marks")).length).toBeGreaterThanOrEqual(2);
+      const performed = (await controller.perform({ snapshotId: snap.snapshotId, index: 0, operation: "CLICK" })) as {
+        error?: string;
+      };
+      expect(performed.error ?? "").not.toMatch(/stale/i);
+    });
+  });
+
   it("annotate: true takes a fresh snapshot first, marks it, captures, and always removes the marks overlay", async () => {
     const executeJavaScript = vi.fn((code: string) => {
       if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });

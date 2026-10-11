@@ -4785,9 +4785,12 @@ export const READ_JS = `(() => {
 /**
  * `browse_screenshot`'s "set of marks" overlay — a numbered label plus an
  * outline box over every element `SNAPSHOT_JS` stamped `data-pen-snap` for
- * `args.snapshotId` (`browse_screenshot({ annotate: true })` always takes a
- * fresh snapshot first, so this always runs against the snapshot it just
- * minted). Everything is `position:fixed` (viewport-relative), matching the
+ * `args.snapshotId` (`browse_screenshot({ annotate: true })` runs it against
+ * a fresh snapshot, or against the caller's still-current `snapshotId` on the
+ * reuse path; staleness is checked by the controller, not here). Covers only
+ * the top document and only elements intersecting the viewport — elements in
+ * iframes/shadow roots, off-screen or zero-size ones get no mark, so `marked`
+ * may legitimately be 0. Everything is `position:fixed` (viewport-relative), matching the
  * coordinate space `webContents.capturePage()` captures, and wrapped in a
  * single `[data-pen-marks]` container so `controller.ts`'s `screenshot()` can
  * remove the whole thing in one shot via REMOVE_MARKS_JS's `finally`.
@@ -4809,12 +4812,18 @@ export const MARKS_JS = `(() => {
   container.setAttribute("data-pen-marks", "1");
   container.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;z-index:2147483646;pointer-events:none;";
 
+  var vw = window.innerWidth || document.documentElement.clientWidth || 0;
+  var vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  var LABEL_H = 16;
+  var placed = [];
   var marked = document.querySelectorAll('[data-pen-snap^="' + snapshotId + ':"]');
   var count = 0;
   for (var i = 0; i < marked.length; i++) {
     var el = marked[i];
     var rect = el.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) continue;
+    // Off-screen: no box, no label.
+    if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= vw || rect.top >= vh) continue;
     var attr = el.getAttribute("data-pen-snap") || "";
     var idx = parseInt(attr.slice(String(snapshotId).length + 1), 10);
     if (isNaN(idx)) continue;
@@ -4834,15 +4843,33 @@ export const MARKS_JS = `(() => {
 
     var label = document.createElement("div");
     label.textContent = String(idx);
-    var labelLeft = Math.max(0, rect.left);
-    var labelTop = Math.max(0, rect.top - 15);
+    // Outside the box, immediately LEFT of its top-left corner (right edge =
+    // rect.left - 1, aligned to rect.top): stays on the element's own row and
+    // never covers the control. No room on the left: inside top-left. Two
+    // labels landing within 4px of each other: the later one moves down.
+    var labelW = 8 + 7 * String(idx).length;
+    var labelLeft = rect.left >= labelW ? rect.left - 1 - labelW : rect.left;
+    var labelTop = rect.top;
+    for (var k = 0; k < placed.length; k++) {
+      if (Math.abs(placed[k][0] - labelLeft) <= 4 && Math.abs(placed[k][1] - labelTop) <= 4) {
+        labelTop += LABEL_H;
+        k = -1;
+      }
+    }
+    labelLeft = Math.max(0, Math.min(labelLeft, Math.max(0, vw - labelW)));
+    labelTop = Math.max(0, Math.min(labelTop, Math.max(0, vh - LABEL_H)));
+    placed.push([labelLeft, labelTop]);
     label.style.cssText =
       "position:fixed;left:" +
       labelLeft +
       "px;top:" +
       labelTop +
-      "px;min-width:14px;padding:1px 4px;background:#0d99ff;color:#fff;" +
-      "font:10px/14px -apple-system,BlinkMacSystemFont,sans-serif;border-radius:3px;" +
+      "px;box-sizing:border-box;min-width:" +
+      labelW +
+      "px;height:" +
+      LABEL_H +
+      "px;padding:0 4px;background:#0d99ff;color:#fff;" +
+      "font:10px/16px -apple-system,BlinkMacSystemFont,sans-serif;border-radius:3px;" +
       "pointer-events:none;white-space:nowrap;text-align:center;";
     container.appendChild(label);
     count++;

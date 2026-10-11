@@ -9,7 +9,7 @@
 import { test, expect, _electron as electron, type Page } from "@playwright/test";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { ARGS_MARKER, AUTOCOMPLETE_STATE_JS, DISMISS_DIALOG_STATE_JS } from "../src/main/browser/pageScripts";
+import { ARGS_MARKER, AUTOCOMPLETE_STATE_JS, DISMISS_DIALOG_STATE_JS, MARKS_JS } from "../src/main/browser/pageScripts";
 
 let server: http.Server;
 let baseUrl: string;
@@ -3402,6 +3402,135 @@ test("browse_screenshot: returns a non-empty image, and annotate marks never lea
     ).toBe(0);
 
     await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browse_screenshot: annotate with the loop's snapshotId reuses it, keeps perform valid, and labels sit left of their element on the same row", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+    const [fixturePage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === snapshotUrl }),
+      callBrowser(editorPage, "open", { url: snapshotUrl }),
+    ]);
+    await expect(fixturePage.locator("#ready")).toHaveText("snapshot-ready");
+
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(snap.elements.length).toBeGreaterThan(0);
+
+    const shot = (await callBrowser(editorPage, "screenshot", { annotate: true, snapshotId: snap.snapshotId })) as {
+      imageData: string;
+      snapshotId: string;
+      error?: string;
+    };
+    expect(shot.error).toBeUndefined();
+    expect(shot.imageData).toMatch(/^data:image\/jpeg;base64,/);
+    expect(shot.snapshotId).toBe(snap.snapshotId);
+    expect(await fixturePage.evaluate(() => document.querySelectorAll("[data-pen-marks]").length)).toBe(0);
+
+    // The stamps survived: the same snapshot is still current for perform.
+    const performed = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: snap.elements[0].index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(performed.error).toBeUndefined();
+
+    // A snapshotId that is not current is refused.
+    const stale = (await callBrowser(editorPage, "screenshot", { annotate: true, snapshotId: "not-a-snapshot" })) as {
+      error?: string;
+      imageData?: string;
+    };
+    expect(stale.error).toMatch(/snapshot/i);
+    expect(stale.imageData).toBeUndefined();
+
+    // Geometry: inject a table fixture (plus an off-screen button), snapshot,
+    // run MARKS_JS directly and check each label sits immediately left of its
+    // element on the same row, never overlapping a neighbour row's element,
+    // and that the off-screen element gets no box and no label.
+    await fixturePage.evaluate(() => {
+      const wrap = document.createElement("div");
+      wrap.id = "geo-fixture";
+      wrap.style.cssText = "position:fixed;left:60px;top:60px;background:#fff;z-index:1";
+      let rows = "";
+      for (let r = 0; r < 3; r++) {
+        rows += `<tr><td style="padding:2px 8px">Row ${r}</td><td style="padding:2px 8px"><input data-geo="row${r}" type="text" aria-label="geo row ${r}" style="width:120px;height:20px"></td></tr>`;
+      }
+      wrap.innerHTML = `<table>${rows}</table>`;
+      document.body.appendChild(wrap);
+      const off = document.createElement("button");
+      off.setAttribute("data-geo", "offscreen");
+      off.textContent = "Offscreen geo";
+      off.style.cssText = "position:fixed;left:-500px;top:20px;width:80px;height:24px";
+      document.body.appendChild(off);
+    });
+    const snap2 = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const geometry = await fixturePage.evaluate(
+      ({ code, marker, id }) => {
+        const res = eval(code.replace(marker, JSON.stringify({ snapshotId: id }))) as { marked: number };
+        const kids = Array.from(document.querySelector("[data-pen-marks]")!.children) as HTMLElement[];
+        const boxes = kids.filter((_, i) => i % 2 === 0).map((k) => k.getBoundingClientRect());
+        const labels = kids.filter((_, i) => i % 2 === 1);
+        const out: Record<string, { left: number; top: number; right: number; bottom: number; lbl?: DOMRect }> = {};
+        const geoEls = Array.from(document.querySelectorAll<HTMLElement>("[data-geo]"));
+        for (const el of geoEls) {
+          const attr = el.getAttribute("data-pen-snap") || "";
+          const idx = attr.startsWith(id + ":") ? attr.slice(id.length + 1) : "";
+          const r = el.getBoundingClientRect();
+          const lab = labels.find((l) => l.textContent === idx && idx !== "");
+          out[el.getAttribute("data-geo")!] = {
+            left: r.left,
+            top: r.top,
+            right: r.right,
+            bottom: r.bottom,
+            lbl: lab ? lab.getBoundingClientRect() : undefined,
+          };
+        }
+        const info = {
+          marked: res.marked,
+          boxCount: boxes.length,
+          labelCount: labels.length,
+          out: Object.fromEntries(
+            Object.entries(out).map(([k, v]) => [
+              k,
+              { ...v, lbl: v.lbl ? { left: v.lbl.left, top: v.lbl.top, right: v.lbl.right, bottom: v.lbl.bottom } : null },
+            ]),
+          ),
+        };
+        document.querySelector("[data-pen-marks]")!.remove();
+        return info;
+      },
+      { code: MARKS_JS, marker: ARGS_MARKER, id: snap2.snapshotId },
+    );
+    expect(geometry.marked).toBeGreaterThan(0);
+    expect(geometry.boxCount).toBe(geometry.labelCount);
+    expect(geometry.out.offscreen.lbl).toBeNull();
+    const rowKeys = ["row0", "row1", "row2"];
+    for (const k of rowKeys) {
+      const g = geometry.out[k];
+      expect(g.lbl).not.toBeNull();
+      const l = g.lbl!;
+      // immediately left of the element, on its own row
+      expect(l.right).toBeLessThanOrEqual(g.left);
+      expect(g.left - l.right).toBeLessThanOrEqual(3);
+      expect(l.top).toBeGreaterThanOrEqual(g.top - 0.5);
+      expect(l.top).toBeLessThan(g.bottom);
+      // never overlaps any row's element
+      for (const k2 of rowKeys) {
+        const o = geometry.out[k2];
+        const overlaps = l.left < o.right && l.right > o.left && l.top < o.bottom && l.bottom > o.top;
+        expect(overlaps).toBe(false);
+      }
+    }
   } finally {
     await app.close().catch(() => {});
   }
