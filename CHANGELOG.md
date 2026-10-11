@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.3.0] - 2026-10-11
+
+### Added
+- **Browse step screenshots with numbered marks.** `browse_screenshot` takes `annotate` plus the loop's `snapshotId`: it outlines and numbers the elements of that same snapshot, so the numbers on the image are the indices the decision model picks from, and the snapshot stays valid for the next `perform`. The editor sends this image with every `browse_task` step when the screenshot mode is on (OpenAI Decisions).
+- **Label placement that does not cover neighbours.** Each number tries the left, top, right and bottom of its element and takes the first spot that covers no other element, label or page text; dense grids fall back to a small translucent label inside the box. Element picks from the screenshot alone went from 83% to 93% on the click bench, table rows from 0/6 to 6/6.
+- **Agent cursor motion engine** (cua-style, five styles, View menu setting); the arrow turns toward its direction of travel.
+- **macOS glass tab bar**; the browser tab follows the editor theme.
+- MCP advertises the design-system, style, component and lint tools.
+
+### Fixed
+- Browser snapshots: date pickers, custom dropdowns, ARIA sliders and hidden range inputs, controls behind modals and overlays, re-mounted targets, `<select>` and checkbox state, shadow DOM and iframes.
+- Typing waits for autocomplete suggestions; click effects that land after the settle are caught.
+
 ## [0.2.0] - 2026-08-09
 
 ### Added
