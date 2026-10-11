@@ -4795,6 +4795,17 @@ export const READ_JS = `(() => {
  * single `[data-pen-marks]` container so `controller.ts`'s `screenshot()` can
  * remove the whole thing in one shot via REMOVE_MARKS_JS's `finally`.
  *
+ * Label placement (each number is a small blue tab touching its box): first
+ * the free spot left of the box's top-left corner (same row), then above,
+ * right, below — the first that covers no other marked box, no earlier label
+ * and no visible page text/control (`elementFromPoint` + text-node rects).
+ * Boxes with 3+ neighbours within 6px (calendar days, table-cell buttons) and
+ * anything with no free outside spot get a smaller translucent label INSIDE
+ * their top-left corner instead; pages with more than 60 marks use smaller
+ * labels. History: above-only confused table rows, inside-only hid field
+ * text, left-only covered the neighbour in dense rows. The result also carries
+ * `placement` (counts per spot) for diagnostics and tests.
+ *
  * Never left in the DOM across commands: `SNAPSHOT_JS`/`FIND_IMAGES_JS`/
  * `SIGNATURE_JS`/`READ_JS` all additionally exclude `[data-pen-marks]` from
  * their own output (see each script's own doc comment), the same way they
@@ -4814,10 +4825,11 @@ export const MARKS_JS = `(() => {
 
   var vw = window.innerWidth || document.documentElement.clientWidth || 0;
   var vh = window.innerHeight || document.documentElement.clientHeight || 0;
-  var LABEL_H = 16;
-  var placed = [];
   var marked = document.querySelectorAll('[data-pen-snap^="' + snapshotId + ':"]');
-  var count = 0;
+
+  // Pass 1: every visible marked element and its box. Collected up front so a
+  // label can be checked against ALL other boxes, not only earlier ones.
+  var items = [];
   for (var i = 0; i < marked.length; i++) {
     var el = marked[i];
     var rect = el.getBoundingClientRect();
@@ -4827,56 +4839,169 @@ export const MARKS_JS = `(() => {
     var attr = el.getAttribute("data-pen-snap") || "";
     var idx = parseInt(attr.slice(String(snapshotId).length + 1), 10);
     if (isNaN(idx)) continue;
+    items.push({ el: el, idx: idx, l: rect.left, t: rect.top, r: rect.right, b: rect.bottom });
+  }
 
+  // Dense pages get smaller labels (fewer collisions, less covered content).
+  var dense = items.length > 60;
+  var LABEL_H = dense ? 13 : 16;
+  var FONT = dense ? 9 : 10;
+  var CHAR_W = dense ? 6 : 7;
+  var PAD = dense ? 3 : 4;
+  var placed = [];
+  var stats = { left: 0, above: 0, right: 0, below: 0, inside: 0 };
+
+  function overlaps(a, c) {
+    return a.l < c.r && c.l < a.r && a.t < c.b && c.t < a.b;
+  }
+  // A box that wraps the element (a card around its button) is a container,
+  // not a neighbour: a label sitting inside it covers no other control.
+  function wraps(outer, inner) {
+    return outer.l <= inner.l + 1 && outer.t <= inner.t + 1 && outer.r >= inner.r - 1 && outer.b >= inner.b - 1;
+  }
+  // Does the page paint content (text, a control, an image) under this point?
+  function contentAt(x, y, c) {
+    var hit = document.elementFromPoint(x, y);
+    if (!hit || hit === document.documentElement || hit === document.body) return false;
+    var tag = hit.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "IMG" || tag === "SVG" || tag === "svg" || tag === "CANVAS" || tag === "VIDEO" || tag === "BUTTON" || tag === "A") return true;
+    for (var n = hit.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType !== 3 || !n.nodeValue || !n.nodeValue.trim()) continue;
+      var range = document.createRange();
+      range.selectNodeContents(n);
+      var rs = range.getClientRects();
+      for (var q = 0; q < rs.length; q++) {
+        if (rs[q].width > 0 && overlaps({ l: rs[q].left, t: rs[q].top, r: rs[q].right, b: rs[q].bottom }, c)) return true;
+      }
+    }
+    return false;
+  }
+  function coversContent(c) {
+    var xs = [c.l + 1, (c.l + c.r) / 2, c.r - 1];
+    var ys = [c.t + 1, c.b - 1];
+    for (var a = 0; a < xs.length; a++) {
+      for (var b2 = 0; b2 < ys.length; b2++) {
+        if (contentAt(xs[a], ys[b2], c)) return true;
+      }
+    }
+    return false;
+  }
+  function inViewport(c) {
+    return c.l >= 0 && c.t >= 0 && c.r <= vw && c.b <= vh;
+  }
+  function clean(c, self, skipContent) {
+    if (!inViewport(c)) return false;
+    for (var j = 0; j < items.length; j++) {
+      if (j === self) continue;
+      if (overlaps(items[j], c) && !wraps(items[j], items[self])) return false;
+    }
+    for (var k = 0; k < placed.length; k++) {
+      if (overlaps(placed[k], c)) return false;
+    }
+    return skipContent || !coversContent(c);
+  }
+
+  var count = 0;
+  for (var n2 = 0; n2 < items.length; n2++) {
+    var it = items[n2];
     var box = document.createElement("div");
     box.style.cssText =
       "position:fixed;left:" +
-      rect.left +
+      it.l +
       "px;top:" +
-      rect.top +
+      it.t +
       "px;width:" +
-      rect.width +
+      (it.r - it.l) +
       "px;height:" +
-      rect.height +
+      (it.b - it.t) +
       "px;outline:2px solid #0d99ff;outline-offset:-1px;box-sizing:border-box;pointer-events:none;";
     container.appendChild(box);
 
-    var label = document.createElement("div");
-    label.textContent = String(idx);
-    // Outside the box, immediately LEFT of its top-left corner (right edge =
-    // rect.left - 1, aligned to rect.top): stays on the element's own row and
-    // never covers the control. No room on the left: inside top-left. Two
-    // labels landing within 4px of each other: the later one moves down.
-    var labelW = 8 + 7 * String(idx).length;
-    var labelLeft = rect.left >= labelW ? rect.left - 1 - labelW : rect.left;
-    var labelTop = rect.top;
-    for (var k = 0; k < placed.length; k++) {
-      if (Math.abs(placed[k][0] - labelLeft) <= 4 && Math.abs(placed[k][1] - labelTop) <= 4) {
-        labelTop += LABEL_H;
-        k = -1;
+    var text = String(it.idx);
+    var labelW = 2 * PAD + CHAR_W * text.length;
+    // Outside the box, touching it: left of the top-left corner (same row),
+    // above it, right of it, below it. The first spot that covers no other
+    // marked box, no earlier label and no visible page content wins. Dense
+    // grids (calendar days, pagination, table cells) leave none: then a small
+    // translucent label goes INSIDE the box corner.
+    var cands = [
+      ["left", { l: it.l - 1 - labelW, t: it.t }],
+      ["above", { l: it.l, t: it.t - 1 - LABEL_H }],
+      ["right", { l: it.r + 1, t: it.t }],
+      ["below", { l: it.l, t: it.b + 1 }],
+    ];
+    var chosen = null;
+    var kind = "";
+    // A tight grid (3+ boxes within 6px: calendar day, table-cell button) has
+    // no honest outside spot: labels floating between cells read as belonging
+    // to the neighbour, so those boxes get the inside-corner label directly.
+    var near = 0;
+    for (var nb = 0; nb < items.length; nb++) {
+      if (nb === n2 || wraps(items[nb], it) || wraps(it, items[nb])) continue;
+      if (items[nb].l < it.r + 6 && it.l < items[nb].r + 6 && items[nb].t < it.b + 6 && it.t < items[nb].b + 6) near++;
+    }
+    for (var ci = 0; ci < cands.length && !chosen && near < 3; ci++) {
+      var cc = cands[ci][1];
+      var cand = { l: cc.l, t: cc.t, r: cc.l + labelW, b: cc.t + LABEL_H };
+      if (clean(cand, n2, false)) {
+        chosen = cand;
+        kind = cands[ci][0];
       }
     }
-    labelLeft = Math.max(0, Math.min(labelLeft, Math.max(0, vw - labelW)));
-    labelTop = Math.max(0, Math.min(labelTop, Math.max(0, vh - LABEL_H)));
-    placed.push([labelLeft, labelTop]);
+    var inside = false;
+    var fw = labelW;
+    var fh = LABEL_H;
+    if (!chosen) {
+      inside = true;
+      kind = "inside";
+      // Smaller, translucent, in the first box corner free of other labels.
+      fh = 12;
+      fw = 6 + 6 * text.length;
+      var bw = it.r - it.l;
+      var bh = it.b - it.t;
+      var corners = [[it.l + 1, it.t + 1], [it.r - 1 - fw, it.t + 1], [it.l + 1, it.b - 1 - fh], [it.r - 1 - fw, it.b - 1 - fh]];
+      for (var cn = 0; cn < corners.length && !chosen; cn++) {
+        var cd = { l: corners[cn][0], t: corners[cn][1], r: corners[cn][0] + fw, b: corners[cn][1] + fh };
+        var hit2 = false;
+        for (var k2 = 0; k2 < placed.length; k2++) if (overlaps(placed[k2], cd)) hit2 = true;
+        if (!hit2 && (bw >= fw + 2 || cn === 0) && (bh >= fh + 2 || cn === 0)) chosen = cd;
+      }
+      if (!chosen) chosen = { l: it.l + 1, t: it.t + 1, r: it.l + 1 + fw, b: it.t + 1 + fh };
+    }
+    // Clamp last (the viewport edge may still push a label), then record the
+    // clamped rect so later labels collide with what is really drawn.
+    var labelLeft = Math.max(0, Math.min(chosen.l, Math.max(0, vw - fw)));
+    var labelTop = Math.max(0, Math.min(chosen.t, Math.max(0, vh - fh)));
+    placed.push({ l: labelLeft, t: labelTop, r: labelLeft + fw, b: labelTop + fh });
+    stats[kind]++;
+
+    var label = document.createElement("div");
+    label.textContent = text;
     label.style.cssText =
       "position:fixed;left:" +
       labelLeft +
       "px;top:" +
       labelTop +
       "px;box-sizing:border-box;min-width:" +
-      labelW +
+      fw +
       "px;height:" +
-      LABEL_H +
-      "px;padding:0 4px;background:#0d99ff;color:#fff;" +
-      "font:10px/16px -apple-system,BlinkMacSystemFont,sans-serif;border-radius:3px;" +
+      fh +
+      "px;padding:0 " +
+      (inside ? 3 : PAD) +
+      "px;background:" +
+      (inside ? "rgba(13,153,255,0.82)" : "#0d99ff") +
+      ";color:#fff;font:" +
+      (inside ? 9 : FONT) +
+      "px/" +
+      fh +
+      "px -apple-system,BlinkMacSystemFont,sans-serif;border-radius:3px;" +
       "pointer-events:none;white-space:nowrap;text-align:center;";
     container.appendChild(label);
     count++;
   }
 
   (document.documentElement || document.body).appendChild(container);
-  return { marked: count };
+  return { marked: count, placement: stats };
 })()`;
 
 /** Removes the `[data-pen-marks]` overlay MARKS_JS installed — run in
