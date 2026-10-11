@@ -56,6 +56,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Isolated JS world id for executeJavaScriptIsolated (arbitrary, fixed). */
+const ISOLATED_WORLD_ID = 1999;
+
 /** Wave 3 reliability, item 2: electron/electron#5183 — `executeJavaScript`
  * (main-frame or a child frame's own) only resolves once the frame stops
  * loading, so a frame that never finishes loading (a slow/broken ad iframe,
@@ -668,6 +671,10 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         canGoBack: () => view.webContents.navigationHistory.canGoBack(),
         canGoForward: () => view.webContents.navigationHistory.canGoForward(),
         executeJavaScript: (code) => view.webContents.executeJavaScript(code),
+        // Own JS world (fixed id): the page's scripts cannot patch its globals
+        // or read the cross-origin pixels it decodes. Used by mark compose.
+        executeJavaScriptIsolated: (code) =>
+          view.webContents.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code }]),
         // Wave 3 reliability, item 2: WebFrameMain-based iframe support.
         // `.frames` (not `.framesInSubtree`) is deliberately the DIRECT
         // children of the main frame only — one level deep. Same-origin AND

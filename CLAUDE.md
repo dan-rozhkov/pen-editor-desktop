@@ -1012,7 +1012,12 @@ so the motion is frame-rate independent. The math is derived from
 | `magnetic` | bow 0.04, capture radius `min(40, len/2)`, pull 0.45, enter speed 300; records the lock-on time | physics-driven | magnet + ripple |
 | `classic` | the pre-engine look: bowed quadratic, easeInOutCubic, tiny overshoot | `90 + 0.7·D`, 260–900ms | ripple + squish |
 
-**Heading rotation (cua "heading Tangent").** `planMove` adds a `rot` (radians)
+**Heading rotation (cua "heading Tangent") — OFF by default since 2026-10-11.**
+Every style has `rotates:false` in `STYLE_EFFECTS`: the arrow only moves, it
+never turns (the user found the turning distracting). The math below is kept
+for re-enabling, and its tests force `rotates:true` on the three tangent
+styles; a separate test pins that no style rotates by default.
+`planMove` adds a `rot` (radians)
 to every sample (`applyHeading` in `CURSOR_PLAN_JS`, derived from cua
 `trajectory.rs finish()` / motion-lab `applyHeading`, MIT). The arrow art rests
 tip up-left (`TIP_ANGLE = -0.75π`). **Model (we deliberately differ from cua):**
@@ -1036,7 +1041,7 @@ rot is already ~0) eases rot home along the shortest arc — at most a half-turn
 arrival: arrival is still the first sample within 1px of the target and still
 ≤700ms, and the plan's `motionEndMs` is the pre-tail end that trail/glow
 lifetimes key off (the tail extends only the arrow transform; the trail canvas
-is cleared once its redraw window ends). Styles: `signature_arc`,
+is cleared once its redraw window ends). When re-enabled, `signature_arc`,
 `spring_settle`, `comet_swoop` rotate (`tangent`); `magnetic` and `classic` never
 chase a heading (`rotates:false` in `STYLE_EFFECTS`): a carried rot0 eases toward 0
 from sample 0 during the move (same shortest-arc chase, target 0), and the tail
@@ -1066,7 +1071,7 @@ actually rests, never mid-path. Target lookup before the cancel cannot throw
 (null on error), and the outer catch resets rot only if the call owns the
 animation. `sampleAt` wraps the interpolated rot so `state.rot` stays in (-π, π]. Glow and trail stay velocity-based
 (offset back along the velocity, as in cua), independent of rot.
-`CURSOR_VERSION` is `"5"`.
+`CURSOR_VERSION` is `"6"`.
 
 `dc_ms = clamp(150 + 120·log2(D/W + 1), 300, 1000) × scale`, W = the target
 rect's smaller side (min 4), or a 24px box for an `args.point` (Fitts-aware:
@@ -1106,8 +1111,10 @@ head, opacity k²·0.45, faded out when shorter than 60px; `glow` — one radial
 gradient div offset against velocity, radius/alpha growing with speed
 (alpha is ramped by speed so it is exactly 0 at rest — no lingering halo);
 `magnet` — outline of the target rect when magnetic locks on, fades over
-700ms; `ripple` — ring 8→52px radius over 520ms, opacity 0.75→0, line width
-5→1 (click/select); `squish` — arrow scales to 0.88 over 50ms then springs
+700ms; `ripple` — the pre-engine click pulse, deliberately quiet: a 24px
+ring, 2px white border with a 1px dark outline, scaled 0.4→1.6 over 380ms
+(ease-out), opacity 0.9→0 (click/select). The cua ring (bright blue, 8→52px,
+5px line) was replaced on 2026-10-11 as too loud; `squish` — arrow scales to 0.88 over 50ms then springs
 out over ~220ms (click/select; a lighter 0.94 for type). **Reduced motion**
 (`prefers-reduced-motion`): a 120ms straight glide with no effects (cua
 `REDUCED_MOTION_MS`), instead of a jump. The arrow artwork (polygon points,
@@ -1186,7 +1193,19 @@ image — a caller has no other way to tell "genuinely blank page" from
 "capture silently failed." `annotate: true` first takes a fresh snapshot
 (`takeSnapshot`, factored out of `snapshot()` so both share one
 implementation) — its `snapshotId` becomes the one `perform`/`act`'s
-index-based actions accept next — then runs `MARKS_JS` (`pageScripts.ts`): a
+index-based actions accept next — then draws the "set of marks" WITHOUT
+showing it to the user: `MARKS_JS` with `draw:false` lays the marks out (no DOM
+change, returns them in CSS px plus viewport size), the CLEAN page is
+captured, and `COMPOSE_MARKS_JS` decodes that JPEG (base64 → Blob →
+`createImageBitmap`, no network/CSP exposure), paints the boxes and labels on a
+detached canvas (scaled by imageWidth/viewportWidth and imageHeight/viewportHeight,
+labels at exactly the placed rect) and returns a fresh q0.8 JPEG data URL.
+Compose runs ONLY through the optional `BrowserPageHandle.executeJavaScriptIsolated`
+(window.ts: `executeJavaScriptInIsolatedWorld`, world 1999) — never the main
+world, where page scripts could patch the decoders, read cross-origin iframe
+pixels or forge the result — and is bounded by `COMPOSE_MARKS_TIMEOUT_MS`.
+If a handle lacks the method (the backend's Steel/CDP one) or any compose step
+fails or hangs, it falls back to the visible overlay: `MARKS_JS` (`pageScripts.ts`) as a
 `[data-pen-marks]`-tagged, `pointer-events:none` overlay drawing a numbered
 outline box + label over every one of that snapshot's elements (the
 "set-of-marks" a vision model reasons over), captures, and always runs

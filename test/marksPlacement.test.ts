@@ -167,3 +167,41 @@ describe("MARKS_JS label placement", () => {
     expect(result.marked).toBe(1);
   });
 });
+
+describe("MARKS_JS draw:false", () => {
+  it("returns the marks as data and makes no DOM change", () => {
+    const appended: unknown[] = [];
+    const document = {
+      documentElement: { appendChild: (c: unknown) => appended.push(c), clientWidth: 1280, clientHeight: 800 },
+      body: {},
+      querySelector: () => null,
+      querySelectorAll: () => [
+        {
+          getAttribute: () => "s1:0",
+          getBoundingClientRect: () => ({ left: 400, top: 300, right: 520, bottom: 332, width: 120, height: 32 }),
+        },
+      ],
+      createElement: () => {
+        throw new Error("DOM touched");
+      },
+      createRange: () => ({ selectNodeContents() {}, getClientRects: () => [] }),
+      elementFromPoint: () => null,
+    };
+    const code = MARKS_JS.replace(ARGS_MARKER, () => JSON.stringify({ snapshotId: "s1", draw: false }));
+    const r = new Function("window", "document", "return " + code)({ innerWidth: 1280, innerHeight: 800 }, document) as {
+      marked: number;
+      viewportWidth: number;
+      viewportHeight: number;
+      marks: Array<{ text: string; box: { l: number }; label: { l: number; t: number; w: number }; inside: boolean; bg: string }>;
+    };
+    expect(appended).toHaveLength(0);
+    expect(r.marked).toBe(1);
+    expect(r.viewportWidth).toBe(1280);
+    expect(r.viewportHeight).toBe(800);
+    expect(r.marks[0]!.text).toBe("0");
+    expect(r.marks[0]!.box.l).toBe(400);
+    expect(r.marks[0]!.label.t).toBe(300);
+    expect(r.marks[0]!.label.l + r.marks[0]!.label.w).toBe(399);
+    expect(r.marks[0]!.inside).toBe(false);
+  });
+});

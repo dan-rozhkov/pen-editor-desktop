@@ -49,7 +49,7 @@ describe("CURSOR_PLAN_JS motion planning", () => {
       magnet: false,
       ripple: true,
       squish: true,
-      rotates: true,
+      rotates: false,
     });
     expect(fx("spring_settle")).toEqual({
       trail: false,
@@ -57,7 +57,7 @@ describe("CURSOR_PLAN_JS motion planning", () => {
       magnet: false,
       ripple: false,
       squish: true,
-      rotates: true,
+      rotates: false,
     });
     expect(fx("magnetic")).toEqual({
       trail: false,
@@ -73,7 +73,7 @@ describe("CURSOR_PLAN_JS motion planning", () => {
       magnet: false,
       ripple: true,
       squish: false,
-      rotates: true,
+      rotates: false,
     });
     expect(fx("classic")).toEqual({
       trail: false,
@@ -129,7 +129,16 @@ describe("CURSOR_PLAN_JS motion planning", () => {
     expect(p.arrivalT).toBe(0);
   });
 
-  describe("heading rotation (shortest-arc chase toward travel)", () => {
+  it("no style rotates by default: the arrow only moves, rot stays 0", () => {
+    for (const style of ["signature_arc", "spring_settle", "comet_swoop", "magnetic", "classic"]) {
+      const p = plan({ style, from: { x: 100, y: 300 }, to: { x: 800, y: 300 }, w: 40 });
+      expect(p.samples.every((q) => q.rot === 0), style).toBe(true);
+    }
+  });
+
+  // Rotation is switched off in STYLE_EFFECTS, but the heading math stays in
+  // place for re-enabling: these tests force rotates:true on the tangent styles.
+  describe("heading rotation (shortest-arc chase toward travel), when re-enabled", () => {
     const right = { from: { x: 100, y: 300 }, to: { x: 800, y: 300 }, w: 40 };
     const TANGENT = ["signature_arc", "spring_settle", "comet_swoop"];
     // Slack for the arc's bow: the travel heading itself swings across a move
@@ -143,6 +152,12 @@ describe("CURSOR_PLAN_JS motion planning", () => {
       for (let i = 1; i < p.samples.length; i++) sum += Math.abs(wrap(p.samples[i].rot - p.samples[i - 1].rot));
       return sum;
     };
+    const plan = (opts: Record<string, unknown>): Plan =>
+      new Function(
+        "window",
+        "opts",
+        `${CURSOR_PLAN_JS}; ${JSON.stringify(TANGENT)}.forEach(function (s) { STYLE_EFFECTS[s].rotates = true; }); return planMove(opts);`,
+      )({}, opts) as Plan;
     const planFixedHeading = (style: string, opts: Record<string, unknown>): Plan =>
       new Function(
         "window",

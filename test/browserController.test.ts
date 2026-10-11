@@ -2452,6 +2452,114 @@ describe("screenshot", () => {
     expect(marksRelatedCalls.length).toBeGreaterThanOrEqual(2);
   });
 
+  describe("annotate composes marks onto the image (no visible DOM overlay)", () => {
+    const layout = {
+      marked: 1,
+      placement: {},
+      marks: [{ text: "0", box: { l: 1, t: 2, w: 3, h: 4 }, label: { l: 0, t: 0, w: 15, h: 16 }, inside: false, font: 10, padX: 4, bg: "#0d99ff" }],
+      viewportWidth: 800,
+      viewportHeight: 600,
+    };
+    function makePage(composeResult: unknown, captureImg = "data:image/jpeg;base64,CLEAN", isolated = true) {
+      const executeJavaScript = vi.fn((code: string) => {
+        if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+        if (code.includes("maxElements")) {
+          return Promise.resolve({
+            url: "https://example.com/",
+            title: "Example",
+            elements: [{ index: 0, tag: "button", label: "Go", ops: ["CLICK"] }],
+            scroll: { y: 0, height: 100, atBottom: true },
+          });
+        }
+        if (code.includes("requestAnimationFrame")) return Promise.resolve(true);
+        if (code.includes('"draw":false')) return Promise.resolve(layout);
+        if (code.includes("data-pen-marks") && code.includes("removeChild") && !code.includes("createElement")) {
+          return Promise.resolve({ removed: false });
+        }
+        return Promise.resolve({ marked: 1 });
+      });
+      const capture = vi.fn(() => Promise.resolve({ imageData: captureImg, width: 100, height: 200 }));
+      const executeJavaScriptIsolated = vi.fn((code: string) =>
+        composeResult === "hang" ? new Promise(() => {}) : Promise.resolve(composeResult && code ? composeResult : null),
+      );
+      return {
+        page: makeFakePage(isolated ? { executeJavaScript, capture, executeJavaScriptIsolated } : { executeJavaScript, capture }),
+        executeJavaScript,
+        executeJavaScriptIsolated,
+        capture,
+      };
+    }
+
+    it("returns the composed image and never runs the DOM-drawing MARKS_JS", async () => {
+      const { page, executeJavaScript, executeJavaScriptIsolated, capture } = makePage({
+        imageData: "data:image/jpeg;base64,COMPOSED",
+        width: 100,
+        height: 200,
+      });
+      const result = (await new BrowserController(makeFakeTarget(page)).screenshot({ annotate: true })) as {
+        imageData: string;
+        marked: number;
+        snapshotId: string;
+      };
+      expect(result.imageData).toBe("data:image/jpeg;base64,COMPOSED");
+      expect(result.marked).toBe(1);
+      expect(typeof result.snapshotId).toBe("string");
+      expect(capture).toHaveBeenCalledTimes(1);
+      const calls = executeJavaScript.mock.calls.map((c) => c[0] as string);
+      // No call runs MARKS_JS in drawing mode: the drawing branch is in the
+      // template, so a draw call is a MARKS_JS body WITHOUT the draw:false arg
+      // (the REMOVE_MARKS_JS cleanup has no setAttribute).
+      const drawCalls = calls.filter((c) => c.includes('setAttribute("data-pen-marks"') && !c.includes('"draw":false'));
+      expect(drawCalls).toHaveLength(0);
+      // The compose script received the CLEAN capture.
+      // Compose ran only in the isolated world, with the CLEAN capture; the
+      // main world never saw it.
+      expect(calls.some((c) => c.includes("createImageBitmap"))).toBe(false);
+      expect(executeJavaScriptIsolated).toHaveBeenCalledTimes(1);
+      expect(executeJavaScriptIsolated.mock.calls[0]![0]).toContain("data:image/jpeg;base64,CLEAN");
+    });
+
+    it("falls back to the visible DOM overlay when the handle has no isolated world", async () => {
+      const { page, executeJavaScript } = makePage({ imageData: "data:image/jpeg;base64,COMPOSED", width: 1, height: 1 }, undefined, false);
+      const result = (await new BrowserController(makeFakeTarget(page)).screenshot({ annotate: true })) as { imageData: string };
+      expect(result.imageData).toBe("data:image/jpeg;base64,CLEAN");
+      const calls = executeJavaScript.mock.calls.map((c) => c[0] as string);
+      expect(calls.some((c) => c.includes("createImageBitmap"))).toBe(false);
+      expect(calls.some((c) => c.includes('setAttribute("data-pen-marks"') && !c.includes('"draw":false'))).toBe(true);
+    });
+
+    it("falls back within the bound when compose hangs", async () => {
+      vi.useFakeTimers();
+      try {
+        const { page } = makePage("hang");
+        const pending = new BrowserController(makeFakeTarget(page)).screenshot({ annotate: true });
+        await vi.advanceTimersByTimeAsync(3_000);
+        const result = (await pending) as { imageData: string; marked: number };
+        expect(result.imageData).toBe("data:image/jpeg;base64,CLEAN");
+        expect(result.marked).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("falls back to the visible DOM overlay (and removes it) when compose fails", async () => {
+      const { page, executeJavaScript, capture } = makePage({ error: "createImageBitmap unavailable" });
+      const result = (await new BrowserController(makeFakeTarget(page)).screenshot({ annotate: true })) as {
+        imageData: string;
+        marked: number;
+      };
+      expect(result.imageData).toBe("data:image/jpeg;base64,CLEAN");
+      expect(result.marked).toBe(1);
+      // clean capture (discarded) + capture after the overlay was drawn
+      expect(capture).toHaveBeenCalledTimes(2);
+      const calls = executeJavaScript.mock.calls.map((c) => c[0] as string);
+      const drawIdx = calls.findIndex((c) => c.includes("setAttribute(\"data-pen-marks\"") && !c.includes('"draw":false'));
+      expect(drawIdx).toBeGreaterThan(-1);
+      expect(calls[calls.length - 1]).toContain("data-pen-marks");
+      expect(calls[calls.length - 1]).not.toContain("createElement");
+    });
+  });
+
   it("removes the marks overlay even when capture() throws", async () => {
     const executeJavaScript = vi.fn((code: string) => {
       if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });

@@ -3377,14 +3377,36 @@ test("browse_screenshot: returns a non-empty image, and annotate marks never lea
     expect(plain.height).toBeGreaterThan(0);
     expect(plain.url).toBe(snapshotUrl);
 
+    // The user watches this tab: the marks are composed onto the captured
+    // image (COMPOSE_MARKS_JS), so the overlay must never enter the live DOM —
+    // not even for one frame. A fallback to the visible overlay fails here.
+    await fixturePage.evaluate(() => {
+      const w = window as unknown as { __marksSeen: boolean };
+      w.__marksSeen = false;
+      new MutationObserver((records) => {
+        for (const r of records) {
+          for (const n of Array.from(r.addedNodes)) {
+            if (n instanceof Element && (n.matches("[data-pen-marks]") || n.querySelector("[data-pen-marks]"))) {
+              w.__marksSeen = true;
+            }
+          }
+        }
+      }).observe(document.documentElement, { childList: true, subtree: true });
+    });
     const annotated = (await callBrowser(editorPage, "screenshot", { annotate: true })) as {
       imageData: string;
       snapshotId: string;
+      marked: number;
+      width: number;
       elements: { index: number; label: string }[];
     };
     expect(annotated.imageData).toMatch(/^data:image\/jpeg;base64,/);
     expect(typeof annotated.snapshotId).toBe("string");
     expect(annotated.elements.length).toBeGreaterThan(0);
+    expect(annotated.marked).toBeGreaterThan(0);
+    expect(annotated.width).toBe(plain.width);
+    expect(annotated.imageData).not.toBe(plain.imageData);
+    expect(await fixturePage.evaluate(() => (window as unknown as { __marksSeen: boolean }).__marksSeen)).toBe(false);
 
     // The marks overlay must be gone from the real page once the command
     // resolves — not just cosmetically invisible, but actually removed, so

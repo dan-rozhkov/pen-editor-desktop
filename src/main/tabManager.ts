@@ -79,6 +79,8 @@ export interface TabViewHandle {
   canGoBack(): boolean;
   canGoForward(): boolean;
   executeJavaScript(code: string): Promise<unknown>;
+  /** Isolated-world variant (see BrowserPageHandle.executeJavaScriptIsolated). */
+  executeJavaScriptIsolated?(code: string): Promise<unknown>;
   /**
    * True while the tab's webContents is mid-navigation
    * (`webContents.isLoading()`). Feeds `BrowserController`'s post-click
