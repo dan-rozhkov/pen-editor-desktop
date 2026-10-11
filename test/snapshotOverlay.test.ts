@@ -101,4 +101,76 @@ describe("SNAPSHOT_JS overlay detection", () => {
     );
     expect(r.modal).toBeUndefined();
   });
+
+  it("does not report an autocomplete panel of the focused search field as modal", async (ctx) => {
+    if (!browser) return ctx.skip();
+    const html =
+      HEADER +
+      `<div role="listbox" id="sugg" style="position:fixed;inset:0;background:#fff;z-index:10;padding-top:80px">
+         <div role="option">hiking boots</div><div role="option">hiking socks</div><div role="option">hiking poles</div>
+       </div>`;
+    await page.setContent(html);
+    await page.focus("input");
+    const code = SNAPSHOT_JS.replace(ARGS_MARKER, () => JSON.stringify({ snapshotId: "s1", maxElements: 50 }));
+    const r = (await page.evaluate(code)) as { modal?: string };
+    expect(r.modal).toBeUndefined();
+  });
+
+  // Rule (b): an overlay that holds its own focused field is a real popup, so
+  // it is reported even when that field is a search box (it is not a
+  // suggestions panel of a field outside it).
+  it("reports a full-screen search overlay containing the focused input as modal", async (ctx) => {
+    if (!browser) return ctx.skip();
+    await page.setContent(
+      HEADER +
+        `<div style="position:fixed;inset:0;background:#fff;z-index:10">
+           <input type="text" aria-label="Search everything"><button>Cancel</button><a href="/a">Recent A</a>
+         </div>`,
+    );
+    await page.focus("input[aria-label='Search everything']");
+    const code = SNAPSHOT_JS.replace(ARGS_MARKER, () => JSON.stringify({ snapshotId: "s1", maxElements: 50 }));
+    const r = (await page.evaluate(code)) as { modal?: string };
+    expect(r.modal).toBeDefined();
+  });
+
+  it("reports a newsletter popup with an autofocused email input inside it", async (ctx) => {
+    if (!browser) return ctx.skip();
+    await page.setContent(
+      HEADER +
+        `<div style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10">
+           <div style="position:absolute;left:200px;top:100px;width:500px;background:#fff;padding:16px">
+             <p>Join our newsletter</p>
+             <input type="email" aria-label="Your email"><button>Subscribe</button><button>No thanks</button>
+           </div>
+         </div>`,
+    );
+    await page.focus("input[type=email]");
+    const code = SNAPSHOT_JS.replace(ARGS_MARKER, () => JSON.stringify({ snapshotId: "s1", maxElements: 50 }));
+    const r = (await page.evaluate(code)) as { modal?: string };
+    expect(r.modal).toBeDefined();
+  });
+
+  it("reports a consent wall over an autofocused search field with aria-autocomplete", async (ctx) => {
+    if (!browser) return ctx.skip();
+    await page.setContent(
+      `<header><input type="search" aria-label="Search products" aria-autocomplete="list"><a href="/cart">Cart</a><a href="/sale">Sale</a></header>` +
+        drawer("", `<p>We use cookies</p><button>Accept all</button><button>Reject</button><a href="/privacy">Privacy</a>`),
+    );
+    await page.focus("input[type=search]");
+    const code = SNAPSHOT_JS.replace(ARGS_MARKER, () => JSON.stringify({ snapshotId: "s1", maxElements: 50 }));
+    const r = (await page.evaluate(code)) as { modal?: string };
+    expect(r.modal).toBeDefined();
+  });
+
+  it("reports a cart drawer with a combobox when an unrelated header field has focus", async (ctx) => {
+    if (!browser) return ctx.skip();
+    await page.setContent(
+      HEADER +
+        drawer("", `<h2>Your cart</h2><div role="combobox" tabindex="0" aria-label="Shipping">Standard</div><button>Checkout</button><a href="/continue">Continue shopping</a>`),
+    );
+    await page.focus("input[type=search]");
+    const code = SNAPSHOT_JS.replace(ARGS_MARKER, () => JSON.stringify({ snapshotId: "s1", maxElements: 50 }));
+    const r = (await page.evaluate(code)) as { modal?: string };
+    expect(r.modal).toBeDefined();
+  });
 });
