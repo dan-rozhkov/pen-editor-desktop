@@ -16,6 +16,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      # test/snapshotOverlay.test.ts drives SNAPSHOT_JS in real headless
+      # Chromium; under CI it fails (not skips) if the browser is missing.
+      - run: npx playwright install --with-deps chromium
       - run: npm test
       # Catches the compile-only failure modes the unit tests can't: the
       # renderer script must stay a plain script and preloads must stay CJS.

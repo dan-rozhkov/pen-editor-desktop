@@ -570,8 +570,15 @@ the before-signature capture on every `dispatchClick`/`dispatchType` path
 the same ordering as `runHover` (finding 8), so the scroll is never counted as
 the action's effect (a click that did nothing used to report
 `changes: ["scroll"]`). `CLICK_RESOLVE_JS` no longer scrolls. A custom checkbox under a sibling styled span stays,
-and off-screen elements are never dropped. `takeSnapshot` passes `modal`
-through untouched (top document only). It also stamps each surviving element with a
+and off-screen elements are never dropped. `modal` has a **second source**: a
+non-aria wall (a cart drawer's dim backdrop) that rule 2 used to hide >= 3
+candidates (`PEN_OVERLAY_MIN_COVERED`) is reported as `modal` when at least
+one surviving listed control lives in a fixed/sticky layer (the drawer or the
+wall); an empty overlay keeps reporting none. Label: the wall's own
+aria-label/heading, else the drawer panel's, else `"overlay"`. This source does
+NOT scope the table, does NOT set `__modalFrames` (all child frames still
+merge), and scroll containers covered by the wall are dropped. `takeSnapshot`
+passes `modal` through untouched (top document only). It also stamps each surviving element with a
 `data-pen-snap="<snapshotId>:<index>"` attribute. **Invariant:** `perform`
 only ever acts against the *same* snapshot its index came from, taken
 against the *same* browser tab. `BrowserController` keeps `{ id, page }` for
