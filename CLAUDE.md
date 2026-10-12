@@ -549,7 +549,12 @@ popup's items; the document-wide set is `role=option` plus all popups' items;
 but only a strong one (via `aria-controls` or a mirror anchor, never pure
 geometry). The script embedding `POPUP_OPTION_JS` includes
 `DEEP_QUERY_HELPER_JS` itself, once. An `aria-disabled` option
-or day is skipped, and ARIA state (`aria-checked`, or `aria-selected` for
+or day is skipped, but a NATIVELY disabled input/select/textarea/button (own attribute
+or a disabled fieldset) stays listed with `disabled: true` (omitted when enabled):
+the agent must see that a step is locked behind an earlier choice, and `perform`
+on it returns `the control is disabled` without clicking. A transparent or
+clip-hidden radio/checkbox is listed through its first visible `<label>` (one
+shared `penToggleProxy`, also used for click point, marks and relocation), and ARIA state (`aria-checked`, or `aria-selected` for
 option/gridcell/tab/treeitem) is reported as `checked`. Found live on Google
 Flights (browse_task looped, 0/3 → 3/3 after): `aria-hidden="true"` controls
 are skipped; a control nested in a listed cell/option is not listed again; an

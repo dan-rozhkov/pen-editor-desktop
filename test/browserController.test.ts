@@ -2008,7 +2008,7 @@ describe("reveal-scroll ordering", () => {
       await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation, text: "hi" });
       expectRevealFirst(order);
       const revealCall = (page.executeJavaScript as ReturnType<typeof vi.fn>).mock.calls.find((c) => isRevealCall(c[0]));
-      expect(revealCall![0] as string).toContain(JSON.stringify({ index: 0, snapshotId: snapshot.snapshotId }));
+      expect(revealCall![0] as string).toContain(JSON.stringify({ index: 0, snapshotId: snapshot.snapshotId, operation }));
     }
   });
 

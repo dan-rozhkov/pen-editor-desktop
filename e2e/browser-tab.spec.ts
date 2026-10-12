@@ -917,6 +917,8 @@ read as filled. -->
   <input class="sr" type="radio" name="plan" id="p1"><label for="p1" class="plan"><a href="#learn">Learn more</a><span>Pick Plan</span></label>
   <label><input type="checkbox" id="tiny" style="width:7px;height:7px"> Tiny box</label>
   <button disabled>Continue</button>
+  <button id="arm" onclick="setTimeout(function () { var b = document.getElementById('busy'); b.disabled = false; }, 900)">Arm Busy</button>
+  <button id="busy" disabled onclick="this.setAttribute('data-clicked', '1')">Busy Action</button>
 </div>
 <script>
   document.querySelectorAll("input[name=size]").forEach(function (r) {
@@ -1756,6 +1758,8 @@ interface SnapshotElement {
   hasValue?: boolean;
   /** A checkbox/radio's state — reported instead of `hasValue`. */
   checked?: boolean;
+  /** Natively disabled control (own attribute or disabled fieldset); omitted when enabled. */
+  disabled?: boolean;
   ops: string[];
   options?: string[];
   /** Only ever present, and only ever true, for a password input. */
@@ -4635,7 +4639,18 @@ test("browser snapshot/perform: transparent tile radios are listed via their lab
     expect(size14).toBeTruthy();
     expect(size16).toBeTruthy();
     expect(size14?.ops).toEqual(["CLICK"]);
-    expect(snap.elements.some((e) => e.label.includes("Space Black") || e.label.includes("Silver"))).toBe(false);
+    // Disabled colour radios are listed (via their swatch labels) and flagged.
+    const blackOff = snap.elements.find((e) => e.tag === "input" && e.label.includes("Space Black"));
+    expect(blackOff?.disabled).toBe(true);
+    expect(size14?.disabled).toBeUndefined();
+    const disabledClick = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: blackOff!.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(disabledClick.error).toBe("the control is disabled");
+    expect(await page.evaluate(() => (document.getElementById("c-black") as HTMLInputElement).checked)).toBe(false);
+    expect(snap.elements.find((e) => e.tag === "button" && e.label.includes("Continue"))?.disabled).toBe(true);
 
     // Label dedup only when the toggle itself is listed: an option-wrapped or
     // aria-hidden input gets no entry, so its label must stay listed.
@@ -4664,9 +4679,21 @@ test("browser snapshot/perform: transparent tile radios are listed via their lab
     expect(await page.evaluate(() => (document.getElementById("p1") as HTMLInputElement).checked)).toBe(true);
     expect(await page.evaluate(() => location.hash)).toBe("");
 
+    // A busy control (re-enabled by a handler ~900ms later) gets a short wait
+    // before the disabled refusal, instead of an instant error.
+    const arm = snap.elements.find((e) => e.tag === "button" && e.label.includes("Arm Busy"));
+    expect((await click(snap.snapshotId, arm!.index)).error).toBeUndefined();
+    const snapBusy = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const busy = snapBusy.elements.find((e) => e.tag === "button" && e.label.includes("Busy Action"));
+    expect(busy).toBeTruthy();
+    const busyClick = await click(snapBusy.snapshotId, busy!.index);
+    expect(busyClick.error).toBeUndefined();
+    expect(await page.evaluate(() => document.getElementById("busy")!.getAttribute("data-clicked"))).toBe("1");
+
     const snap2 = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
     const black = snap2.elements.find((e) => e.tag === "input" && e.label.includes("Space Black"));
     expect(black).toBeTruthy();
+    expect(black?.disabled).toBeUndefined();
     expect(snap2.elements.some((e) => e.tag === "input" && e.label.includes("Silver"))).toBe(true);
     const r2 = await click(snap2.snapshotId, black!.index);
     expect(r2.error).toBeUndefined();
@@ -4746,9 +4773,9 @@ test("browser snapshot/perform: ARIA sliders are listed with their group context
     expect(stuck).toBeTruthy();
     // Value privacy: only the numeric aria-valuenow, never aria-valuetext.
     expect(stuck?.value).toBe("500");
-    // Disabled native ranges (own attribute / disabled fieldset) are not offered.
-    expect(snap.elements.some((e) => e.label.includes("Disabled slider"))).toBe(false);
-    expect(snap.elements.some((e) => e.label.includes("Fieldset disabled"))).toBe(false);
+    // Disabled native ranges (own attribute / disabled fieldset) are listed, flagged disabled.
+    expect(snap.elements.find((e) => e.label.includes("Disabled slider"))?.disabled).toBe(true);
+    expect(snap.elements.find((e) => e.label.includes("Fieldset disabled"))?.disabled).toBe(true);
     // A text input with role=slider keeps the input branch's privacy rules.
     const card = snap.elements.find((e) => e.label.includes("Card slider"));
     expect(card).toBeTruthy();
@@ -4865,6 +4892,12 @@ test("browser snapshot/perform: ARIA sliders are listed with their group context
       text: "80",
     })) as { error?: string };
     expect(disabledType.error).toContain("a disabled slider.");
+    const disabledClickRange = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: snap.elements.find((e) => e.label.includes("Disabled slider"))!.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(disabledClickRange.error).toBe("the control is disabled");
     expect(await page.evaluate(() => (document.getElementById("r-disabled") as HTMLInputElement).value)).toBe("30");
 
     // A slider that ignores keys is reported, not looped on.
