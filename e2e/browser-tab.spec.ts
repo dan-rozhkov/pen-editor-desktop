@@ -46,6 +46,7 @@ let wave3FrameUrl: string;
 let botCheckUrl: string;
 let rangeSliderUrl: string;
 let tilesUrl: string;
+let suggestButtonsUrl: string;
 let ariaSliderUrl: string;
 let ariaCardsUrl: string;
 let ariaHeaderUrl: string;
@@ -927,6 +928,63 @@ read as filled. -->
 </script>`);
       return;
     }
+    if (req.url && req.url.startsWith("/suggest-buttons")) {
+      // A plain text field (no combobox role, no aria-expanded) whose
+      // suggestions are an absolute <ul> of <li role=button> rows below it,
+      // rendered after a debounce; plus an unrelated absolute promo list.
+      res.end(`<!doctype html>
+<title>Suggest Buttons</title>
+<h1 id="ready">suggest-buttons-ready</h1>
+<style>
+  ul.ta { position: absolute; list-style: none; margin: 0; padding: 0; background: #fff; border: 1px solid #888; width: 240px; }
+  ul.ta li { padding: 6px 8px; }
+  #promo { top: 400px; left: 20px; }
+</style>
+<input id="where" type="text" style="position:absolute;top:80px;left:20px;width:240px" aria-controls="not-the-list">
+<input id="notes" type="text" style="position:absolute;top:300px;left:20px;width:240px" aria-label="Notes">
+<input id="count" type="number" style="position:absolute;top:340px;left:20px;width:240px" aria-label="Count">
+<div id="chosen">none</div>
+<ul id="nav" class="ta" style="top:110px;left:20px"><li role="button">Clapham Menu Link</li><li role="button">Contact</li></ul>
+<div id="tick">0</div>
+<ul id="promo" class="ta"><li role="button">Clapham Promo Weekend</li><li role="button">Hotel Deals</li></ul>
+<script>
+  var input = document.getElementById("where");
+  var timer = null;
+  setInterval(function () { document.getElementById("tick").textContent = String(Date.now()); }, 100);
+  var rows = ["Clapham Junction Station", "Clapham Common Station", "Brixton Station"];
+  input.addEventListener("input", function () {
+    clearTimeout(timer);
+    var old = document.getElementById("results");
+    if (old) old.remove();
+    timer = setTimeout(function () {
+      fetch("/suggest-data?q=" + encodeURIComponent(input.value)).then(function () { render(); });
+    }, 300);
+    function render() {
+      var q = input.value.toLowerCase();
+      var ul = document.createElement("ul");
+      ul.id = "results";
+      ul.className = "ta";
+      ul.style.top = "110px";
+      ul.style.left = "20px";
+      rows.filter(function (r) { return r.toLowerCase().indexOf(q) >= 0; }).forEach(function (r) {
+        var li = document.createElement("li");
+        li.setAttribute("role", "button");
+        var inner = document.createElement("a");
+        inner.textContent = r;
+        li.appendChild(inner);
+        li.addEventListener("click", function () {
+          input.value = r;
+          document.getElementById("chosen").textContent = r;
+          ul.remove();
+        });
+        ul.appendChild(li);
+      });
+      document.body.appendChild(ul);
+    }
+  });
+</script>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/range-slider")) {
       // A dual slider the way a real filter widget ships it: two NATIVE
       // range inputs (the accessible, value-carrying ones) visually hidden at
@@ -1686,6 +1744,7 @@ read as filled. -->
   botCheckUrl = `${baseUrl}/botcheck`;
   rangeSliderUrl = `${baseUrl}/range-slider`;
   tilesUrl = `${baseUrl}/tiles`;
+  suggestButtonsUrl = `${baseUrl}/suggest-buttons`;
   ariaSliderUrl = `${baseUrl}/aria-slider`;
   ariaCardsUrl = `${baseUrl}/aria-cards`;
   ariaHeaderUrl = `${baseUrl}/aria-header`;
@@ -1760,6 +1819,8 @@ interface SnapshotElement {
   checked?: boolean;
   /** Natively disabled control (own attribute or disabled fieldset); omitted when enabled. */
   disabled?: boolean;
+  /** Open popup/dropdown owner state. */
+  expanded?: boolean;
   ops: string[];
   options?: string[];
   /** Only ever present, and only ever true, for a password input. */
@@ -4698,6 +4759,71 @@ test("browser snapshot/perform: transparent tile radios are listed via their lab
     const r2 = await click(snap2.snapshotId, black!.index);
     expect(r2.error).toBeUndefined();
     expect(await page.evaluate(() => (document.getElementById("c-black") as HTMLInputElement).checked)).toBe(true);
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot/perform: a plain text field's floating role=button suggestions are reported as options with the field expanded", async () => {
+  const { app, editorPage, page } = await openReachFixture(suggestButtonsUrl, "suggest-buttons-ready");
+  try {
+    const first = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const field = first.elements.find((e) => e.tag === "input");
+    expect(field).toBeTruthy();
+    // Nothing typed: not expanded, promo rows are ordinary buttons.
+    expect(field?.expanded).toBeUndefined();
+
+    const typed = (await callBrowser(editorPage, "perform", {
+      snapshotId: first.snapshotId,
+      index: field!.index,
+      operation: "TYPE_TEXT",
+      text: "Clapham",
+    })) as { error?: string };
+    expect(typed.error).toBeUndefined();
+
+    // No polling: the type command itself waited for the debounced fetch.
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const options = snap.elements.filter((e) => e.role === "option");
+    expect(options.map((e) => e.label).sort()).toEqual(["Clapham Common Station", "Clapham Junction Station"]);
+    expect(snap.elements.find((e) => e.tag === "input")?.expanded).toBe(true);
+    expect(options.some((e) => e.label.includes("Promo"))).toBe(false);
+    expect(snap.elements.find((e) => e.label.includes("Clapham Promo"))?.role).toBe("button");
+    // Innermost matching row wins (the <a> inside the matching <li>), and
+    // only the new rows are re-roled: a menu already on screen before typing
+    // (same spot, also matching the word) is never taken for suggestions.
+    expect(options.every((e) => e.tag === "a")).toBe(true);
+    const navLink = snap.elements.find((e) => e.label === "Clapham Menu Link");
+    expect(navLink?.role).toBe("button");
+
+    const pick = options.find((e) => e.label === "Clapham Junction Station")!;
+    const clicked = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: pick.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(clicked.error).toBeUndefined();
+    await expect(page.locator("#chosen")).toHaveText("Clapham Junction Station");
+    expect(await page.evaluate(() => (document.getElementById("where") as HTMLInputElement).value)).toBe("Clapham Junction Station");
+
+    // A plain field with no suggestions does not slow typing down: compared
+    // with a number field (never eligible for the suggestion wait), same
+    // cursor move and settles, it must not cost the 400ms activity window.
+    const snap3 = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const timeType = async (label: string, text: string) => {
+      const target = snap3.elements.find((e) => e.label === label)!;
+      const t0 = Date.now();
+      const r = (await callBrowser(editorPage, "perform", {
+        snapshotId: snap3.snapshotId,
+        index: target.index,
+        operation: "TYPE_TEXT",
+        text,
+      })) as { error?: string };
+      expect(r.error).toBeUndefined();
+      return Date.now() - t0;
+    };
+    const baselineMs = await timeType("Count", "12345");
+    const plainMs = await timeType("Notes", "Some plain note");
+    expect(plainMs - baselineMs).toBeLessThan(250);
   } finally {
     await app.close().catch(() => {});
   }

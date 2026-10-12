@@ -5028,6 +5028,139 @@ describe("autocomplete settle after typing", () => {
       expect(result).toMatchObject({ url: "https://example.com/" });
     }
   });
+
+  // Plain text fields (no ARIA autocomplete hints): wait only for activity
+  // that starts after the text went in; see settleAutocomplete.
+  describe("plain field suggestions", () => {
+    function makePlainPage(opts: {
+      probe: (call: number, elapsedMs: number) => unknown;
+      domActivityAtMs?: number;
+      networkAtMs?: number;
+      failActionsAfterBaseline?: boolean;
+    }) {
+      const t0 = Date.now();
+      let calls = 0;
+      let baselineSeen = false;
+      const log = { uninstall: 0, install: 0 };
+      const page = makeFakePage({
+        networkStats: vi.fn(() => ({
+          pending: 0,
+          generation: opts.networkAtMs !== undefined && Date.now() - t0 >= opts.networkAtMs ? 1 : 0,
+        })),
+        executeJavaScript: vi.fn((code: string) => {
+          if (isSignatureCall(code)) {
+            return Promise.resolve({ url: "https://example.com/", title: "Example", nodeCount: 1, textLength: 0, textHash: 0, mainImageSrc: "", scrollY: 0, focusedValueLength: 0 });
+          }
+          if (typeof code === "string" && code.includes("__penSuggestDom")) {
+            if (code.includes('"action":"install"')) log.install++;
+            if (code.includes('"action":"uninstall"')) log.uninstall++;
+            if (code.includes('"action":"check"')) {
+              const at = opts.domActivityAtMs;
+              const now = Date.now() - t0;
+              return Promise.resolve(at !== undefined && now >= at ? { mutated: true, ageMs: now - at } : { mutated: false, ageMs: null });
+            }
+            return Promise.resolve({ ok: true });
+          }
+          if (isAutocompleteCall(code) && isBaselineCall(code)) {
+            baselineSeen = true;
+            return Promise.resolve({ docOptions: 0, docHash: 0, plain: true });
+          }
+          if (isAutocompleteCall(code)) return Promise.resolve(opts.probe(calls++, Date.now() - t0));
+          if (baselineSeen && opts.failActionsAfterBaseline) return Promise.resolve({ error: "boom" });
+          return Promise.resolve({ url: "https://example.com/", title: "Example" });
+        }),
+      });
+      return { page, log, probes: () => calls };
+    }
+
+    const eligible = { autocomplete: false, plainEligible: true };
+    const shown = { autocomplete: true, options: 2, hash: 9, docOptions: 2, docHash: 9 };
+
+    it("waits for the list once typing started a request, returning when it is stable across two polls", async () => {
+      vi.useFakeTimers();
+      try {
+        const { page, probes } = makePlainPage({
+          networkAtMs: 0,
+          probe: (_n, ms) => (ms < 500 ? eligible : shown),
+        });
+        const result = await typeInto(new BrowserController(makeFakeTarget(page)), 2_000);
+        expect(result).not.toHaveProperty("error");
+        // eligible polls until the list shows, then two equal polls.
+        expect(probes()).toBeGreaterThanOrEqual(3);
+        expect(probes()).toBeLessThanOrEqual(30);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("leaves after the activity window when nothing happened (a plain field stays fast)", async () => {
+      vi.useFakeTimers();
+      try {
+        const { page, probes } = makePlainPage({ probe: () => eligible });
+        const started = Date.now();
+        await typeInto(new BrowserController(makeFakeTarget(page)), 2_000);
+        // ~400ms window at 50ms polls; well under the 1200ms cap.
+        expect(probes()).toBeLessThanOrEqual(12);
+        expect(Date.now() - started).toBeGreaterThanOrEqual(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops once activity has been quiet for 300ms with no popup, long before the cap", async () => {
+      vi.useFakeTimers();
+      try {
+        const { page, probes } = makePlainPage({ domActivityAtMs: 0, probe: () => eligible });
+        await typeInto(new BrowserController(makeFakeTarget(page)), 3_000);
+        // Quiet since t=0 (ageMs grows): done after ~300ms, i.e. ~7 polls, far below 1200/50.
+        expect(probes()).toBeLessThan(12);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("never accepts a list identical to the pre-type one", async () => {
+      vi.useFakeTimers();
+      try {
+        const stale = { autocomplete: true, options: 2, hash: 9, docOptions: 2, docHash: 9 };
+        const { page } = makePlainPage({ networkAtMs: 0, probe: () => stale });
+        let probeCount = 0;
+        const probes = () => probeCount;
+        // baseline for this page reports plain with an empty doc digest, so
+        // freshness passes; give it a matching baseline instead:
+        (page.executeJavaScript as ReturnType<typeof vi.fn>).mockImplementation((code: string) => {
+          if (isSignatureCall(code)) {
+            return Promise.resolve({ url: "https://example.com/", title: "Example", nodeCount: 1, textLength: 0, textHash: 0, mainImageSrc: "", scrollY: 0, focusedValueLength: 0 });
+          }
+          if (typeof code === "string" && code.includes("__penSuggestDom")) return Promise.resolve({ ok: true });
+          if (isAutocompleteCall(code) && isBaselineCall(code)) return Promise.resolve({ docOptions: 2, docHash: 9, plain: true });
+          if (isAutocompleteCall(code)) {
+            probeCount++;
+            return Promise.resolve(stale);
+          }
+          return Promise.resolve({ url: "https://example.com/", title: "Example" });
+        });
+        await typeInto(new BrowserController(makeFakeTarget(page)), 3_000);
+        // Identical to the baseline: polled until the 1200ms plain cap.
+        expect(probes()).toBeGreaterThan(5);
+        expect(probes()).toBeLessThanOrEqual(1_200 / 100 + 2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("always uninstalls the activity observer, even when the type fails", async () => {
+      for (const failActionsAfterBaseline of [false, true]) {
+        const { page, log } = makePlainPage({ probe: () => ({ autocomplete: false }), failActionsAfterBaseline });
+        const controller = new BrowserController(makeFakeTarget(page));
+        const snapshot = (await controller.snapshot()) as { snapshotId: string };
+        const result = await controller.perform({ snapshotId: snapshot.snapshotId, index: 0, operation: "TYPE_TEXT", text: "hi" });
+        if (failActionsAfterBaseline) expect(result).toHaveProperty("error");
+        expect(log.install).toBe(1);
+        expect(log.uninstall).toBe(1);
+      }
+    });
+  });
 });
 
 // Late click effects: a site that animates a change behind a CSS transition
