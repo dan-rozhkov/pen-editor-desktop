@@ -55,6 +55,10 @@ let revealStripUrl: string;
 let revealFoldUrl: string;
 let focusOverlayUrl: string;
 let autocompleteUrl: string;
+let antSelectUrl: string;
+let handDropdownUrl: string;
+let plainListUrl: string;
+let popupGuardsUrl: string;
 let lateEffectUrl: string;
 let shadowDialogUrl: string;
 let lateShellUrl: string;
@@ -1164,6 +1168,184 @@ read as filled. -->
 </script>`);
       return;
     }
+    if (req.url && req.url.startsWith("/hand-dropdown")) {
+      // A hand-made dropdown: a haspopup button opens an absolutely positioned
+      // <ul> sibling of role-less, aria-less <li style="cursor:pointer">.
+      res.end(`<!doctype html>
+<title>Hand dropdown</title>
+<h1 id="ready">hand-dropdown-ready</h1>
+<div style="position:relative;margin:40px;width:200px">
+  <button id="trigger" aria-haspopup="listbox" aria-expanded="false">Pick a colour</button>
+  <ul id="menu" style="display:none;position:absolute;top:32px;left:0;width:200px;margin:0;padding:0;list-style:none;background:#fff;border:1px solid #ccc">
+    <li style="cursor:pointer;padding:6px" data-v="Red"><span>Red</span></li>
+    <li style="cursor:pointer;padding:6px" data-v="Green"><span>Green</span></li>
+    <li style="cursor:pointer;padding:6px" data-v="Blue"><span>Blue</span></li>
+  </ul>
+  <output id="chosen"></output>
+</div>
+<!-- An open filter popover whose only item is a <label> WRAPPING a checkbox:
+     the checkbox is listed (with its state), the label is not an option. -->
+<button id="filters" aria-haspopup="true" aria-expanded="true" style="position:absolute;top:20px;left:320px">Filters</button>
+<div style="position:absolute;top:60px;left:320px;width:180px;background:#fff;border:1px solid #ccc;padding:6px">
+  <label style="cursor:pointer"><input type="checkbox" id="free" checked> Free shipping</label>
+</div>
+<script>
+  var trigger = document.getElementById("trigger");
+  var menu = document.getElementById("menu");
+  trigger.addEventListener("click", function () {
+    var open = menu.style.display === "none";
+    menu.style.display = open ? "block" : "none";
+    trigger.setAttribute("aria-expanded", open ? "true" : "false");
+  });
+  menu.addEventListener("click", function (e) {
+    var li = e.target.closest("li");
+    if (!li) return;
+    document.getElementById("chosen").textContent = li.getAttribute("data-v");
+    menu.style.display = "none";
+    trigger.setAttribute("aria-expanded", "false");
+  });
+</script>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/plain-list")) {
+      // cursor:pointer <li>s with NO expanded owner: not options.
+      res.end(`<!doctype html>
+<title>Plain list</title>
+<h1 id="ready">plain-list-ready</h1>
+<button id="b">Go</button>
+<ul style="position:absolute;top:80px;left:20px"><li style="cursor:pointer">Alpha</li><li style="cursor:pointer">Beta</li></ul>
+<button aria-expanded="true" id="acc" style="position:absolute;top:200px">Accordion</button>
+<div style="position:absolute;top:240px;left:0"><p style="cursor:pointer">Panel text</p></div>
+<!-- Explicit role=option stays listed even while pointer-events:none (open animation / delegated clicks) -->
+<div role="listbox" style="position:absolute;top:300px;left:0"><div role="option" id="anim" style="pointer-events:none;cursor:not-allowed">Animating</div></div>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/popup-guards")) {
+      // Five independent columns, each an OPEN owner next to look-alike
+      // cursor:pointer content that must NOT become options, except (c) and
+      // (e) whose options must stay listed.
+      //  a: menu button + role=menu of menuitems + a nearby toast (pointer divs)
+      //  b: combobox with an empty list + a far promo card and a near promo
+      //     card with a heading (both pointer divs)
+      //  c: listbox button + <ul tabindex=-1> holding ONE pointer <li>
+      //  d: listbox button + a layer whose ROOT is cursor:pointer (title/desc)
+      //  e: a role=listbox option clipped by a 2px overflow:hidden ancestor
+      res.end(`<!doctype html>
+<title>Popup guards</title>
+<h1 id="ready">popup-guards-ready</h1>
+<style>.col{position:absolute;width:170px}.pop{position:absolute;width:170px;background:#fff;border:1px solid #ccc}</style>
+<div class="col" style="top:60px;left:10px">
+  <button id="menu-btn" aria-haspopup="menu" aria-expanded="true" aria-controls="menu1">Actions</button>
+  <div id="menu1" role="menu" class="pop" style="top:26px;left:0"><div role="menuitem" tabindex="-1">Rename</div><div role="menuitem" tabindex="-1">Remove</div></div>
+  <div id="toast" class="pop" style="top:90px;left:0"><div style="cursor:pointer">Undo</div><div style="cursor:pointer">Dismiss</div></div>
+</div>
+<div class="col" style="top:60px;left:210px">
+  <input id="cb2" role="combobox" aria-label="Country" aria-expanded="true" aria-controls="lb2" style="width:160px">
+  <ul id="lb2" role="listbox" style="margin:0;padding:0"></ul>
+  <div id="promo-near" class="pop" style="top:34px;left:0"><h3 style="margin:0">Go pro</h3><div style="cursor:pointer">Upgrade</div></div>
+  <div id="promo-far" class="pop" style="top:140px;left:0"><div style="cursor:pointer">Free trial</div></div>
+</div>
+<div class="col" style="top:60px;left:410px">
+  <button id="btn-c" aria-haspopup="listbox" aria-expanded="true">City</button>
+  <div class="pop" style="top:28px;left:0"><ul id="ul-c" tabindex="-1" style="margin:0;padding:0;list-style:none"><li style="cursor:pointer">Paris</li></ul></div>
+</div>
+<div class="col" style="top:60px;left:610px">
+  <button id="btn-d" aria-haspopup="listbox" aria-expanded="true">Plan</button>
+  <div id="root-d" class="pop" style="top:28px;left:0;cursor:pointer"><div>Team plan</div><div>Billed yearly</div></div>
+</div>
+<div class="col" style="top:60px;left:810px">
+  <div style="height:2px;overflow:hidden"><div role="listbox" aria-label="Sizes"><div role="option" id="clipped">Clipped</div></div></div>
+</div>`);
+      return;
+    }
+    if (req.url && req.url.startsWith("/ant-select")) {
+      // Ant Design Select shape (neutral class names: the rule is generic)
+      // inside an aria-modal dialog: a readonly role=combobox input; opening
+      // it portals a dropdown to the end of <body> whose visible options are
+      // role-less <div aria-selected style="cursor:pointer"> with a JS click
+      // handler. The only
+      // role=option nodes sit in a 0x0 overflow:hidden a11y listbox (the
+      // active option) that aria-controls points at. #role-tab is an
+      // aria-selected node WITH a role, which must keep its own role.
+      // ?mirror=zero keeps the mirror 0x0; the default is the standard sr-only
+      // 1x1 clipped mirror (position:absolute; clip:rect(0,0,0,0)).
+      const mirrorStyle = req.url.includes("mirror=zero")
+        ? "height:0;width:0;overflow:hidden"
+        : "position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap";
+      res.end(`<!doctype html>
+<title>Ant Select</title>
+<h1 id="ready">ant-select-ready</h1>
+<div style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10">
+  <div role="dialog" aria-modal="true" aria-label="Add company" style="position:fixed;top:60px;left:60px;width:360px;height:260px;background:#fff;z-index:11">
+    <div role="tablist"><button id="role-tab" role="tab" aria-selected="true">General</button></div>
+    <div class="pick"><div class="pick-field" style="padding:6px">
+      <input id="size_input" role="combobox" aria-expanded="false" aria-controls="size_input_list" aria-owns="size_input_list" aria-label="Size" readonly value="">
+      <div role="listbox" id="size_input_list" style="${mirrorStyle}">
+        <div role="option" aria-label="11-50" aria-selected="false">11-50</div>
+      </div>
+    </div></div>
+    <div style="padding:6px"><input id="tier_input" role="combobox" aria-expanded="false" aria-label="Tier" readonly value=""></div>
+    <table><tr aria-selected="true"><td><button id="row-edit">Edit row</button></td></tr></table>
+  </div>
+</div>
+<script>
+  var input = document.getElementById("size_input");
+  var dropdown = null;
+  function close() {
+    if (dropdown) dropdown.remove();
+    dropdown = null;
+    input.setAttribute("aria-expanded", "false");
+  }
+  input.addEventListener("click", function () {
+    if (dropdown) return close();
+    dropdown = document.createElement("div");
+    dropdown.className = "pick-popup";
+    var ir = input.getBoundingClientRect();
+    dropdown.style.cssText = "position:fixed;top:" + (ir.bottom + 4) + "px;left:" + ir.left + "px;width:200px;background:#fff;z-index:1050;border:1px solid #ccc";
+    dropdown.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    ["1-10", "11-50", "51-200", "201-500", "501+"].forEach(function (label) {
+      var opt = document.createElement("div");
+      opt.className = "pick-row" + (label === "501+" ? " pick-row-off" : "");
+      opt.setAttribute("aria-selected", "false");
+      if (label === "501+") opt.setAttribute("aria-disabled", "true");
+      opt.setAttribute("title", label);
+      opt.style.cssText = "height:32px;padding:5px 12px;cursor:" + (label === "501+" ? "not-allowed" : "pointer");
+      opt.innerHTML = "<div>" + label + '</div><span aria-hidden="true"></span>';
+      if (label !== "501+") opt.addEventListener("click", function () { input.value = label; close(); });
+      dropdown.appendChild(opt);
+    });
+    document.body.appendChild(dropdown);
+    input.setAttribute("aria-expanded", "true");
+  });
+  // Tier: a tabindex scroll wrapper around ONE aria-selected option. The
+  // option (not the wrapper) is the item.
+  var tier = document.getElementById("tier_input");
+  var tierPop = null;
+  tier.addEventListener("click", function () {
+    if (tierPop) {
+      tierPop.remove();
+      tierPop = null;
+      tier.setAttribute("aria-expanded", "false");
+      return;
+    }
+    tierPop = document.createElement("div");
+    tierPop.id = "tier-wrap";
+    tierPop.setAttribute("tabindex", "-1");
+    var tr = tier.getBoundingClientRect();
+    tierPop.style.cssText = "position:fixed;top:" + (tr.bottom + 4) + "px;left:" + tr.left + "px;width:200px;max-height:256px;padding:8px;background:#fff;z-index:1050;border:1px solid #ccc";
+    tierPop.innerHTML = '<div id="acme" aria-selected="false" style="cursor:pointer">Acme Inc</div>';
+    tierPop.querySelector("#acme").addEventListener("click", function () {
+      tier.value = "Acme Inc";
+      tierPop.remove();
+      tierPop = null;
+      tier.setAttribute("aria-expanded", "false");
+    });
+    document.body.appendChild(tierPop);
+    tier.setAttribute("aria-expanded", "true");
+  });
+</script>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/late-effect")) {
       // Google Flights' calendar shape: a modal dialog whose "Done" hides it
       // ~300ms AFTER the click (a CSS-transition-like setTimeout), with the
@@ -1467,6 +1649,10 @@ read as filled. -->
   revealFoldUrl = `${baseUrl}/reveal-fold`;
   focusOverlayUrl = `${baseUrl}/focus-overlay`;
   autocompleteUrl = `${baseUrl}/autocomplete`;
+  antSelectUrl = `${baseUrl}/ant-select`;
+  handDropdownUrl = `${baseUrl}/hand-dropdown`;
+  plainListUrl = `${baseUrl}/plain-list`;
+  popupGuardsUrl = `${baseUrl}/popup-guards`;
   lateEffectUrl = `${baseUrl}/late-effect`;
   shadowDialogUrl = `${baseUrl}/shadow-dialog`;
   lateShellUrl = `${baseUrl}/late-shell`;
@@ -4956,6 +5142,169 @@ for (const via of ["act", "perform"] as const) {
     }
   });
 }
+
+for (const mirror of ["sr-only 1x1 clip", "0x0"] as const) {
+test(`browser snapshot: Ant Design Select shape (role-less aria-selected divs in a body portal over an aria-modal, a ${mirror} mirror listbox) are listed as options and CLICK selects one`, async () => {
+  const { app, editorPage, page } = await openReachFixture(
+    mirror === "0x0" ? `${antSelectUrl}?mirror=zero` : antSelectUrl,
+    "ant-select-ready",
+  );
+  try {
+    const first = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const size = first.elements.find((e) => e.label === "Size");
+    expect(size).toBeTruthy();
+    // Closed: no options yet; an aria-selected node WITH a role keeps it.
+    expect(first.elements.some((e) => e.label === "51-200")).toBe(false);
+    expect(first.elements.find((e) => e.label === "General")?.role).toBe("tab");
+    // A selected role-less table row is not an option: its button stays listed.
+    expect(first.elements.find((e) => e.label === "Edit row")?.tag).toBe("button");
+    expect(first.elements.some((e) => e.tag === "tr")).toBe(false);
+    const open = (await callBrowser(editorPage, "perform", {
+      snapshotId: first.snapshotId,
+      index: size!.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(open.error).toBeUndefined();
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(snap.modal).toBe("Add company");
+    const opt = snap.elements.find((e) => e.label === "51-200");
+    expect(opt).toBeTruthy();
+    expect(opt!.role).toBe("option");
+    expect(opt!.checked).toBe(false);
+    // The hidden 0x0 a11y listbox's option is not offered; the disabled one neither.
+    expect(snap.elements.filter((e) => e.label === "11-50")).toHaveLength(1);
+    expect(snap.elements.some((e) => e.label === "501+")).toBe(false);
+    const pick = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: opt!.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(pick.error).toBeUndefined();
+    await expect(page.locator("#size_input")).toHaveValue("51-200");
+    expect(await page.locator(".pick-popup").count()).toBe(0);
+
+    // A tabindex scroll wrapper around ONE aria-selected option: the option
+    // is the item (stronger signal wins), the wrapper is not listed.
+    const closed = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const tier = closed.elements.find((e) => e.label === "Tier");
+    expect(tier).toBeTruthy();
+    await callBrowser(editorPage, "perform", { snapshotId: closed.snapshotId, index: tier!.index, operation: "CLICK" });
+    const tierSnap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const acme = tierSnap.elements.find((e) => e.label === "Acme Inc");
+    expect(acme?.role).toBe("option");
+    expect(tierSnap.elements.filter((e) => e.label === "Acme Inc")).toHaveLength(1);
+    await expect(page.locator("#acme")).toHaveAttribute("data-pen-snap", /.+/);
+    await expect(page.locator("#tier-wrap")).not.toHaveAttribute("data-pen-snap", /.+/);
+    const tierPick = (await callBrowser(editorPage, "perform", {
+      snapshotId: tierSnap.snapshotId,
+      index: acme!.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(tierPick.error).toBeUndefined();
+    await expect(page.locator("#tier_input")).toHaveValue("Acme Inc");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+}
+
+test("browser snapshot: a hand-made dropdown (haspopup button + absolutely positioned <ul> of role-less cursor:pointer <li>) lists its items as options and CLICK selects one", async () => {
+  const { app, editorPage, page } = await openReachFixture(handDropdownUrl, "hand-dropdown-ready");
+  try {
+    const first = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    // Open filter popover: the label-wrapped checkbox is listed as itself
+    // with its state; the wrapping label is not an option.
+    const free = first.elements.find((e) => e.tag === "input" && /Free shipping/.test(e.label));
+    expect(free).toBeTruthy();
+    expect(free!.checked).toBe(true);
+    expect(first.elements.some((e) => e.role === "option" && /Free shipping/.test(e.label))).toBe(false);
+    expect(first.elements.some((e) => e.tag === "label")).toBe(false);
+    const trigger = first.elements.find((e) => e.label === "Pick a colour");
+    expect(trigger).toBeTruthy();
+    expect(first.elements.some((e) => e.label === "Green")).toBe(false);
+    const open = (await callBrowser(editorPage, "perform", {
+      snapshotId: first.snapshotId,
+      index: trigger!.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(open.error).toBeUndefined();
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    for (const colour of ["Red", "Green", "Blue"]) {
+      const o = snap.elements.find((e) => e.label === colour);
+      expect(o?.role).toBe("option");
+      // Listed once: the inner <span> must not repeat the <li>.
+      expect(snap.elements.filter((e) => e.label === colour)).toHaveLength(1);
+    }
+    const green = snap.elements.find((e) => e.label === "Green")!;
+    const pick = (await callBrowser(editorPage, "perform", {
+      snapshotId: snap.snapshotId,
+      index: green.index,
+      operation: "CLICK",
+    })) as { error?: string };
+    expect(pick.error).toBeUndefined();
+    await expect(page.locator("#chosen")).toHaveText("Green");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot: cursor:pointer <li>s and an aria-expanded accordion button with no popup owner are NOT listed as options (an explicit role=option with pointer-events:none still is)", async () => {
+  const { app, editorPage } = await openReachFixture(plainListUrl, "plain-list-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    expect(snap.elements.some((e) => e.label === "Alpha" || e.label === "Panel text")).toBe(false);
+    // An explicit role=option is disabled only by aria-disabled, not by CSS.
+    expect(snap.elements.filter((e) => e.role === "option").map((e) => e.label)).toEqual(["Animating"]);
+    expect(snap.elements.find((e) => e.label === "Go")?.tag).toBe("button");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("popup guards: no invented options for menu triggers, empty lists, panels, pointer roots; tabindex wrappers and clipped role=option keep the right items", async () => {
+  const { app, editorPage } = await openReachFixture(popupGuardsUrl, "popup-guards-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const byLabel = (l: string) => snap.elements.find((e) => e.label === l);
+    // (a) a menu trigger never falls back to geometry: the toast is no list,
+    // the menu's own role-bearing items are listed as themselves.
+    expect(byLabel("Rename")?.role).toBe("menuitem");
+    expect(byLabel("Remove")?.role).toBe("menuitem");
+    // (b)/(d) an empty list beside a heading card / a far card, and a pointer
+    // root with title + description, yield nothing.
+    // (c) the pointer <li> is the item, the tabindex <ul> around it is not.
+    // (e) a role=option clipped by a 2px ancestor (no mirror) stays listed.
+    expect(snap.elements.filter((e) => e.role === "option").map((e) => e.label).sort()).toEqual(["Clipped", "Paris"]);
+    for (const l of ["Undo", "Dismiss", "Upgrade", "Free trial", "Team plan", "Billed yearly"]) {
+      expect(byLabel(l)).toBeUndefined();
+    }
+    expect(snap.elements.some((e) => e.tag === "ul")).toBe(false);
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("autocomplete probe: a button owner inside a role=combobox wrapper gives the input its adjacent popup's options", async () => {
+  const { app, page } = await openReachFixture(plainListUrl, "plain-list-ready");
+  try {
+    await page.evaluate(() => {
+      document.body.insertAdjacentHTML(
+        "beforeend",
+        '<div role="combobox" style="position:fixed;top:400px;left:20px;width:200px"><input id="wcb"><button aria-expanded="true" aria-haspopup="listbox">v</button></div>' +
+          '<div style="position:fixed;top:432px;left:20px;width:200px;background:#fff"><div style="cursor:pointer">Lisbon</div><div style="cursor:pointer">Porto</div></div>',
+      );
+      const el = document.getElementById("wcb")!;
+      el.setAttribute("data-pen-sig-target", "1");
+      (window as unknown as { __penSigTarget: Element }).__penSigTarget = el;
+    });
+    const res = (await page.evaluate(
+      AUTOCOMPLETE_STATE_JS.replace(ARGS_MARKER, JSON.stringify({})),
+    )) as Record<string, unknown>;
+    expect(res).toMatchObject({ autocomplete: true, ownList: true, options: 2 });
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
 
 test("type: a plain input on the autocomplete page types normally and reports no autocomplete field", async () => {
   const { app, editorPage, page } = await openReachFixture(autocompleteUrl, "autocomplete-ready");

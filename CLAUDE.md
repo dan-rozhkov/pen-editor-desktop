@@ -494,7 +494,61 @@ in reading order — top to bottom, left to right; ranking by distance from the
 viewport *centre* dropped the top rows of a dense page like Hacker News) plus a
 freshly minted `snapshotId`. Custom listbox/menu/date-picker controls are
 candidates too (`role=option|menuitemradio|menuitemcheckbox|switch|treeitem`,
-and a `gridcell` only when focusable or selectable); an `aria-disabled` option
+and a `gridcell` only when focusable or selectable), plus the option-like
+items of OPEN POPUPS (`POPUP_OPTION_JS`, no library class names; reported as
+`role: "option"`). Motivating case, Ant Design Select: the visible options are
+role-less `<div aria-selected>` in a body portal while the only `role=option`
+nodes sit in a 0x0 a11y mirror listbox, so an open select showed no options and
+browse_task stalled on "no candidate fits CLICK". Conservative by design (a
+missed option beats an invented one on a page with no open list). An *owner* is
+a visible `aria-expanded="true"` element that is `role=combobox`, has
+`aria-haspopup`, or sits in a combobox wrapper. Its popup is, in order: (a) its
+`aria-controls`/`aria-owns` target (on it or its wrapper) when that is rendered,
+not too small to show (>= 4px, no clipping ancestor under 4px, no
+`clip:rect(0,0,0,0)`) and holds an item or ANY interactive content - then it IS
+the popup and there is never a fallback, even with zero role-less items; (b)
+only for listbox-type owners (`role=combobox`, inside one, or `aria-haspopup`
+listbox/true/tree/grid - never menu/dialog), a floating layer (computed
+`position` fixed/absolute, not containing the owner, not a wall >= 85% of the
+viewport, not < 4px) ADJACENT to the owner or its wrapper: vertical gap <= 24px
+and left edge within 32px of the owner's or overlapping >= 50% of its width,
+searched under `<body>`, the owner's dialog and its 3 nearest ancestors; a layer
+that is/holds a dialog (role dialog/alertdialog, aria-modal, `<dialog>`), an
+h1-h3, or a text input outside the owner is never one; (c) mirror anchoring
+beats geometry: when the owner's `aria-controls` listbox is a mirror (rendered,
+too small, holding `role=option`) and a layer (same exclusions, gap <= 400px)
+contains an element whose trimmed text equals a mirror option's label, that
+layer is the popup. Items are visible, not
+`aria-hidden`/`aria-disabled`/`pointer-events:none`/`cursor:not-allowed`, have a
+label, and carry `aria-selected`, `role=option`, `tabindex` or a computed
+`cursor:pointer` that *starts* there (the parent, the popup root included, is
+not pointer: children inherit it). A role-less item must be >= 4px; an explicit
+`role=option` is never size-checked (open/scale transitions). Nested chains
+collapse to the outermost; a container with 2+ item branches, or with a
+descendant of a STRONGER signal (role=option/aria-selected > tabindex > pointer),
+yields to them, and an element whose ONLY signal is `tabindex` yields to any item
+inside it (`<ul tabindex=-1><li style=cursor:pointer>`: the `li` wins); an
+element with another role, a native interactive tag, or a native
+control/interactive role INSIDE it (a `<label>` around a checkbox) is never one,
+and the inner control is listed as itself.
+Popup items never suppress anything (`penInsideSelectableCell` reads the
+explicit role attribute only); an explicit `role=option` is skipped only for
+`aria-disabled` (CSS disabled checks apply to role-less items only) or when it
+lies in a mirror listbox AND its owner has a popup with items found elsewhere
+(`penIsMirrorOption`). The open-owner list comes from
+`penCandidates`' one combined deep walk (no second walk) when it ran. A
+page-wide "`aria-selected` without a role" rule was rejected because it turned
+selected table rows and carousel slides into options and hid their buttons, so
+never widen this outside a popup. `AUTOCOMPLETE_STATE_JS` shares it (and
+computes popups only past its gate): a rendered referenced listbox whose options
+are all too small to show is a mirror, not the field's own list (an empty one
+stays the own list with zero options); a field belonging to an owner (same
+element, one contains the other, or the same `[role=combobox]` wrapper) has that
+popup's items; the document-wide set is `role=option` plus all popups' items;
+`penOverlayBelongsToField` also accepts the popup assigned to the focused field,
+but only a strong one (via `aria-controls` or a mirror anchor, never pure
+geometry). The script embedding `POPUP_OPTION_JS` includes
+`DEEP_QUERY_HELPER_JS` itself, once. An `aria-disabled` option
 or day is skipped, and ARIA state (`aria-checked`, or `aria-selected` for
 option/gridcell/tab/treeitem) is reported as `checked`. Found live on Google
 Flights (browse_task looped, 0/3 → 3/3 after): `aria-hidden="true"` controls
