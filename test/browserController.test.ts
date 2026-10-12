@@ -4633,6 +4633,48 @@ describe("BrowserController — Wave 3 reliability", () => {
       expect(executeJavaScriptInFrame).not.toHaveBeenCalled();
     });
 
+    it("frame labels never carry a page-controlled blob: a 45KB JSON name is ignored, titles are capped", async () => {
+      const bigName = JSON.stringify({ ad: "x".repeat(45_000) });
+      const cases = [
+        { url: "https://ads.example/slot", name: bigName, title: "", expect: (l: string) => l === "ads.example" },
+        { url: "about:blank", name: bigName, title: "", expect: (l: string) => l.length <= 80 && !l.startsWith("{") },
+        { url: "https://ads.example/slot", name: "short_name", title: "T".repeat(500), expect: (l: string) => l === "T".repeat(80) },
+        { url: "about:blank", name: "checkout frame", title: "", expect: (l: string) => l === "checkout frame" },
+        { url: "about:blank", name: "https://x.example/a", title: "", expect: (l: string) => !l.includes("://x.example") },
+        // A short name wins over the host, so sibling frames on one host stay distinct.
+        { url: "https://ads.example/a", name: "left", title: "", expect: (l: string) => l === "left" },
+        { url: "https://ads.example/b", name: "right", title: "", expect: (l: string) => l === "right" },
+        { url: "https://ads.example/c", name: "1", title: "", expect: (l: string) => l === "1" },
+      ];
+      for (const c of cases) {
+        const frame = { frameId: 9, url: c.url, name: c.name };
+        const rect = { url: c.url, name: c.name, x: 0, y: 0, width: 300, height: 150 };
+        const page = makeFakePage({
+          listFrames: vi.fn(() => [frame]),
+          executeJavaScriptInFrame: vi.fn(() =>
+            Promise.resolve({
+              url: c.url,
+              title: c.title,
+              elements: [{ index: 0, tag: "button", label: "Pay", ops: ["CLICK"] }],
+              scroll: { y: 0, height: 100, atBottom: true },
+            }),
+          ),
+          executeJavaScript: vi.fn((code: string) => {
+            if (isSignatureCall(code) || isCursorCall(code)) return Promise.resolve({ ok: true });
+            if (isIframeRectsCall(code)) return Promise.resolve({ frames: [rect] });
+            if (isSnapshotCall(code)) {
+              return Promise.resolve({ url: "https://example.com/", title: "Top", elements: [], scroll: { y: 0, height: 100, atBottom: true } });
+            }
+            return Promise.resolve({ ok: true });
+          }),
+        });
+        const result = (await new BrowserController(makeFakeTarget(page)).snapshot()) as { elements: { frame?: string }[] };
+        const label = result.elements[0]?.frame ?? "";
+        expect(label.length).toBeLessThanOrEqual(80);
+        expect(c.expect(label)).toBe(true);
+      }
+    });
+
     it("perform CLICK on a frame-routed index runs PERFORM_JS inside that frame, not the top page", async () => {
       const { page, executeJavaScriptInFrame } = makeFramedPage();
       const controller = new BrowserController(makeFakeTarget(page));

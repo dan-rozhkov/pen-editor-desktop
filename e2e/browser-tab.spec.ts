@@ -918,10 +918,18 @@ read as filled. -->
   <input class="sr" type="radio" name="plan" id="p1"><label for="p1" class="plan"><a href="#learn">Learn more</a><span>Pick Plan</span></label>
   <label><input type="checkbox" id="tiny" style="width:7px;height:7px"> Tiny box</label>
   <button disabled>Continue</button>
+  <button id="buy"><style>/* Temporary CSS overrides for savings. Sim: https://example.test/x */ .z { color: red }</style>Buy</button>
+  <button id="dl"><style>.q { color: red }</style><svg id="bigsvg" width="10" height="10"></svg>Download</button>
+  <div role="button" tabindex="0" aria-label="Add to list" style="display:inline-block;width:80px;height:30px"><style>/* only css in here */ .y { color: blue }</style></div>
   <button id="arm" onclick="setTimeout(function () { var b = document.getElementById('busy'); b.disabled = false; }, 900)">Arm Busy</button>
   <button id="busy" disabled onclick="this.setAttribute('data-clicked', '1')">Busy Action</button>
 </div>
 <script>
+  (function () {
+    var g = "";
+    for (var i = 0; i < 3500; i++) g += "<g></g>";
+    document.getElementById("bigsvg").innerHTML = g;
+  })();
   document.querySelectorAll("input[name=size]").forEach(function (r) {
     r.addEventListener("change", function () { document.getElementById("colors").removeAttribute("disabled"); });
   });
@@ -4717,6 +4725,18 @@ test("browser snapshot/perform: transparent tile radios are listed via their lab
     // aria-hidden input gets no entry, so its label must stay listed.
     expect(snap.elements.some((e) => e.tag === "label" && e.label.includes("Option Alpha"))).toBe(true);
     expect(snap.elements.some((e) => e.label.includes("Hidden Input Tile"))).toBe(true);
+    // Inline <style> text never becomes a label.
+    expect(snap.elements.some((e) => e.tag === "button" && e.label === "Buy")).toBe(true);
+    expect(snap.elements.some((e) => e.role === "button" && e.label === "Add to list")).toBe(true);
+    expect(snap.elements.some((e) => e.label.includes("Temporary CSS"))).toBe(false);
+    // The element budget never drops a button's own text after a huge subtree.
+    expect(snap.elements.some((e) => e.tag === "button" && e.label === "Download")).toBe(true);
+    // Text-target clicks use the same clean text: "Buy" matches the button,
+    // CSS text inside it does not.
+    const buyClick = (await callBrowser(editorPage, "act", { action: "click", target: "Buy" })) as { error?: string };
+    expect(buyClick.error).toBeUndefined();
+    const cssClick = (await callBrowser(editorPage, "act", { action: "click", target: "Temporary CSS" })) as { error?: string };
+    expect(cssClick.error).toMatch(/No element matched/);
     // A disabled <button> is still listed (only disabled form fields are not).
     expect(snap.elements.some((e) => e.tag === "button" && e.label.includes("Continue"))).toBe(true);
     // A visible 7px native checkbox stays a direct, listed target.
