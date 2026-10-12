@@ -45,6 +45,7 @@ let reachBannerUrl: string;
 let wave3FrameUrl: string;
 let botCheckUrl: string;
 let rangeSliderUrl: string;
+let tilesUrl: string;
 let ariaSliderUrl: string;
 let ariaCardsUrl: string;
 let ariaHeaderUrl: string;
@@ -881,6 +882,49 @@ read as filled. -->
 <div role="dialog" aria-label="Cookie banner"><button id="cookie-ok">Accept cookies</button></div>`);
       return;
     }
+    if (req.url && req.url.startsWith("/tiles")) {
+      // Radio tiles the way configurators ship them: an opacity:0 native
+      // radio stretched over its visible label (size), and 1x1 clip-hidden
+      // radios beside visible swatch labels inside a disabled fieldset that
+      // a size choice enables (colour).
+      res.end(`<!doctype html>
+<title>Tiles</title>
+<style>
+  .tile { position: relative; display: block; width: 300px; height: 100px; margin: 8px; border: 1px solid #888; }
+  .tile input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+  .sr { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .swatch { display: inline-block; width: 42px; height: 42px; margin: 4px; border: 1px solid #444; }
+</style>
+<h1 id="ready">tiles-ready</h1>
+<fieldset id="sizes">
+  <legend>Size</legend>
+  <label class="tile"><input type="radio" name="size" value="14inch"><h3>14-inch</h3><p>Buy from $1999</p></label>
+  <label class="tile"><input type="radio" name="size" value="16inch"><h3>16-inch</h3><p>Buy from $2499</p></label>
+</fieldset>
+<fieldset id="colors" disabled>
+  <legend>Colour</legend>
+  <input class="sr" type="radio" name="color" id="c-black" value="black"><label class="swatch" for="c-black" style="background:#111"><span class="sr">Space Black</span></label>
+  <input class="sr" type="radio" name="color" id="c-silver" value="silver"><label class="swatch" for="c-silver" style="background:#ccc"><span class="sr">Silver</span></label>
+</fieldset>
+<style>
+  .plan { display: block; width: 200px; height: 100px; border: 1px solid #888; margin: 8px; }
+  .plan a { display: block; height: 60px; }
+  .plan span { display: block; height: 40px; }
+</style>
+<div id="extras">
+  <label role="option" tabindex="0" class="plan"><input class="sr" type="radio" name="opt" value="a"><span>Option Alpha</span></label>
+  <input class="sr" type="radio" name="hid" id="h1" aria-hidden="true"><label for="h1" class="plan" onclick="document.getElementById('h1').checked = true"><span>Hidden Input Tile</span></label>
+  <input class="sr" type="radio" name="plan" id="p1"><label for="p1" class="plan"><a href="#learn">Learn more</a><span>Pick Plan</span></label>
+  <label><input type="checkbox" id="tiny" style="width:7px;height:7px"> Tiny box</label>
+  <button disabled>Continue</button>
+</div>
+<script>
+  document.querySelectorAll("input[name=size]").forEach(function (r) {
+    r.addEventListener("change", function () { document.getElementById("colors").removeAttribute("disabled"); });
+  });
+</script>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/range-slider")) {
       // A dual slider the way a real filter widget ships it: two NATIVE
       // range inputs (the accessible, value-carrying ones) visually hidden at
@@ -1639,6 +1683,7 @@ read as filled. -->
   wave3FrameUrl = `${baseUrl}/wave3-frame`;
   botCheckUrl = `${baseUrl}/botcheck`;
   rangeSliderUrl = `${baseUrl}/range-slider`;
+  tilesUrl = `${baseUrl}/tiles`;
   ariaSliderUrl = `${baseUrl}/aria-slider`;
   ariaCardsUrl = `${baseUrl}/aria-cards`;
   ariaHeaderUrl = `${baseUrl}/aria-header`;
@@ -4576,6 +4621,56 @@ test("Wave 3 reliability: botCheck is true on a page that looks like a challenge
     expect(openResult).toMatchObject({ botCheck: true });
 
     await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browser snapshot/perform: transparent tile radios are listed via their label, disabled controls are not, and a clip-hidden radio is clicked through its swatch label", async () => {
+  const { app, editorPage, page } = await openReachFixture(tilesUrl, "tiles-ready");
+  try {
+    const snap = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const size14 = snap.elements.find((e) => e.tag === "input" && e.label.startsWith("14-inch"));
+    const size16 = snap.elements.find((e) => e.tag === "input" && e.label.startsWith("16-inch"));
+    expect(size14).toBeTruthy();
+    expect(size16).toBeTruthy();
+    expect(size14?.ops).toEqual(["CLICK"]);
+    expect(snap.elements.some((e) => e.label.includes("Space Black") || e.label.includes("Silver"))).toBe(false);
+
+    // Label dedup only when the toggle itself is listed: an option-wrapped or
+    // aria-hidden input gets no entry, so its label must stay listed.
+    expect(snap.elements.some((e) => e.tag === "label" && e.label.includes("Option Alpha"))).toBe(true);
+    expect(snap.elements.some((e) => e.label.includes("Hidden Input Tile"))).toBe(true);
+    // A disabled <button> is still listed (only disabled form fields are not).
+    expect(snap.elements.some((e) => e.tag === "button" && e.label.includes("Continue"))).toBe(true);
+    // A visible 7px native checkbox stays a direct, listed target.
+    expect(snap.elements.filter((e) => e.label.includes("Tiny box"))).toHaveLength(1);
+
+    const click = async (snapshotId: string, index: number) =>
+      (await callBrowser(editorPage, "perform", { snapshotId, index, operation: "CLICK" })) as {
+        error?: string;
+        changed?: boolean;
+      };
+    const r1 = await click(snap.snapshotId, size14!.index);
+    expect(r1.error).toBeUndefined();
+    expect(r1.changed).toBe(true);
+    expect(await page.evaluate(() => (document.querySelector("input[value='14inch']") as HTMLInputElement).checked)).toBe(true);
+
+    // The label's centre is a link: the click must land elsewhere in the label.
+    const plan = snap.elements.find((e) => e.tag === "input" && e.label.includes("Pick Plan"));
+    expect(plan).toBeTruthy();
+    const r3 = await click(snap.snapshotId, plan!.index);
+    expect(r3.error).toBeUndefined();
+    expect(await page.evaluate(() => (document.getElementById("p1") as HTMLInputElement).checked)).toBe(true);
+    expect(await page.evaluate(() => location.hash)).toBe("");
+
+    const snap2 = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
+    const black = snap2.elements.find((e) => e.tag === "input" && e.label.includes("Space Black"));
+    expect(black).toBeTruthy();
+    expect(snap2.elements.some((e) => e.tag === "input" && e.label.includes("Silver"))).toBe(true);
+    const r2 = await click(snap2.snapshotId, black!.index);
+    expect(r2.error).toBeUndefined();
+    expect(await page.evaluate(() => (document.getElementById("c-black") as HTMLInputElement).checked)).toBe(true);
   } finally {
     await app.close().catch(() => {});
   }
