@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { CURSOR_PLAN_JS } from "../src/main/browser/pageScripts";
+import { CURSOR_PLAN_JS } from "@sideform/browser-agent/controller";
 
 // CURSOR_PLAN_JS is the pure planner fragment CURSOR_JS embeds (no DOM, no
 // args). Evaluating it directly pins the cua-derived planning math.

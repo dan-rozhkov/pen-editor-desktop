@@ -41,8 +41,9 @@ function pinterestSearchUrl(query: string): string {
 }
 
 /** True for exactly the URLs the built-in browser tab is allowed to
- * navigate to (mirrors main's `decideBrowserNavigation` in navigation.ts —
- * duplicated here rather than imported, for the same plain-script reason
+ * navigate to (mirrors `decideBrowserNavigation` from
+ * `@sideform/browser-agent/controller` (src/controller/navigation.ts there) —
+ * the two copies must change together; duplicated here rather than imported, for the same plain-script reason
  * `normalizeTypedUrl` above can't import anything either). Used by
  * renderer.ts to flag a submission as invalid instead of sending it and
  * silently doing nothing (finding 5's "denial visibility" half). */

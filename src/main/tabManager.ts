@@ -1,3 +1,4 @@
+import type { BrowserTabInfo } from "@sideform/browser-agent/controller";
 export type UITheme = "light" | "dark";
 
 // Mirrors src/main/mcp/service.ts's McpStatus — defined here (rather than
@@ -66,7 +67,7 @@ export interface TabViewHandle {
   // around webContents), so window.ts implements them uniformly for both
   // kinds — but TabManager only *wires* onNavigationStateChanged, and only
   // for kind "browser" (see newTab's doc comment). This is also the surface
-  // window.ts adapts into browser/controller.ts's Electron-free
+  // window.ts adapts into @sideform/browser-agent/controller's Electron-free
   // BrowserPageHandle for the BrowserController.
 
   /** Browser tabs only — wired by TabManager only for kind "browser". */
@@ -84,7 +85,7 @@ export interface TabViewHandle {
   /**
    * True while the tab's webContents is mid-navigation
    * (`webContents.isLoading()`). Feeds `BrowserController`'s post-click
-   * settle wait (addendum F, "Load, not commit" — see browser/controller.ts)
+   * settle wait (addendum F, "Load, not commit" — see @sideform/browser-agent/controller)
    * so it waits for the document to actually finish loading rather than
    * merely for `getURL()` to change at navigation commit.
    */
@@ -96,14 +97,14 @@ export interface TabViewHandle {
    * finished loading. `BrowserController.open` races this against the full
    * `loadURL()` promise (which only resolves at `did-finish-load`) so a
    * heavy commercial page doesn't have to fully settle before the command
-   * returns — see browser/controller.ts's doc comment on `open`. Each call
+   * returns — see @sideform/browser-agent/controller's doc comment on `open`. Each call
    * arms a *fresh* one-shot listener for the *next* `dom-ready` event; it is
    * not a cached "has this page's DOM ever been ready" flag.
    */
   onceDomReady(): Promise<void>;
   /**
    * Optional: true while this tab's view is actually being drawn
-   * (`View#getVisible()`). Fed to `browser/controller.ts`'s `BrowserPageHandle`
+   * (`View#getVisible()`). Fed to `@sideform/browser-agent/controller`'s `BrowserPageHandle`
    * so `moveCursor` can skip the cursor overlay step entirely on a hidden
    * browser tab, where `requestAnimationFrame` never fires and the overlay
    * animation would only ever settle via its own backstop timer — see
@@ -112,7 +113,7 @@ export interface TabViewHandle {
   isVisible?(): boolean;
   /**
    * Optional: full browser use (design doc `2026-09-23-full-browser-use-design.md`).
-   * Structurally identical to browser/controller.ts's `BrowserPageHandle.capture`
+   * Structurally identical to @sideform/browser-agent/controller's `BrowserPageHandle.capture`
    * — see its doc comment. Present on every tab kind in window.ts's
    * implementation (capturePage() works regardless of preload), even though
    * only a browser tab is ever screenshotted through this bridge.
@@ -151,7 +152,7 @@ export interface TabViewHandle {
    * Structurally identical to `BrowserPageHandle.onNavigationEvent` — see
    * its doc comment. Wired for both tab kinds in window.ts's implementation
    * (cheap webContents event wiring, no debugger dependency), even though
-   * only a browser tab is ever driven through `browser/controller.ts`.
+   * only a browser tab is ever driven through `@sideform/browser-agent/controller`.
    */
   onNavigationEvent?(cb: () => void): () => void;
   /**
@@ -177,14 +178,8 @@ export interface TabViewHandle {
 export type BrowserTabHandle = TabViewHandle;
 
 /** A single open browser tab, as `TabManager`'s owner (window.ts) reports it
- * to `browser/controller.ts`'s `tabs()` command — structurally identical to
- * `BrowserTarget`'s own `BrowserTabInfo` there. */
-export interface BrowserTabInfo {
-  tabId: number;
-  url: string;
-  title: string;
-  current: boolean;
-}
+ * to the controller's `tabs()` command. Declared once, in the package. */
+export type { BrowserTabInfo };
 
 /**
  * Which webContents id `McpService.setActiveTab` should be told about, given
@@ -520,7 +515,7 @@ export class TabManager {
     this.agentBrowserTabId = id;
   }
 
-  /** Full browser use's `tabs` command (browser/controller.ts): every
+  /** Full browser use's `tabs` command (@sideform/browser-agent/controller): every
    * currently open browser tab, in creation order, plus which one is the
    * agent's *effective* current tab (`browserHandle()`'s own rule, not
    * necessarily the tab strip's `activeId`) — window.ts maps this straight

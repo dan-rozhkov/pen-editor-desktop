@@ -14,11 +14,15 @@ import {
   attachOfflineFallback,
   attachLocalOnlyPolicy,
   attachBrowserTabPolicy,
-  decideBrowserNavigation,
   shouldDropMcpRegistration,
   shouldForwardNavigationEvent,
 } from "./navigation";
-import { BrowserController, type BrowserTarget, type BrowserPageHandle } from "./browser/controller";
+import {
+  BrowserController,
+  decideBrowserNavigation,
+  type BrowserTarget,
+  type BrowserPageHandle,
+} from "@sideform/browser-agent/controller";
 import { CURSOR_SETTINGS_FILE, type CursorSettings, readCursorSettings, resolveCursorSettings, writeCursorSettings } from "./cursorSettings";
 import type { McpService, IpcListenerGateway } from "./mcp/service";
 
@@ -64,7 +68,7 @@ const ISOLATED_WORLD_ID = 1999;
  * loading, so a frame that never finishes loading (a slow/broken ad iframe,
  * say) must not hang a whole `snapshot`/`read`/`findImages` call. Every
  * per-frame script call is raced against this short, frame-scoped timeout —
- * see `FRAME_SCRIPT_TIMEOUT_MS` in browser/controller.ts, which this mirrors
+ * see `FRAME_SCRIPT_TIMEOUT_MS` in @sideform/browser-agent/controller, which this mirrors
  * for the call sites that live in this file (frame discovery itself doesn't
  * run a script, but executeJavaScriptInFrame below does). */
 function withFrameTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -351,7 +355,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       // the JS-dialog auto-handle policy (CLAUDE.md's "Dialog policy").
       // Attach failure (e.g. real DevTools already attached to this tab)
       // degrades gracefully: `sendCdp`/`drainDialogs` below are left
-      // undefined, so browser/controller.ts's own `if (!page.sendCdp)`
+      // undefined, so @sideform/browser-agent/controller's own `if (!page.sendCdp)`
       // checks report a clear error for press/hover, and dialogs simply
       // aren't auto-handled — nothing else in this bridge depends on it.
       let debuggerAttached = false;
@@ -361,7 +365,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       // below (browser tabs only) — `pendingNetworkRequests` tracks every
       // still-in-flight request by CDP `requestId`, and `networkGeneration`
       // increments once per *new* relevant request, so
-      // `browser/controller.ts`'s `waitForNetworkQuiet` can tell "something
+      // `@sideform/browser-agent/controller`'s `waitForNetworkQuiet` can tell "something
       // started since I last checked" without needing to keep dead history
       // around for completed requests (which are deleted from the map the
       // moment they finish — see the "message" listener below). WebSocket/
@@ -581,7 +585,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       view.webContents.on("page-title-updated", reportNavState);
 
       // Wave 1 speed: event-driven navigation detection
-      // (`browser/controller.ts`'s `armNavigationWatcher`), replacing a
+      // (`@sideform/browser-agent/controller`'s `armNavigationWatcher`), replacing a
       // fixed-probe poll of `getURL()`/`isLoading()` with a subscription to
       // this tab's actual navigation lifecycle. All four events are wired to
       // the same broadcast — the caller only ever needs "did *something*
@@ -709,7 +713,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
           new Promise<void>((resolve) => {
             view.webContents.once("dom-ready", () => resolve());
           }),
-        // Full browser use's `screenshot` command (browser/controller.ts).
+        // Full browser use's `screenshot` command (@sideform/browser-agent/controller).
         // Shared by both tab kinds — capturePage() needs no preload and
         // works regardless — even though only a browser tab is ever
         // screenshotted through this bridge (the editor tab has its own
@@ -838,7 +842,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       tabs.closeTab(tabId);
       return true;
     },
-    // Review finding 9: no longer loads a url itself — `browser/controller.ts`'s
+    // Review finding 9: no longer loads a url itself — `@sideform/browser-agent/controller`'s
     // `tabs({action:"new", url})` now does that through `open()` (the same
     // DOM-ready-plus-grace-period wait every other navigation gets), so this
     // only ever has to create the tab and make it current. The `url`

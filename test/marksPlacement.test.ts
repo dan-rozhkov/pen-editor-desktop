@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ARGS_MARKER, MARKS_JS } from "../src/main/browser/pageScripts.js";
+import { ARGS_MARKER, MARKS_JS } from "@sideform/browser-agent/controller";
 
 /**
  * MARKS_JS runs in the page; this drives it against a minimal fake DOM (no

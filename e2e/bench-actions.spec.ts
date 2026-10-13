@@ -1,5 +1,5 @@
 // Deterministic, LLM-free benchmark of the window.penDesktop.browser bridge
-// (src/main/browser/controller.ts) — speed (Part A) and reliability
+// (@sideform/browser-agent, src/controller/controller.ts) — speed (Part A) and reliability
 // (Part B). No chat, no model, no network beyond localhost: every fixture
 // page and the driving script are hand-authored, so a run is reproducible
 // and its result is a property of the bridge's *implementation*, not of an

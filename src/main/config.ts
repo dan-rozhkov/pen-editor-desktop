@@ -30,7 +30,7 @@ export function resolveBrowserCursorEnabled(env: NodeJS.ProcessEnv): boolean {
   return normalized !== "off" && normalized !== "0" && normalized !== "false";
 }
 
-/** The agent cursor's motion styles (CURSOR_JS in browser/pageScripts.ts;
+/** The agent cursor's motion styles (CURSOR_JS in @sideform/browser-agent/controller (pageScripts);
  * motion math derived from trycua/cua, MIT). `signature_arc` is the default. */
 export const CURSOR_MOTION_STYLES = [
   "signature_arc",

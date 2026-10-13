@@ -9,7 +9,7 @@
 import { test, expect, _electron as electron, type Page } from "@playwright/test";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { ARGS_MARKER, AUTOCOMPLETE_STATE_JS, DISMISS_DIALOG_STATE_JS, MARKS_JS } from "../src/main/browser/pageScripts";
+import { ARGS_MARKER, AUTOCOMPLETE_STATE_JS, DISMISS_DIALOG_STATE_JS, MARKS_JS } from "@sideform/browser-agent/controller";
 
 let server: http.Server;
 let baseUrl: string;
@@ -2061,8 +2061,9 @@ test("built-in browser tab: open, findImages, act (click/type/scroll/back/forwar
   }
 });
 
-// The human cursor overlay (CLAUDE.md's "The human cursor overlay",
-// pageScripts.ts's CURSOR_JS, controller.ts's moveCursor): an injected page
+// The human cursor overlay (browser-agent docs/controller-notes.md, "The human cursor overlay";
+// CURSOR_JS in @sideform/browser-agent's src/controller/pageScripts.ts, moveCursor
+// in its controller.ts): an injected page
 // script is not unit-testable — executeJavaScript is stubbed in the unit
 // suites — so this is the only place a regression in CURSOR_JS itself would
 // ever be caught. Reuses the gallery fixture and callBrowser machinery from

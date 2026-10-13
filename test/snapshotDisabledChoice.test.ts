@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromium, type Browser, type Page } from "@playwright/test";
-import { ARGS_MARKER, SNAPSHOT_JS } from "../src/main/browser/pageScripts.js";
+import { ARGS_MARKER, SNAPSHOT_JS } from "@sideform/browser-agent/controller";
 
 /**
  * SNAPSHOT_JS, real headless Chromium layout: an unanswered radio group far

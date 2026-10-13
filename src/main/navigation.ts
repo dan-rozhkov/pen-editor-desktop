@@ -1,3 +1,4 @@
+import { decideBrowserNavigation } from "@sideform/browser-agent/controller";
 import type { WebContents } from "electron";
 
 export type NavigationDecision = "allow" | "external" | "deny";
@@ -33,22 +34,6 @@ export function attachNavigationPolicy(
     // are created only via the shell UI/menu.
     return { action: "deny" };
   });
-}
-
-/**
- * Pure policy for browser tabs (design doc `2026-09-18-builtin-browser-design.md`
- * §1): any http(s) navigation is allowed in place — a browser tab is a real
- * browser, so there is no origin clamp — and anything else (file:, custom
- * schemes, javascript:, garbage) is denied.
- */
-export function decideBrowserNavigation(targetUrl: string): "allow" | "deny" {
-  let url: URL;
-  try {
-    url = new URL(targetUrl);
-  } catch {
-    return "deny";
-  }
-  return url.protocol === "http:" || url.protocol === "https:" ? "allow" : "deny";
 }
 
 /**
@@ -100,7 +85,7 @@ export function shouldDropMcpRegistration(details: { isMainFrame: boolean; isSam
 
 /**
  * Whether a `did-start-navigation`/`did-navigate-in-page` event should be
- * forwarded to `browser/controller.ts`'s navigation-watch settle (`window.ts`'s
+ * forwarded to `@sideform/browser-agent/controller`'s navigation-watch settle (`window.ts`'s
  * `onNavigationEvent`, feeding `armNavigationWatcher`). Both events fire for
  * ANY frame, not just the main one, and carry an `isMainFrame` flag — without
  * this filter, a subframe navigation (an ad/embed iframe reloading itself,

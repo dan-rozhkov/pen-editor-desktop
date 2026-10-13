@@ -7,7 +7,7 @@
 // clipboard-read, or media devices with no prompt at all (finding 6).
 //
 // Electron-free and injected, same style as mcp/dispatcher.ts and
-// browser/controller.ts — `target` stands in for the real
+// @sideform/browser-agent/controller — `target` stands in for the real
 // `Session` so this is unit-testable under plain Node/vitest.
 // window.ts/index.ts wire the real `session.fromPartition("persist:penbrowser")`
 // into it exactly once (not per tab — see index.ts).
