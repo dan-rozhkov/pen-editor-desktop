@@ -24,14 +24,14 @@ const to = { x: 700, y: 120 };
 const last = (p: Plan) => p.samples[p.samples.length - 1];
 
 describe("CURSOR_PLAN_JS motion planning", () => {
-  it("every style starts at from, ends exactly at to, arrives within the 700ms cap", () => {
+  it("every style starts at from, ends exactly at to, arrives within the 300ms cap", () => {
     for (const style of ["signature_arc", "spring_settle", "comet_swoop", "magnetic", "classic"]) {
       const p = plan({ style, from, to, w: 40 });
       expect(p.samples[0]).toMatchObject({ t: 0, x: 100, y: 600 });
       const end = style === "classic" ? p.samples[p.samples.length - 1] : last(p);
       expect(end.x).toBeCloseTo(700, 5);
       expect(end.y).toBeCloseTo(120, 5);
-      expect(p.arrivalT).toBeLessThanOrEqual(700 + 1e-6);
+      expect(p.arrivalT).toBeLessThanOrEqual(300 + 1e-6);
       for (let i = 1; i < p.samples.length; i++) expect(p.samples[i].t).toBeGreaterThan(p.samples[i - 1].t);
     }
   });
@@ -97,9 +97,9 @@ describe("CURSOR_PLAN_JS motion planning", () => {
     expect(last(pt).t).toBeCloseTo(last(box).t, 6);
   });
 
-  it("retimes so arrival never exceeds 700ms even for a huge move to a tiny target", () => {
+  it("retimes so arrival never exceeds 300ms even for a huge move to a tiny target", () => {
     const p = plan({ style: "spring_settle", from: { x: 0, y: 0 }, to: { x: 5000, y: 3000 }, w: 4 });
-    expect(p.arrivalT).toBeLessThanOrEqual(700 + 1e-6);
+    expect(p.arrivalT).toBeLessThanOrEqual(300 + 1e-6);
   });
 
   it("reduced motion is a 120ms straight glide with no effects", () => {
@@ -214,7 +214,7 @@ describe("CURSOR_PLAN_JS motion planning", () => {
           const dt = (b.t - a.t) / 1000;
           const vx = (b.x - a.x) / dt;
           const vy = (b.y - a.y) / dt;
-          if (Math.hypot(vx, vy) <= 300 || p.samples[i].t < 150) continue; // let the lag catch up
+          if (Math.hypot(vx, vy) <= 300 || p.samples[i].t < 0.5 * p.arrivalT) continue; // let the lag catch up
           checked++;
           expect(Math.abs(wrap(p.samples[i].rot - wrap(Math.atan2(vy, vx) - TIP_ANGLE))), style).toBeLessThan(0.6);
         }
@@ -265,10 +265,12 @@ describe("CURSOR_PLAN_JS motion planning", () => {
           for (let i = 1; i < p.samples.length; i++) {
             expect(Math.abs(p.samples[i].rot)).toBeLessThanOrEqual(Math.abs(p.samples[i - 1].rot) + 1e-12);
           }
-          // ~300ms in, it is home (|rot| < 0.1), well before the end of the move.
-          const at300 = p.samples.find((q) => q.t >= 300)!;
-          expect(Math.abs(at300.rot)).toBeLessThan(0.1 * Math.max(1, Math.abs(rot0)));
-          expect(Math.abs(p.samples.find((q) => q.t >= 450)!.rot)).toBeLessThan(0.1);
+          // Timings are relative to the plan's own length (the rot chase runs on
+          // real time, so a short plan eases less per fraction): well on the way
+          // at 70% of the arrival, home (|rot| < 0.1) when the cursor arrives.
+          const at70 = p.samples.find((q) => q.t >= 0.7 * p.arrivalT)!;
+          expect(Math.abs(at70.rot)).toBeLessThan(0.1 * Math.max(1, Math.abs(rot0)));
+          expect(Math.abs(p.samples.find((q) => q.t >= p.arrivalT)!.rot)).toBeLessThan(0.1);
           // the tail exists only if rot had not reached 0 by the last motion sample
           const noTail = plan({ style, ...right, rot0: 0 });
           expect(p.samples.length).toBeLessThanOrEqual(noTail.samples.length + 36);
