@@ -133,6 +133,11 @@ const browser = {
     ipcRenderer.invoke("browser:command", { command: "screenshot", args }),
   tabs: (args: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke("browser:command", { command: "tabs", args }),
+  // browse_capture (pen-editor-backend docs/specs/2026-10-15-browse-capture-design.md):
+  // the page as self-contained HTML for a canvas embed. Same "no validation
+  // here" shape as every command above.
+  capture: (args?: Record<string, unknown>): Promise<unknown> =>
+    ipcRenderer.invoke("browser:command", { command: "capture", args }),
 };
 
 const api = {

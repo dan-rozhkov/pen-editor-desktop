@@ -1786,6 +1786,7 @@ type BrowserBridge = {
   read(args?: Record<string, unknown>): Promise<unknown>;
   screenshot(args?: Record<string, unknown>): Promise<unknown>;
   tabs(args: Record<string, unknown>): Promise<unknown>;
+  capture(args?: Record<string, unknown>): Promise<unknown>;
 };
 
 /** "Addendum 2, 2026-09-19" §1 — merged into act/perform results alongside
@@ -3353,6 +3354,57 @@ test("browse_read: headings/text/links against a real DOM, with caps applied and
     const missed = (await callBrowser(editorPage, "read", { selector: "#does-not-exist" })) as ReadResult;
     expect(missed.error).toBeTruthy();
     expect(missed.headings).toBeUndefined();
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browse_capture: the read fixture comes back as one self-contained HTML document, and a bad element index is a clean error", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const [readPage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === readUrl }),
+      callBrowser(editorPage, "open", { url: readUrl }),
+    ]);
+    await expect(readPage.locator("#ready")).toHaveText("read-ready");
+
+    const shot = (await callBrowser(editorPage, "capture", {})) as {
+      html?: string;
+      width?: number;
+      height?: number;
+      url?: string;
+      title?: string;
+      error?: string;
+    };
+    expect(shot.error).toBeUndefined();
+    expect(shot.url).toBe(readUrl);
+    expect(shot.title).toBe("Read Page");
+    expect(shot.width).toBeGreaterThan(0);
+    expect(shot.height).toBeGreaterThan(0);
+    expect(shot.html).toMatch(/^<!doctype html>/);
+    expect(shot.html).toContain("read-ready");
+    // The page's own <style> survives; its <script> does not.
+    expect(shot.html).toContain("color:red");
+    expect(shot.html).not.toContain("<script");
+    expect(shot.html).not.toContain("should not appear in text");
+    // Relative links come back absolute.
+    expect(shot.html).toContain(`href="${baseUrl}/nav-link"`);
+    // A capture is read-only: the live page is untouched.
+    await expect(readPage.locator("#ready")).toHaveText("read-ready");
+
+    const bad = (await callBrowser(editorPage, "capture", { index: 3 })) as { error?: string };
+    expect(bad.error).toBeTruthy();
 
     await app.close();
   } finally {

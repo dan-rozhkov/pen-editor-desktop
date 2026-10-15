@@ -103,7 +103,7 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below
 - `mcp:call` main→tab only (`{callId, tool, args}`)
 - `mcp:result` tab→main (`{callId, type: "tool_result" | "tool_error", result?, error?}`)
-- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read", args}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; see "Built-in browser tab" below
+- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture", args}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; see "Built-in browser tab" below
 
 Both ends of every channel live in this repo — the editor only ever touches
 the preload API, never a channel name. `test/ipcContract.test.ts` scans `src/`

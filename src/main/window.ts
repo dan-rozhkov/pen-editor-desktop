@@ -930,6 +930,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
           return await browserController.screenshot(payload.args);
         case "tabs":
           return await browserController.tabs(payload.args);
+        case "capture":
+          return await browserController.capture(payload.args);
         default:
           return { error: `Unknown browser command: ${payload.command}` };
       }
