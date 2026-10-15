@@ -163,7 +163,7 @@ in the tab snapshot but the tab bar no longer renders it.)
 > **Controller moved to a package.** `BrowserController`, the injected page
 > scripts, key parsing, `decideBrowserNavigation` and `BrowserTabInfo` come from
 > `@sideform/browser-agent/controller` (runtime dependency
-> `github:dan-rozhkov/browser-agent#v0.2.1`). Their design notes and fix history
+> `github:dan-rozhkov/browser-agent#v0.2.1`). Renovate (`renovate.json`) opens bump PRs for `@sideform/browser-agent` only. Patch bumps automerge on green CI. Minor bumps are breaking in 0.x and need a human. Their design notes and fix history
 > are in the package: `browser-agent/docs/controller-notes.md` (path mapping in
 > its header). This repo keeps the Electron side, described below: `window.ts`
 > (`BrowserTarget`/`BrowserPageHandle` over `WebContentsView`), `navigation.ts`,
