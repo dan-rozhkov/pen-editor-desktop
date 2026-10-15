@@ -455,6 +455,27 @@ read as filled. -->
 <img id="img-comma" src="${pixelUrl("gray")}" srcset="${pixelUrl("gray")}&x=w_100,h_100 200w, ${pixelUrl("teal")}&x=w_800,h_600 800w" alt="Comma" style="display:block;width:120px;height:120px" />`);
       return;
     }
+    // browse_capture v2: linked CSS is fetched by the controller and inlined.
+    if (req.url === "/capture-css/main.css") {
+      res.setHeader("content-type", "text/css");
+      res.end(`@import "sub.css";
+html.themed .box { color: rgb(1, 2, 3); }
+html.other .box { color: rgb(9, 9, 9); }
+.unused-xyz { color: red; }
+.box { padding: 4px; background: url(img.png); }`);
+      return;
+    }
+    if (req.url === "/capture-css/sub.css") {
+      res.setHeader("content-type", "text/css");
+      res.end(".box { margin: 3px; }");
+      return;
+    }
+    if (req.url === "/capture-css") {
+      res.end(`<!doctype html>
+<html class="themed"><head><title>Capture CSS</title><link rel="stylesheet" href="/capture-css/main.css"></head>
+<body><h1 id="ready">capture-css-ready</h1><div class="box">box</div></body></html>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/read")) {
       // browse_read (jev-loop design doc "Addendum 2, 2026-09-19" §2):
       // script/style/nav text must be stripped from `text`, headings and
@@ -3405,6 +3426,46 @@ test("browse_capture: the read fixture comes back as one self-contained HTML doc
 
     const bad = (await callBrowser(editorPage, "capture", { index: 3 })) as { error?: string };
     expect(bad.error).toBeTruthy();
+
+    await app.close();
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("browse_capture v2: a linked stylesheet is fetched, its @import inlined, html rules rewritten, unused rules pruned", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
+  });
+
+  try {
+    const editorPage = await app.waitForEvent("window", {
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().includes("/gallery"),
+    });
+    await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+
+    const cssUrl = `${baseUrl}/capture-css`;
+    const [cssPage] = await Promise.all([
+      app.waitForEvent("window", { predicate: (p) => p.url() === cssUrl }),
+      callBrowser(editorPage, "open", { url: cssUrl }),
+    ]);
+    await expect(cssPage.locator("#ready")).toHaveText("capture-css-ready");
+
+    const shot = (await callBrowser(editorPage, "capture", {})) as { html?: string; error?: string };
+    expect(shot.error).toBeUndefined();
+    const html = shot.html ?? "";
+    // Inlined, not linked.
+    expect(html).not.toContain("@import");
+    expect(html).toContain("margin: 3px");
+    // html.themed matched the live <html>: rewritten so it works in a shadow mount.
+    expect(html).toContain(":where(:root,:host)");
+    expect(html).toContain("rgb(1, 2, 3)");
+    // html.other did not match: dropped. .unused-xyz matches nothing: pruned.
+    expect(html).not.toContain("rgb(9, 9, 9)");
+    expect(html).not.toContain("unused-xyz");
+    // url() made absolute against the stylesheet's own URL.
+    expect(html).toContain(`${baseUrl}/capture-css/img.png`);
 
     await app.close();
   } finally {

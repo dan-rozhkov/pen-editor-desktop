@@ -82,6 +82,11 @@ export interface TabViewHandle {
   executeJavaScript(code: string): Promise<unknown>;
   /** Isolated-world variant (see BrowserPageHandle.executeJavaScriptIsolated). */
   executeJavaScriptIsolated?(code: string): Promise<unknown>;
+  /** Fetch a stylesheet for browse_capture outside the page's CORS (see
+   * BrowserPageHandle.fetchText). Browser tabs only. */
+  /** URL policy for fetchText (see BrowserPageHandle.isFetchAllowed). */
+  isFetchAllowed?(url: string): boolean;
+  fetchText?(url: string, opts: { timeoutMs: number; maxBytes: number; signal?: AbortSignal }): Promise<{ status: number; text: string; contentType?: string }>;
   /**
    * True while the tab's webContents is mid-navigation
    * (`webContents.isLoading()`). Feeds `BrowserController`'s post-click

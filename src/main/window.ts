@@ -22,6 +22,7 @@ import {
   decideBrowserNavigation,
   type BrowserTarget,
   type BrowserPageHandle,
+  isFetchableStylesheetUrl,
 } from "@sideform/browser-agent/controller";
 import { CURSOR_SETTINGS_FILE, type CursorSettings, readCursorSettings, resolveCursorSettings, writeCursorSettings } from "./cursorSettings";
 import type { McpService, IpcListenerGateway } from "./mcp/service";
@@ -626,6 +627,18 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         if (shouldForwardNavigationEvent({ isMainFrame })) broadcastNavEvent();
       });
 
+      // The URL policy for browse_capture's stylesheet fetches: public
+      // http(s), plus the page's own origin even when it is local (a dev
+      // server on localhost), which is no more than the page already reads.
+      const stylesheetFetchAllowed = (u: string): boolean => {
+        try {
+          const pageOrigin = new URL(view.webContents.getURL()).origin;
+          if (pageOrigin !== "null" && new URL(u).origin === pageOrigin) return true;
+        } catch {
+          // fall through to the strict check
+        }
+        return isFetchableStylesheetUrl(u);
+      };
       return {
         loadURL: (url) => view.webContents.loadURL(url),
         setBounds: (b) => view.setBounds(b),
@@ -679,6 +692,50 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         // or read the cross-origin pixels it decodes. Used by mark compose.
         executeJavaScriptIsolated: (code) =>
           view.webContents.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code }]),
+        // browse_capture v2: the controller reads cross-origin stylesheets
+        // itself (the page's CORS blocks a script from reading them). Goes
+        // through this tab's own session, so the browser partition's cookies
+        // apply and the editor's never do.
+        isFetchAllowed: (u) => stylesheetFetchAllowed(u),
+        // Redirects are followed by hand so every hop passes the same policy;
+        // the referer is the page origin only, as a browser sends it cross-origin.
+        fetchText: async (url, opts) => {
+          const signal = opts.signal
+            ? AbortSignal.any([opts.signal, AbortSignal.timeout(opts.timeoutMs)])
+            : AbortSignal.timeout(opts.timeoutMs);
+          let referer = "";
+          try {
+            const origin = new URL(view.webContents.getURL()).origin;
+            if (origin !== "null") referer = `${origin}/`;
+          } catch {
+            referer = "";
+          }
+          const allowed = stylesheetFetchAllowed;
+          let target = url;
+          let res: Response | undefined;
+          for (let hop = 0; hop <= 3; hop++) {
+            if (!allowed(target)) throw new Error("blocked stylesheet URL");
+            res = await view.webContents.session.fetch(target, {
+              signal,
+              redirect: "manual",
+              headers: referer ? { referer } : {},
+            });
+            const location = res.headers.get("location");
+            if (res.status < 300 || res.status >= 400 || !location) break;
+            if (hop === 3) throw new Error("too many redirects");
+            target = new URL(location, target).toString();
+          }
+          if (!res) throw new Error("no response");
+          const declared = Number(res.headers.get("content-length"));
+          if (Number.isFinite(declared) && declared > opts.maxBytes) throw new Error("response too large");
+          const body = Buffer.from(await res.arrayBuffer());
+          if (body.length > opts.maxBytes) throw new Error("response too large");
+          return {
+            status: res.status,
+            text: body.toString("utf8"),
+            contentType: res.headers.get("content-type") ?? undefined,
+          };
+        },
         // Wave 3 reliability, item 2: WebFrameMain-based iframe support.
         // `.frames` (not `.framesInSubtree`) is deliberately the DIRECT
         // children of the main frame only — one level deep. Same-origin AND
