@@ -1,5 +1,5 @@
 import path from "node:path";
-import { app, BaseWindow, View, WebContentsView, Menu, ipcMain, nativeTheme, shell } from "electron";
+import { app, BaseWindow, View, WebContentsView, Menu, ipcMain, nativeTheme, session, shell } from "electron";
 import {
   TabManager,
   shouldFocusAddressBar,
@@ -24,6 +24,8 @@ import {
   type BrowserPageHandle,
   isFetchableStylesheetUrl,
 } from "@sideform/browser-agent/controller";
+import { FetchRouter } from "./fetchRouting";
+import * as fixtureSession from "./fixtureSession";
 import { CURSOR_SETTINGS_FILE, type CursorSettings, readCursorSettings, resolveCursorSettings, writeCursorSettings } from "./cursorSettings";
 import type { McpService, IpcListenerGateway } from "./mcp/service";
 
@@ -299,6 +301,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
   ipcMain.on("editor:document-title", onEditorDocumentTitle);
 
   // --- tabs ---
+  const fetchRouter = new FetchRouter();
   const tabs = new TabManager({
     editorUrl,
     onStateChanged: pushState,
@@ -360,6 +363,10 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       // checks report a clear error for press/hover, and dialogs simply
       // aren't auto-handled — nothing else in this bridge depends on it.
       let debuggerAttached = false;
+      // Subscribers to this tab's CDP events (FetchRouter) — one listener on
+      // the debugger, fanned out here, so applies never leak listeners.
+      const cdpEventListeners = new Set<(method: string, params: unknown) => void>();
+      let unregisterFromFetchRouter: (() => void) | null = null;
       const dialogQueue: { type: string; message: string }[] = [];
       // Wave 1 speed (`2026-09-24-browse-speed-contract.md`): CDP
       // network-quiet settle. `Network.enable`d alongside `Page.enable`
@@ -443,7 +450,15 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         try {
           view.webContents.debugger.attach("1.3");
           debuggerAttached = true;
+          // A detached tab (DevTools took over, target closed) can no longer be
+          // mocked: leave the router, so it never reports mocks it cannot deliver.
+          view.webContents.debugger.on("detach", () => {
+            unregisterFromFetchRouter?.();
+            unregisterFromFetchRouter = null;
+            debuggerAttached = false;
+          });
           view.webContents.debugger.on("message", (_event, method, params) => {
+            for (const l of [...cdpEventListeners]) l(method, params);
             if (method === "Page.javascriptDialogClosed") {
               openDialog = null;
               return;
@@ -492,6 +507,21 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
         // comment above) — wired unconditionally for a browser tab,
         // independent of whether the debugger attach above succeeded, since
         // it needs no debugger session at all.
+        // Network mocks (PageFixture `network`): a browser tab with a debugger
+        // joins the router, which enables Fetch on it while routing is active.
+        // Editor tabs never get here.
+        if (debuggerAttached) {
+          unregisterFromFetchRouter = fetchRouter.registerTab(
+            {
+              sendCommand: (method, params) => view.webContents.debugger.sendCommand(method, params),
+              onEvent: (cb) => {
+                cdpEventListeners.add(cb);
+                return () => cdpEventListeners.delete(cb);
+              },
+            },
+            viewId,
+          );
+        }
         view.webContents.on("console-message", (details) => {
           if (details.level !== "error") return;
           pushConsoleError(details.message);
@@ -499,6 +529,15 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       }
 
       if (kind === "editor") {
+        // Mocks are owned by main; the editor tab that drives the agent releases
+        // them in its renderer `finally`, which never runs on reload/crash/close.
+        const releaseOrphanedFixture = () => {
+          browserController.releaseFixture().catch((err) => console.error("editor tab: releaseFixture failed", err));
+        };
+        view.webContents.on("render-process-gone", releaseOrphanedFixture);
+        view.webContents.on("did-start-navigation", (details) => {
+          if (details.isMainFrame && !details.isSameDocument) releaseOrphanedFixture();
+        });
         attachNavigationPolicy(view.webContents, editorOrigin, (url) => void shell.openExternal(url));
         attachOfflineFallback(view.webContents, offlineFile);
         mcpService.registerTab(viewId, {
@@ -647,7 +686,12 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
           themeCallbacks.delete(viewId);
           titleCallbacks.delete(viewId);
           navEventListeners.clear();
-          if (kind === "editor") mcpService.unregisterTab(viewId);
+          unregisterFromFetchRouter?.();
+          cdpEventListeners.clear();
+          if (kind === "editor") {
+            mcpService.unregisterTab(viewId);
+            browserController.releaseFixture().catch((err) => console.error("editor tab: releaseFixture failed", err));
+          }
           if (debuggerAttached) {
             try {
               view.webContents.debugger.detach();
@@ -850,6 +894,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
     },
   });
 
+  const browserSession = () => session.fromPartition("persist:penbrowser");
   // --- built-in browser (design doc §3/§4, full browser use §"tabs") ---
   const browserTarget: BrowserTarget = {
     ensurePage: async (): Promise<BrowserPageHandle> => {
@@ -911,6 +956,33 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
       const created = tabs.listBrowserTabs().find((t) => t.tabId === id);
       return created ?? { tabId: id, url: "", title: "New Tab", current: true };
     },
+    // PageFixture `network`: CDP Fetch on browser tabs only (see fetchRouting.ts).
+    // With no browser tab yet it still returns a remover; tabs opened while
+    // routing is active are enabled on creation.
+    routeRequests: (handler) => {
+      // A tab whose debugger attach failed is never registered: refuse rather
+      // than report mocks active that this tab would ignore.
+      fetchRouter.assertCurrentTabInterceptable(tabs.browserHandle()?.getWebContentsId() ?? null);
+      return fetchRouter.routeRequests(handler);
+    },
+    // PageFixture cookies / `fresh`: the dedicated browser partition only —
+    // never the editor session or the default session (see fixtureSession.ts).
+    getCookies: (urls) => fixtureSession.getCookies(browserSession(), urls),
+    setCookies: (cookies) => fixtureSession.setCookies(browserSession(), cookies),
+    resetSession: (origins) =>
+      fixtureSession.resetSession(
+        browserSession(),
+        {
+          listBrowserTabIds: () => tabs.listBrowserTabs().map((t) => t.tabId),
+          closeTab: async (id) => {
+            tabs.closeTab(id);
+          },
+          openBlankTab: async () => {
+            tabs.setAgentBrowserTabId(tabs.newTab("browser"));
+          },
+        },
+        origins,
+      ),
     // Review finding 6: every open browser tab's own handle, tagged with
     // its id — lets BrowserController.mergeDialogs drain dialogs from every
     // tab, not just whichever one browserHandle() currently prefers.
@@ -989,6 +1061,17 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
           return await browserController.tabs(payload.args);
         case "capture":
           return await browserController.capture(payload.args);
+        case "applyFixture": {
+          // The page's AbortSignal cannot cross IPC, so `opts` is dropped.
+          // A non-object fixture is rejected by the controller (stage "validate").
+          const fixture = isRecord(payload.args) ? payload.args.fixture : undefined;
+          return await browserController.applyFixture(fixture as Parameters<BrowserController["applyFixture"]>[0], { allowNetworkMocks: true });
+        }
+        case "releaseFixture": {
+          const token = isRecord(payload.args) && typeof payload.args.token === "string" ? payload.args.token : undefined;
+          await browserController.releaseFixture(token);
+          return { ok: true };
+        }
         default:
           return { error: `Unknown browser command: ${payload.command}` };
       }

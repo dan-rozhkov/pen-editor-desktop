@@ -466,3 +466,52 @@ enforced both in `window.ts`'s own `executeJavaScriptInFrame` and again in
 skipped — the command still succeeds with whatever it already had. This bit
 concretely with `checkBotWall` below (a *top-document* script, not a frame
 one) before it got its own short, independent timeout — see that section.
+
+## PageFixture (`applyFixture` / `releaseFixture`)
+
+`window.penDesktop.browser.applyFixture(fixture)` / `releaseFixture(token?)` go
+through `browser:command`. Every fixture field is allowed
+(`allowNetworkMocks: true`); a non-object fixture is rejected by the
+controller itself (stage `validate`). Everything is scoped to the browser
+partition `persist:penbrowser` and to browser tabs — the editor session and the
+default session are never touched:
+
+- `network`: `src/main/fetchRouting.ts` implements `BrowserTarget.routeRequests`
+  with CDP `Fetch` (Request stage) on each browser tab's debugger session.
+  Never `session.webRequest` (profile-wide). Tabs opened while routing is
+  active are enabled on creation; the remover (`releaseFixture`) disables
+  Fetch and lets paused requests through. `routeRequests` awaits every tab's
+  `Fetch.enable` ack and throws (after undoing) if any still-registered tab
+  fails (a tab closing mid-call is ignored). Enable/disable are serialized per
+  tab (a late disable of a removed route can no longer switch off a newer
+  route). If the agent's current browser tab has no debugger (attach failed,
+  so it is not registered), `routeRequests` throws "request interception is
+  not available in this browser tab" instead of reporting mocks it cannot
+  deliver.
+  Limits: (a) mocks apply to EVERY tab of the built-in browser
+  (`persist:penbrowser`), including tabs the user browses manually, and never
+  to editor tabs; rules match only the fixture's URLs, other requests pass
+  through. (b) CDP Fetch is per page target: requests from out-of-process
+  (cross-site) iframes and from service workers are NOT intercepted, unlike
+  the cloud (Playwright context route).
+- Orphaned mocks: main owns them, but the renderer's `finally` never runs when
+  the editor tab that drives the agent reloads, crashes or closes. `window.ts`
+  calls `browserController.releaseFixture()` (no token, errors logged) on an
+  editor tab's `render-process-gone`, main-frame non-same-document
+  `did-start-navigation`, and destroy. Never for browser tabs.
+- Debugger `detach` on a browser tab unregisters it from the router (it clears
+  that tab's `enabled` state) and sets `debuggerAttached = false`.
+- `storage.cookies`: `getCookies` / `setCookies` in `src/main/fixtureSession.ts`
+  against `persist:penbrowser`. Host-only cookies (`hostOnly`) map to a `url`
+without `domain`, and `__Host-` cookies are set without `domain`.
+- `fresh`: `resetSession(origins)` closes every browser tab, opens one blank
+  browser tab, then clears cookies and site data (`clearStorageData` with an
+  `origin`) ONLY for the fixture's own origins (all origins are validated, http/https only,
+  BEFORE any tab is closed; cookies are found with `cookies.get({domain})` so
+  path-scoped and Secure ones go too). Other sites' logins survive.
+  Parent-domain cookies (`.example.com` for origin `https://app.example.com`)
+  are kept: only the origin host's own cookies go. Cookies ignore ports, so
+  `http://localhost:3000` clears localhost cookies shared by every localhost
+  port (a browser limitation).
+  No origins means only tabs are reset. Never call `clearStorageData` /
+  `clearCache` without an origin.

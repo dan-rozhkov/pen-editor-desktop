@@ -138,6 +138,13 @@ const browser = {
   // here" shape as every command above.
   capture: (args?: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke("browser:command", { command: "capture", args }),
+  // PageFixture. `opts` (an AbortSignal) cannot cross IPC and is dropped;
+  // main gates the fixture and passes allowNetworkMocks: true (desktop
+  // allows mocks, scoped to browser tabs through CDP Fetch).
+  applyFixture: (fixture: unknown, _opts?: unknown): Promise<unknown> =>
+    ipcRenderer.invoke("browser:command", { command: "applyFixture", args: { fixture } }),
+  releaseFixture: (token?: string): Promise<unknown> =>
+    ipcRenderer.invoke("browser:command", { command: "releaseFixture", args: { token } }),
 };
 
 const api = {
