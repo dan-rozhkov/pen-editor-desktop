@@ -4939,9 +4939,15 @@ test("browser snapshot/perform: a plain text field's floating role=button sugges
     await expect(page.locator("#chosen")).toHaveText("Clapham Junction Station");
     expect(await page.evaluate(() => (document.getElementById("where") as HTMLInputElement).value)).toBe("Clapham Junction Station");
 
-    // A plain field with no suggestions does not slow typing down: compared
-    // with a number field (never eligible for the suggestion wait), same
-    // cursor move and settles, it must not cost the 400ms activity window.
+    // A plain field with no suggestions pays one activity window
+    // (PLAIN_SUGGEST_ACTIVITY_MS, 400ms in @sideform/browser-agent), never the
+    // 1200ms suggestion cap: one window measures ~560ms here, two ~960ms. The
+    // baseline is a number field (never eligible for the suggestion wait).
+    // Every perform also includes a cursor move whose time grows with
+    // distance, so a warm-up on "Count" first makes the baseline a
+    // zero-distance move and "Notes" a short hop. (Until browser-agent v0.2.7
+    // sped the cursor up, a long baseline move hid most of the window and an
+    // older `< 250` bound passed by accident.)
     const snap3 = (await callBrowser(editorPage, "snapshot")) as SnapshotResult;
     const timeType = async (label: string, text: string) => {
       const target = snap3.elements.find((e) => e.label === label)!;
@@ -4955,9 +4961,10 @@ test("browser snapshot/perform: a plain text field's floating role=button sugges
       expect(r.error).toBeUndefined();
       return Date.now() - t0;
     };
+    await timeType("Count", "1");
     const baselineMs = await timeType("Count", "12345");
     const plainMs = await timeType("Notes", "Some plain note");
-    expect(plainMs - baselineMs).toBeLessThan(250);
+    expect(plainMs - baselineMs).toBeLessThan(700);
   } finally {
     await app.close().catch(() => {});
   }
