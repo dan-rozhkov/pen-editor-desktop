@@ -111,6 +111,16 @@ test("bench-shop fixture: consent gate, search, hover menu, filters, checkout va
     // CSS display:none, no inline style hack) and opens on a real CDP hover ---
     const dropdownBeforeHover = await shopPage.locator("#main-nav .dropdown").evaluate((el) => getComputedStyle(el).display);
     expect(dropdownBeforeHover).toBe("none");
+    // `Input.dispatchMouseEvent mouseMoved` is fire-and-forget. If Chromium
+    // has not painted the freshly navigated document yet (both CI flakes of
+    // this line were the first test of the suite: a cold Electron launch on
+    // xvfb), the move can hit-test against nothing and :hover never applies.
+    // Wait for two rAF ticks so the page has painted. Do NOT re-send the
+    // hover in a loop: the agent sends it once, so a dropped hover must stay
+    // a red test (then the fix belongs in @sideform/browser-agent).
+    await shopPage.evaluate(
+      () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+    );
     const hoverResult = await callBrowser(editorPage, "act", { action: "hover", target: "Categories" });
     expect(hoverResult.error).toBeUndefined();
     await expect
