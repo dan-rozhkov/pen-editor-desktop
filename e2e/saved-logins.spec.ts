@@ -67,7 +67,14 @@ test("saved logins: fillLogin error path and the save prompt via the isolated-wo
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     // Record (and answer "Not Now" to) every native dialog.
-    await app.evaluate(({ dialog }) => {
+    // The prompt is only offered when the OS secret store can encrypt
+    // (`safeStorage.isEncryptionAvailable()`, decideSavePrompt "unavailable").
+    // That holds on macOS (Keychain) and Windows (DPAPI) but NOT on a headless
+    // Linux runner (no libsecret/kwallet keyring), where the prompt is
+    // correctly suppressed. The answer is always "Not Now", so nothing is
+    // ever encrypted or written: only the availability probe is faked.
+    await app.evaluate(({ dialog, safeStorage }) => {
+      (safeStorage as unknown as { isEncryptionAvailable: () => boolean }).isEncryptionAvailable = () => true;
       const g = globalThis as unknown as { __dialogs: unknown[] };
       g.__dialogs = [];
       (dialog as unknown as { showMessageBox: unknown }).showMessageBox = async (...args: unknown[]) => {
