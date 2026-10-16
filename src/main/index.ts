@@ -1,8 +1,13 @@
-import { app, BaseWindow, session } from "electron";
+import path from "node:path";
+import { app, BaseWindow, safeStorage, session } from "electron";
 import { resolveEditorUrl, resolveUserDataDir } from "./config";
 import { createMainWindow } from "./window";
 import { createMcpService } from "./mcp/service";
 import { denyAllPermissions } from "./browser/permissions";
+import { CREDENTIALS_FILE, createCredentialStore } from "./browser/credentialStore";
+import { createLoginCapture } from "./browser/loginCapture";
+import { createPasswordsWindow } from "./passwordsWindow";
+import { shouldReopenMainWindow } from "./closeTarget";
 
 const editorUrl = resolveEditorUrl(process.env);
 
@@ -20,6 +25,24 @@ if (userDataDir) app.setPath("userData", userDataDir);
 // "activate" reopen, so the HTTP server/token/handshake ownership survive a
 // window close/reopen cycle instead of dying with the window.
 const mcpService = createMcpService();
+
+// Saved logins for the built-in browser — app-scoped for the same reason as
+// mcpService: one store (and one "a save prompt is open" flag) for the whole
+// app, not one per window. The cipher is Electron's safeStorage (macOS
+// Keychain). Passwords exist as plaintext only inside the main process.
+const credentialStore = createCredentialStore({
+  filePath: path.join(app.getPath("userData"), CREDENTIALS_FILE),
+  cipher: {
+    isAvailable: () => safeStorage.isEncryptionAvailable(),
+    encrypt: (plain) => safeStorage.encryptString(plain),
+    decrypt: (cipher) => safeStorage.decryptString(cipher),
+  },
+});
+const loginServices = {
+  credentialStore,
+  loginCapture: createLoginCapture(credentialStore),
+  passwordsWindow: createPasswordsWindow(credentialStore),
+};
 
 app.whenReady().then(async () => {
   // The editor must always open — MCP is a background convenience, not a
@@ -41,10 +64,11 @@ app.whenReady().then(async () => {
   // here rather than inside TabManager's per-tab createView.
   denyAllPermissions(session.fromPartition("persist:penbrowser"));
 
-  createMainWindow(editorUrl, mcpService);
+  createMainWindow(editorUrl, mcpService, loginServices);
 
   app.on("activate", () => {
-    if (BaseWindow.getAllWindows().length === 0) createMainWindow(editorUrl, mcpService);
+    // The Passwords window is not a main window: it must not count here.
+    if (shouldReopenMainWindow(BaseWindow.getAllWindows(), (w) => loginServices.passwordsWindow.owns(w))) createMainWindow(editorUrl, mcpService, loginServices);
   });
 
   try {

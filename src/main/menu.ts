@@ -24,6 +24,8 @@ export interface MenuActions {
   newTab(): void;
   /** Opens a new built-in browser tab (design doc `2026-09-18-builtin-browser-design.md`). */
   newBrowserTab(): void;
+  /** Opens (or focuses) the Passwords window. A local action: it forwards no `menu:command` id. */
+  openPasswords(): void;
   closeTab(): void;
   nextTab(): void;
   prevTab(): void;
@@ -93,6 +95,7 @@ export function buildMenuTemplate(
     submenu: [
       { label: "New Tab", accelerator: "CmdOrCtrl+T", click: () => actions.newTab() },
       { label: "New Browser Tab", click: () => actions.newBrowserTab() },
+      { label: "Passwords…", click: () => actions.openPasswords() },
       {
         label: "Open…",
         accelerator: "CmdOrCtrl+O",

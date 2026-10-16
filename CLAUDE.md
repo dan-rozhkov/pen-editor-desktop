@@ -103,7 +103,8 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below
 - `mcp:call` main→tab only (`{callId, tool, args}`)
 - `mcp:result` tab→main (`{callId, type: "tool_result" | "tool_error", result?, error?}`)
-- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture", args}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; see "Built-in browser tab" below
+- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture" | "fillLogin", args}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; see "Built-in browser tab" below
+- `passwords:list` / `passwords:add` / `passwords:remove` / `passwords:never-remove` Passwords window→main, **invoke/handle**, each sender-checked against that window's own webContents; handlers are registered when the window opens and removed when it closes. No reply ever holds a password — see "Saved logins" below
 
 Both ends of every channel live in this repo — the editor only ever touches
 the preload API, never a channel name. `test/ipcContract.test.ts` scans `src/`
@@ -515,3 +516,131 @@ without `domain`, and `__Host-` cookies are set without `domain`.
   port (a browser limitation).
   No origins means only tabs are reset. Never call `clearStorageData` /
   `clearCache` without an origin.
+
+## Saved logins (Passwords window, save prompt, `fillLogin`)
+
+The browsing subagent can sign in to a site with a login the user saved in
+the built-in browser, without the password ever reaching the model. Design
+spec: `docs/superpowers/specs/2026-10-16-browser-saved-logins-design.md`
+(backend tool `browse_fill_login` and the frontend handler are separate
+changes; merge order there: backend, frontend, then this repo).
+
+- **Store** — `src/main/browser/credentialStore.ts`, pure and Electron-free
+  (cipher and fs injected, like `cursorSettings.ts`). File
+  `browser-credentials.json` in `userData`:
+  `{ version: 1, entries: [{ id, origin, username, label, password, lastUsedAt? }], never: [host] }`,
+  `password` = base64 of `safeStorage.encryptString`. `origin` is normalized
+  `scheme://host[:port]` (http/https, lowercase host, no leading `www.`,
+  default port dropped; a bare host typed in the Passwords window means
+  https) and matched strictly on scheme + host + port: no subdomain or
+  eTLD+1 matching. The `never` list stays hostname-only. The parser accepts
+  only this shape (entries without a normalized `origin` are dropped; no
+  migration, unreleased). A file that is not valid JSON or has another
+  `version` reads as empty and is renamed to
+  `browser-credentials.json.bad-<timestamp>` before the first write (kept;
+  one log line without content; if the rename fails the write is refused with
+  a fixed error). The same set-aside happens when the file has ANY invalid
+  entry (or a malformed `never`/`entries` field): the valid entries stay
+  usable in memory, the original is kept as `.bad-<ts>` before the first
+  write. Only ENOENT on read means "no file"; any other read error (EACCES,
+  EIO...) counts as unreadable too (nothing overwrites it). A set-aside rename
+  that fails with ENOENT (the file vanished) counts as done and the write
+  proceeds. ONE instance, created in `index.ts` (app
+  level, like `mcpService`) and passed into every `createMainWindow`
+  together with the save-prompt state and the Passwords window manager
+  (`LoginServices` in `window.ts`).
+- **`browser:command` → `fillLogin`** — `src/main/browser/fillLogin.ts` (pure;
+  controller `snapshot`/`perform`/`act`, store and current-URL reader
+  injected). Reads the agent tab's URL (http/https only), finds the entry for
+  that exact origin (scheme, host, port), takes a fresh snapshot, types into
+  the top document's fields only (elements with a `frame` are skipped, so a
+  login is never typed into an iframe), then optionally presses Enter via
+  `act({action:"press"})`. Field picking uses only what a snapshot element
+  really carries (the snapshot has no input `type` for text fields and no
+  `autocomplete`; `inputType` exists for checkbox/radio only): `tag`, `ops`
+  (a username field offers both `TYPE_TEXT` and `CLICK`), `role`, `options`/
+  `expanded`/`checked` (not a plain field), `label`. The origin is re-checked
+  before AND after every `perform`, so a mid-fill navigation to another origin
+  stops the fill (no further typing, no submit; the fixed error is returned).
+  **Known limit:** a cross-origin navigation that lands during the cursor
+  animation inside `perform`, before its `insertText`, cannot be fully
+  prevented from this layer: the keystrokes of that one call go to whatever
+  page is focused then. The re-checks shrink the window to one call; closing
+  it needs a check inside the controller, between the animation and the
+  insert. The result is ONLY `{ ok, origin, label, filled, submitted }` or `{ ok:false, error }`
+  with fixed messages; controller results/errors are never passed through.
+- **Save prompt** — `src/main/browser/loginCapture.ts`. On each main-frame
+  `Page.frameNavigated` of a browser tab's existing CDP session, main creates
+  an isolated world (`Page.createIsolatedWorld`, name `penLoginCapture`), adds
+  the binding to THAT context id (`Runtime.addBinding` with
+  `executionContextId`) and runs the script there (a per-tab generation counter
+  makes a late result for an older document, from `install()` or an earlier
+  `frameNavigated`, discard itself, so it can never overwrite the current
+  context id); page scripts cannot see
+  the world, the script or the binding. NO `Runtime.enable` (a known
+  automation fingerprint; the console-error capture avoids CDP `Runtime` for
+  the same reason). Verified on Electron 43: a binding added BY NAME
+  (`executionContextName`) plus `addScriptToEvaluateOnNewDocument` yields no
+  working binding without `Runtime.enable`, while an explicit-context binding
+  does, and `Runtime.bindingCalled` is delivered anyway. CDP commands on a
+  tab that has not navigated yet are only answered after its first commit, so
+  never `await` them before `loadURL()` (deadlock); `install()` covers the
+  first document, `frameNavigated` every later one. The script runs in the
+  top frame only, reacts to trusted clicks/Enter and to `submit` with a user
+  activation, de-duplicates within 2 s, never captures a form with two or
+  more password fields (change-password / sign-up), and is idempotent per
+  world. It sends `{ username, password, origin: location.origin }` read at
+  submit time. Per tab (`loginCapture.forTab()`), main accepts a binding event
+  only if its `executionContextId` equals the isolated-world context it
+  created for the tab's current document (the id is cleared on every
+  main-frame navigation), and files the login under the payload origin, not
+  the tab's later URL. It does not ask at once (a typo is "submitted" too):
+  the capture is held in memory and the prompt appears only if a main-frame
+  (`Page.frameNavigated`) or same-document (`Page.navigatedWithinDocument`,
+  counted for the TOP frame only: its `frameId` must equal the tracked top
+  frame id) navigation follows within `HOLD_MS` (5 s); otherwise it is dropped.
+  A navigation alone is not success (a wrong password POSTs and reloads the
+  login page): once the new document is ready (the check waits for
+  `DOMContentLoaded`, bounded by `SETTLE_MS` = 3 s, then asks anyway) the
+  isolated world is asked for a visible `input[type=password]` in the top
+  document; if one is visible the capture is dropped with no prompt
+  (`decideAfterNavigation`, pure); an unanswerable check prompts. For an
+  existing entry with another password ("Update password?") the default and
+  cancel button is "Not Now". `decideSavePrompt` (pure) skips on never-list,
+  identical entry, no encryption, or a prompt already open (one flag for the
+  whole app). If the debugger attach
+  failed, the feature is off for that tab. `e2e/saved-logins.spec.ts` drives
+  it end to end with the native dialog stubbed.
+- **Passwords window** — `src/main/passwordsWindow.ts` (single instance,
+  File ▸ Passwords…, a local action: it forwards no `menu:command` id, so
+  pen-editor's pinned id list is unchanged), `src/passwords/` (plain-script
+  renderer like the tab bar; CSP `default-src 'none'`), `src/preload/passwords.ts`,
+  request handling in `browser/passwordsApi.ts`. The application menu is
+  app-global, so while this window is focused EVERY main-window menu action
+  (new tab, open, export, tab switching...) is ignored and File ▸ Close Tab
+  (Cmd/Ctrl+W) closes this window (`closeTarget.ts`: `MENU_ACTION_SCOPE`,
+  `decideMenuAction`, `guardMenuActions`, pure; a new `MenuActions` key will not
+  compile until it has a scope). The guard is wired in `window.ts`; `menu.ts`
+  still forwards every click untouched, which pen-editor's
+  `desktopMenuContract` relies on. App-level items (Passwords…, MCP publish,
+  cursor prefs) still run. macOS `activate` counts main windows only
+  (`shouldReopenMainWindow`), so a lone Passwords window does not suppress the
+  reopen. In `window.ts`'s debugger `message` handler the login binding
+  (`isLoginBindingCall`) is consumed FIRST and returns, before the
+  `cdpEventListeners` fan-out: the password-bearing payload reaches nothing
+  else (`test/loginBindingRouting.test.ts` pins the order).
+
+Security rules (breaking one is a bug even when the feature works):
+1. A password exists as plaintext only in the main process and inside the
+   `text` of one `perform` call. Never in a tool result, error, log line,
+   IPC reply, window title, dialog text or analytics event. Captured
+   passwords live in memory until the user answers the prompt.
+2. `passwords:list` returns origin, username, label — never a password. The
+   renderer sends a password in (`passwords:add`) and never gets it back.
+3. Fill only into a page whose normalized origin (scheme, host, port)
+   equals the entry's, top frame only.
+4. A page must not trigger the save flow by itself or read the store: the
+   binding exists in the isolated world only, and the script needs trusted
+   input or a user activation. The renderer-side store is not reachable
+   from any page (no preload on browser tabs).
+5. `fillLogin` returns fixed error strings; do not forward controller text.

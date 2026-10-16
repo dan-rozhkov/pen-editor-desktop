@@ -1,5 +1,5 @@
 import path from "node:path";
-import { app, BaseWindow, View, WebContentsView, Menu, ipcMain, nativeTheme, session, shell } from "electron";
+import { app, BaseWindow, View, WebContentsView, Menu, dialog, ipcMain, nativeTheme, session, shell } from "electron";
 import {
   TabManager,
   shouldFocusAddressBar,
@@ -28,6 +28,18 @@ import { FetchRouter } from "./fetchRouting";
 import * as fixtureSession from "./fixtureSession";
 import { CURSOR_SETTINGS_FILE, type CursorSettings, readCursorSettings, resolveCursorSettings, writeCursorSettings } from "./cursorSettings";
 import type { McpService, IpcListenerGateway } from "./mcp/service";
+import { fillLogin } from "./browser/fillLogin";
+import { isLoginBindingCall, promptChoiceFromButton, savePromptCopy, type LoginCapture } from "./browser/loginCapture";
+import type { CredentialStore } from "./browser/credentialStore";
+import type { PasswordsWindow } from "./passwordsWindow";
+import { decideCloseTarget, guardMenuActions } from "./closeTarget";
+
+/** App-scoped saved-logins services (created once in index.ts, like mcpService). */
+export interface LoginServices {
+  credentialStore: CredentialStore;
+  loginCapture: LoginCapture;
+  passwordsWindow: PasswordsWindow;
+}
 
 export const TABBAR_HEIGHT = 38;
 // The address row (design doc `2026-09-18-builtin-browser-design.md` §2) —
@@ -101,7 +113,7 @@ function withFrameTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  * ipcMain listeners. This function only *reports* tab create/destroy/active
  * and the app-level MCP menu status into it.
  */
-export function createMainWindow(editorUrl: string, mcpService: McpService): BaseWindow {
+export function createMainWindow(editorUrl: string, mcpService: McpService, loginServices: LoginServices): BaseWindow {
   // Idempotent — see registerAppLevelIpc's own doc comment. Safe to call on
   // every window (re)creation, including the macOS dock "activate" reopen.
   mcpService.registerAppLevelIpc(createMcpIpcGateway());
@@ -446,6 +458,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
           .sendCommand("Page.handleJavaScriptDialog", { accept, promptText: "" })
           .catch((err) => console.error("browser tab: failed to auto-handle JS dialog", err));
       };
+      // Per-tab save-password state (isolated-world context id, held capture).
+      const tabLoginCapture = loginServices.loginCapture.forTab();
       if (kind === "browser") {
         try {
           view.webContents.debugger.attach("1.3");
@@ -458,7 +472,41 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
             debuggerAttached = false;
           });
           view.webContents.debugger.on("message", (_event, method, params) => {
+            // Save-password prompt (browser/loginCapture.ts). `params` holds the
+            // captured password: it goes straight into the handler and nowhere
+            // else. The site comes from the payload's own `location.origin`.
+            const captureLogin = () =>
+              void tabLoginCapture
+                .handleCdpEvent(method, params, {
+                  send: (m, p) => view.webContents.debugger.sendCommand(m, p),
+                  ask: async (req) => {
+                    const copy = savePromptCopy(req);
+                    const { response } = await dialog.showMessageBox(win, {
+                      type: "question",
+                      message: copy.message,
+                      detail: copy.detail,
+                      buttons: copy.buttons,
+                      defaultId: copy.defaultId,
+                      cancelId: copy.cancelId,
+                      noLink: true,
+                    });
+                    return promptChoiceFromButton(response);
+                  },
+                })
+                .catch(() => console.error("browser tab: save-password handling failed"));
+            // The login binding carries the password. It is consumed FIRST and
+            // returns: it must never reach the cdpEventListeners fan-out (the
+            // fetch router and any future listener) or the branches below.
+            // test/loginBindingRouting.test.ts pins this order.
+            if (isLoginBindingCall(method, params)) {
+              captureLogin();
+              return;
+            }
             for (const l of [...cdpEventListeners]) l(method, params);
+            if (method === "Page.frameNavigated" || method === "Page.navigatedWithinDocument") {
+              captureLogin();
+              return;
+            }
             if (method === "Page.javascriptDialogClosed") {
               openDialog = null;
               return;
@@ -498,6 +546,15 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
           view.webContents.debugger
             .sendCommand("Network.enable")
             .catch((err) => console.error("browser tab: Network.enable failed", err));
+          // No Runtime.enable (an automation fingerprint): see loginCapture.ts.
+          // A failure here only turns the save prompt off for this tab.
+          // Not awaited by anyone: on a tab that has not navigated yet, CDP
+          // commands are only answered once the first navigation commits, so
+          // waiting for them before loadURL() would deadlock. install() covers
+          // that first document; Page.frameNavigated covers every later one.
+          tabLoginCapture
+            .install((method, params) => view.webContents.debugger.sendCommand(method, params))
+            .catch(() => console.error("browser tab: save-password capture unavailable for this tab"));
         } catch (err) {
           debuggerAttached = false;
           console.error("browser tab: debugger attach failed — press/hover/dialogs unavailable for this tab", err);
@@ -1061,6 +1118,15 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
           return await browserController.tabs(payload.args);
         case "capture":
           return await browserController.capture(payload.args);
+        case "fillLogin": {
+          // The model gets only { ok, origin, label, filled, submitted } or a
+          // fixed error — never a password, a username or controller text.
+          return await fillLogin(payload.args, {
+            controller: browserController,
+            store: loginServices.credentialStore,
+            getUrl: () => tabs.browserHandle()?.getURL() ?? null,
+          });
+        }
         case "applyFixture": {
           // The page's AbortSignal cannot cross IPC, so `opts` is dropped.
           // A non-object fixture is rejected by the controller (stage "validate").
@@ -1177,26 +1243,34 @@ export function createMainWindow(editorUrl: string, mcpService: McpService): Bas
   const rebuildMenu = () => {
     const menu = Menu.buildFromTemplate(
       buildMenuTemplate(
-        {
-          newTab: () => tabs.newTab("editor"),
-          newBrowserTab: newUserBrowserTab,
-          closeTab: () => {
-            const active = tabs.getSnapshot().activeId;
-            if (active !== null) tabs.closeTab(active);
+        // The menu is app-global: with the Passwords window focused every
+        // main-window action is ignored and Close Tab closes that window
+        // (closeTarget.ts). Guarded here, not in menu.ts, which keeps forwarding.
+        guardMenuActions(
+          {
+            newTab: () => tabs.newTab("editor"),
+            newBrowserTab: newUserBrowserTab,
+            openPasswords: () => loginServices.passwordsWindow.open(),
+            closeTab: () => {
+              const target = decideCloseTarget({ passwordsFocused: false, activeTabId: tabs.getSnapshot().activeId });
+              if (target.kind === "tab") tabs.closeTab(target.id);
+            },
+            nextTab: () => tabs.nextTab(),
+            prevTab: () => tabs.prevTab(),
+            forwardToActiveTab: (commandId) => tabs.activeHandle()?.sendMenuCommand(commandId),
+            useThisAppForMcp: () => void mcpService.forcePublish(),
+            setCursorMotion: (motion) => updateCursorSettings({ motion }),
+            setCursorEnabled: (enabled) => {
+              updateCursorSettings({ enabled });
+              // Unticked: hide the overlay on the current page right away
+              // (best effort). Re-enabling needs nothing: the next move's
+              // show() makes it visible again.
+              if (!enabled) void browserController.hideCursorOverlay();
+            },
           },
-          nextTab: () => tabs.nextTab(),
-          prevTab: () => tabs.prevTab(),
-          forwardToActiveTab: (commandId) => tabs.activeHandle()?.sendMenuCommand(commandId),
-          useThisAppForMcp: () => void mcpService.forcePublish(),
-          setCursorMotion: (motion) => updateCursorSettings({ motion }),
-          setCursorEnabled: (enabled) => {
-            updateCursorSettings({ enabled });
-            // Unticked: hide the overlay on the current page right away
-            // (best effort). Re-enabling needs nothing: the next move's
-            // show() makes it visible again.
-            if (!enabled) void browserController.hideCursorOverlay();
-          },
-        },
+          () => loginServices.passwordsWindow.isFocused(),
+          () => loginServices.passwordsWindow.close(),
+        ),
         { isMac: process.platform === "darwin" },
         mcpService.getStatus(),
         effectiveCursor(),

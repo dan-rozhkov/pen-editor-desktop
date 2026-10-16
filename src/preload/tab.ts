@@ -145,6 +145,15 @@ const browser = {
     ipcRenderer.invoke("browser:command", { command: "applyFixture", args: { fixture } }),
   releaseFixture: (token?: string): Promise<unknown> =>
     ipcRenderer.invoke("browser:command", { command: "releaseFixture", args: { token } }),
+  // Saved logins (docs/superpowers/specs/2026-10-16-browser-saved-logins-design.md):
+  // main types the stored login into the current tab's sign-in form. Only
+  // { label?, submit? } leaves this preload; the result never holds a secret.
+  // Only these two keys are forwarded; main validates their types.
+  fillLogin: (args?: { label?: unknown; submit?: unknown }): Promise<unknown> =>
+    ipcRenderer.invoke("browser:command", {
+      command: "fillLogin",
+      args: { label: args?.label, submit: args?.submit },
+    }),
 };
 
 const api = {

@@ -13,6 +13,7 @@ describe("buildMenuTemplate", () => {
     actions = {
       newTab: vi.fn(),
       newBrowserTab: vi.fn(),
+      openPasswords: vi.fn(),
       closeTab: vi.fn(),
       nextTab: vi.fn(),
       prevTab: vi.fn(),
@@ -48,6 +49,13 @@ describe("buildMenuTemplate", () => {
     const i = item("New Browser Tab");
     (i.click as () => void)();
     expect(actions.newBrowserTab).toHaveBeenCalled();
+  });
+
+  it("Passwords… opens the Passwords window and forwards no menu command", () => {
+    const i = item("Passwords…");
+    (i.click as () => void)();
+    expect(actions.openPasswords).toHaveBeenCalledTimes(1);
+    expect(actions.forwardToActiveTab).not.toHaveBeenCalled();
   });
 
   it("Close Tab triggers closeTab with CmdOrCtrl+W", () => {

@@ -30,6 +30,11 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "mcp:register", direction: "renderer->main" },
   { name: "mcp:call", direction: "main->renderer" },
   { name: "mcp:result", direction: "renderer->main" },
+  // Passwords window (invoke/handle, sender-checked): saved logins, see CLAUDE.md.
+  { name: "passwords:list", direction: "renderer->main" },
+  { name: "passwords:add", direction: "renderer->main" },
+  { name: "passwords:remove", direction: "renderer->main" },
+  { name: "passwords:never-remove", direction: "renderer->main" },
 ];
 
 const SRC = resolve(__dirname, "../src");
