@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.4.0] - 2026-10-16
+
+### Added
+- **Saved logins in the built-in browser.** The browsing agent can sign in to a site with a login the user saved, and the password never reaches the model, the chat or the traces. The main process keeps it in the macOS Keychain (`safeStorage`) and types it into the page itself (`fillLogin`, used by the `browse_fill_login` tool). A login is filled only into a page with the same origin (scheme, host and port), and only into the top frame.
+  - After a successful manual sign-in, the browser asks "Save password for <site>?". A failed attempt (the page still shows a password field) asks nothing, and "Update password?" defaults to Not Now.
+  - **File ▸ Passwords…** lists saved logins (site, username, label, never the password), adds and deletes them, and manages the never-save list.
+  - An unreadable credentials file is kept as `browser-credentials.json.bad-<timestamp>`, never overwritten.
+- **Page fixtures** (`applyFixture` / `releaseFixture`): cookies, storage, steps and network mocks before a browse task, scoped to the built-in browser's own session.
+- **Checkpoint journal commands** for mid-task browser checkpoints.
+- **`capture` command** for `browse_capture`: an editable copy of the page on the canvas, with the page CSS fetched through the tab's own session.
+
+### Changed
+- The browser controller now comes from the `@sideform/browser-agent` package (v0.2.16); Renovate opens its bump PRs.
+- The agent cursor is quiet, and marks are never shown to the user.
+
+### Fixed
+- Snapshots: role-less options of open custom dropdowns, transparent tile radios, natively disabled controls, suggestion lists of plain text fields, non-aria overlays reported as the modal, bounded frame labels.
+
 ## [0.3.0] - 2026-10-11
 
 ### Added
