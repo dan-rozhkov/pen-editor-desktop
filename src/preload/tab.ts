@@ -154,6 +154,15 @@ const browser = {
       command: "fillLogin",
       args: { label: args?.label, submit: args?.submit },
     }),
+  // Checkpoint journal. startJournal resolves to the owner token (string);
+  // the checkpoint holds secrets (cookies/storage), so it goes back to this
+  // editor tab only.
+  startJournal: (opts?: { origins?: string[] }): Promise<unknown> =>
+    ipcRenderer.invoke("browser:command", { command: "startJournal", args: opts }),
+  stopJournal: (token?: string): Promise<unknown> =>
+    ipcRenderer.invoke("browser:command", { command: "stopJournal", args: { token } }),
+  captureCheckpoint: (token?: string): Promise<unknown> =>
+    ipcRenderer.invoke("browser:command", { command: "captureCheckpoint", args: { token } }),
 };
 
 const api = {

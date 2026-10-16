@@ -103,7 +103,7 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below
 - `mcp:call` main→tab only (`{callId, tool, args}`)
 - `mcp:result` tab→main (`{callId, type: "tool_result" | "tool_error", result?, error?}`)
-- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture" | "fillLogin", args}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; see "Built-in browser tab" below
+- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture" | "applyFixture" | "releaseFixture" | "fillLogin" | "startJournal" | "stopJournal" | "captureCheckpoint", args}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; see "Built-in browser tab" below
 - `passwords:list` / `passwords:add` / `passwords:remove` / `passwords:never-remove` Passwords window→main, **invoke/handle**, each sender-checked against that window's own webContents; handlers are registered when the window opens and removed when it closes. No reply ever holds a password — see "Saved logins" below
 
 Both ends of every channel live in this repo — the editor only ever touches
@@ -644,3 +644,47 @@ Security rules (breaking one is a bug even when the feature works):
    input or a user activation. The renderer-side store is not reachable
    from any page (no preload on browser tabs).
 5. `fillLogin` returns fixed error strings; do not forward controller text.
+
+## Checkpoint journal (`startJournal` / `stopJournal` / `captureCheckpoint`)
+
+`window.penDesktop.browser.startJournal(opts?)` / `stopJournal(token?)` /
+`captureCheckpoint(token?)` go through `browser:command` and call the
+`BrowserController` methods of the same name (`@sideform/browser-agent`
+v0.2.16). `startJournal({origins?})` resolves to the owner token (a string), or
+`{error}` when another editor tab is recording; `stopJournal({token})` resolves
+to a boolean; `captureCheckpoint({token})` resolves to `CheckpointResult`
+(`{ok:true, fixture, complete, gap?, summary}` or `{ok:false, error}`). The
+journal lives in the main-process controller (one per window, shared by all its
+editor tabs) and records the agent's state-changing steps after the last new
+document. Args are untrusted: `src/main/checkpointArgs.ts` accepts `origins`
+only as an array of at most 20 strings of at most 512 chars (`[]` is valid,
+absent means defaults). Malformed `origins` make `startJournal` return
+`{error: "invalid origins"}`. Journal `token` args are a string of at most 512
+chars, else ignored; `releaseFixture` passes its token as is.
+
+The checkpoint holds secrets (cookies, storage of the listed origins; default is
+the base page's origin only). It is returned to the calling editor tab only,
+and the editor keeps it in memory; main never stores or logs it.
+
+Ownership: because the controller is shared, `src/main/journalOwners.ts`
+(pure, tested) maps token -> owner webContents id. A start from tab B while a
+live tab A owns a journal is refused without touching the controller; the owner
+may restart its own. `stopJournal` and `captureCheckpoint` require a token owned
+by the sender, else `false` / `{ok:false, error}`; no tokenless call ever
+reaches the controller.
+
+Isolation: a page-changing `browser:command` (all but `snapshot`, `read`,
+`screenshot`, `findImages`, `capture`, `captureCheckpoint`, `stopJournal`,
+`startJournal`, and `tabs` with action `list`) from a tab that does not own the
+running journal first stops that journal. The owner then gets no checkpoint
+(its capture fails) instead of one with another tab's steps. An owner mapping
+older than 20 minutes may be taken over by another tab's start; this frees a
+lock left by a missed stop.
+
+Orphan stop: an editor tab that reload/crash/close skips its renderer cleanup,
+and a running journal costs marker reads on every page-changing command. So
+`window.ts` calls `journalOwners.stopOwnedBy(viewId)` in the same three places
+as `releaseFixture()`: `render-process-gone`, main-frame non-same-document
+`did-start-navigation` (also fires on a tab's first load; harmless, the tab owns
+nothing yet), and destroy of an editor tab. It stops only the journals that tab
+owns, with their tokens. Never for browser tabs.

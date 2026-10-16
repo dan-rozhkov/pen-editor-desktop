@@ -24,6 +24,8 @@ import {
   type BrowserPageHandle,
   isFetchableStylesheetUrl,
 } from "@sideform/browser-agent/controller";
+import { isRecord, parseJournalOrigins, parseToken, rawToken } from "./checkpointArgs";
+import { JournalOwners } from "./journalOwners";
 import { FetchRouter } from "./fetchRouting";
 import * as fixtureSession from "./fixtureSession";
 import { CURSOR_SETTINGS_FILE, type CursorSettings, readCursorSettings, resolveCursorSettings, writeCursorSettings } from "./cursorSettings";
@@ -69,10 +71,6 @@ function createMcpIpcGateway(): IpcListenerGateway {
       else ipcMain.removeListener("mcp:result", w);
     },
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Isolated JS world id for executeJavaScriptIsolated (arbitrary, fixed). */
@@ -590,6 +588,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         // them in its renderer `finally`, which never runs on reload/crash/close.
         const releaseOrphanedFixture = () => {
           browserController.releaseFixture().catch((err) => console.error("editor tab: releaseFixture failed", err));
+          journalOwners.stopOwnedBy(viewId);
         };
         view.webContents.on("render-process-gone", releaseOrphanedFixture);
         view.webContents.on("did-start-navigation", (details) => {
@@ -748,6 +747,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
           if (kind === "editor") {
             mcpService.unregisterTab(viewId);
             browserController.releaseFixture().catch((err) => console.error("editor tab: releaseFixture failed", err));
+            journalOwners.stopOwnedBy(viewId);
           }
           if (debuggerAttached) {
             try {
@@ -1069,6 +1069,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     cursorMotion: () => effectiveCursor().motion,
   });
 
+  const journalOwners = new JournalOwners(browserController);
+
   const onBrowserCommand = async (event: Electron.IpcMainInvokeEvent, payload: unknown) => {
     // Single source of truth for "which webContents id is an editor tab" —
     // TabManager.isEditorTab (finding 10). Deliberately not a second,
@@ -1099,6 +1101,9 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     // this counter stuck above zero.
     browserCommandsInFlight++;
     try {
+      // A page-changing command from a tab that does not own the running
+      // journal would be recorded into it: end that journal first.
+      journalOwners.beforeCommand(event.sender.id, payload.command, payload.args, (id) => tabs.isEditorTab(id));
       switch (payload.command) {
         case "open":
           return await browserController.open(payload.args);
@@ -1134,10 +1139,23 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
           return await browserController.applyFixture(fixture as Parameters<BrowserController["applyFixture"]>[0], { allowNetworkMocks: true });
         }
         case "releaseFixture": {
-          const token = isRecord(payload.args) && typeof payload.args.token === "string" ? payload.args.token : undefined;
-          await browserController.releaseFixture(token);
+          await browserController.releaseFixture(rawToken(payload.args));
           return { ok: true };
         }
+        // Checkpoint journal. Args are untrusted: malformed ones are ignored.
+        // The CheckpointResult (cookies/storage) goes back to the calling
+        // editor tab only.
+        // Ownership (which editor tab may stop/read the journal) is decided
+        // in journalOwners.ts; the controller is shared by all editor tabs.
+        case "startJournal": {
+          const parsed = parseJournalOrigins(payload.args);
+          if (!parsed.ok) return { error: "invalid origins" };
+          return journalOwners.start(event.sender.id, (id) => tabs.isEditorTab(id), parsed.origins);
+        }
+        case "stopJournal":
+          return journalOwners.stop(event.sender.id, parseToken(payload.args));
+        case "captureCheckpoint":
+          return await journalOwners.capture(event.sender.id, parseToken(payload.args));
         default:
           return { error: `Unknown browser command: ${payload.command}` };
       }

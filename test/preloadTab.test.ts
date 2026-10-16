@@ -11,6 +11,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 const sendMock = vi.fn();
 const onMock = vi.fn();
 const removeListenerMock = vi.fn();
+const invokeMock = vi.fn();
 
 vi.mock("electron", () => ({
   contextBridge: {
@@ -22,6 +23,7 @@ vi.mock("electron", () => ({
     send: sendMock,
     on: onMock,
     removeListener: removeListenerMock,
+    invoke: invokeMock,
   },
 }));
 
@@ -120,5 +122,34 @@ describe("preload/tab.ts registerMcpBridge — single-registration guard at the 
     expect(removeListenerMock).toHaveBeenCalledTimes(1);
     expect(sendMock).toHaveBeenCalledTimes(1);
     expect(sendMock).toHaveBeenCalledWith("mcp:register", null);
+  });
+});
+
+describe("preload/tab.ts browser checkpoint journal commands", () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue("ok");
+    exposedApi = undefined;
+    await import("../src/preload/tab");
+  });
+
+  it("startJournal sends the opts as args", async () => {
+    await exposedApi.browser.startJournal({ origins: ["https://a.test"] });
+    expect(invokeMock).toHaveBeenCalledWith("browser:command", {
+      command: "startJournal",
+      args: { origins: ["https://a.test"] },
+    });
+  });
+
+  it("stopJournal sends the token", async () => {
+    await exposedApi.browser.stopJournal("tok");
+    expect(invokeMock).toHaveBeenCalledWith("browser:command", { command: "stopJournal", args: { token: "tok" } });
+  });
+
+  it("captureCheckpoint sends the token and resolves to the main result", async () => {
+    invokeMock.mockResolvedValue({ ok: true });
+    await expect(exposedApi.browser.captureCheckpoint("tok")).resolves.toEqual({ ok: true });
+    expect(invokeMock).toHaveBeenCalledWith("browser:command", { command: "captureCheckpoint", args: { token: "tok" } });
   });
 });
