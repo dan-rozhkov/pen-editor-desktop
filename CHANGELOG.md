@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.5.0] - 2026-10-16
+
+### Changed
+- **The Passwords window is redesigned** in Pen Editor's own look: a sidebar (All logins, Never saved), a searchable list of logins and a detail pane with Edit and Delete. Colors, radii, buttons, fields and badges come from the editor's design tokens and components.
+  - It follows the theme of the editor window you used last, light or dark. On macOS the traffic lights sit in the sidebar's top strip, and the sidebar glass turns opaque when the macOS appearance differs from the editor theme.
+  - Site tiles are neutral. They show the favicon of a site you opened in the built-in browser, or a globe. The window itself makes no network requests. Icons are cached per site and removed with the site's last login.
+
+### Added
+- Edit a saved login in place: username, label, or a new password.
+- Adding a login that already exists asks before it replaces the password.
+- An Add or Edit form with changes asks "Discard changes?" before you leave it, including with Escape.
+
 ## [0.4.0] - 2026-10-16
 
 ### Added
