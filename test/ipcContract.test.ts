@@ -33,6 +33,9 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   // Passwords window (invoke/handle, sender-checked): saved logins, see CLAUDE.md.
   { name: "passwords:list", direction: "renderer->main" },
   { name: "passwords:add", direction: "renderer->main" },
+  { name: "passwords:update", direction: "renderer->main" },
+  { name: "passwords:theme", direction: "main->renderer" },
+  { name: "passwords:changed", direction: "main->renderer" },
   { name: "passwords:remove", direction: "renderer->main" },
   { name: "passwords:never-remove", direction: "renderer->main" },
 ];

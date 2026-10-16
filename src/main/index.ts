@@ -4,7 +4,8 @@ import { resolveEditorUrl, resolveUserDataDir } from "./config";
 import { createMainWindow } from "./window";
 import { createMcpService } from "./mcp/service";
 import { denyAllPermissions } from "./browser/permissions";
-import { CREDENTIALS_FILE, createCredentialStore } from "./browser/credentialStore";
+import { CREDENTIALS_FILE, createCredentialStore, nodeCredentialFs } from "./browser/credentialStore";
+import { FAVICONS_FILE, createFaviconCache, createIconFetcher } from "./browser/faviconCache";
 import { createLoginCapture } from "./browser/loginCapture";
 import { createPasswordsWindow } from "./passwordsWindow";
 import { shouldReopenMainWindow } from "./closeTarget";
@@ -38,10 +39,21 @@ const credentialStore = createCredentialStore({
     decrypt: (cipher) => safeStorage.decryptString(cipher),
   },
 });
+// Site icons for the Passwords window: taken from the browser tabs' own favicon
+// events and downloaded through their session (window.ts); cached per origin.
+const faviconCache = createFaviconCache({
+  filePath: path.join(app.getPath("userData"), FAVICONS_FILE),
+  fs: nodeCredentialFs,
+  fetchIcon: createIconFetcher((url, init) => session.fromPartition("persist:penbrowser").fetch(url, init)),
+  isWanted: (origin) => credentialStore.list().some((e) => e.origin === origin),
+  // A new icon arrived: an open Passwords window refreshes its tiles.
+  onChange: () => loginServices.passwordsWindow.notifyChanged(),
+});
 const loginServices = {
   credentialStore,
+  faviconCache,
   loginCapture: createLoginCapture(credentialStore),
-  passwordsWindow: createPasswordsWindow(credentialStore),
+  passwordsWindow: createPasswordsWindow(credentialStore, faviconCache),
 };
 
 app.whenReady().then(async () => {

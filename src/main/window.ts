@@ -32,13 +32,15 @@ import { CURSOR_SETTINGS_FILE, type CursorSettings, readCursorSettings, resolveC
 import type { McpService, IpcListenerGateway } from "./mcp/service";
 import { fillLogin } from "./browser/fillLogin";
 import { isLoginBindingCall, promptChoiceFromButton, savePromptCopy, type LoginCapture } from "./browser/loginCapture";
-import type { CredentialStore } from "./browser/credentialStore";
+import { normalizeOrigin, type CredentialStore } from "./browser/credentialStore";
+import type { FaviconCache } from "./browser/faviconCache";
 import type { PasswordsWindow } from "./passwordsWindow";
 import { decideCloseTarget, guardMenuActions } from "./closeTarget";
 
 /** App-scoped saved-logins services (created once in index.ts, like mcpService). */
 export interface LoginServices {
   credentialStore: CredentialStore;
+  faviconCache: FaviconCache;
   loginCapture: LoginCapture;
   passwordsWindow: PasswordsWindow;
 }
@@ -178,6 +180,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
   }
   void tabbarView.webContents.loadFile(path.join(__dirname, "../tabbar/tabbar.html"));
 
+  const themeKey = Symbol("main-window-theme");
   const systemTheme = (): UITheme => (nativeTheme.shouldUseDarkColors ? "dark" : "light");
   // Tab CONTENT views (editor/browser) must stay opaque no matter what the
   // glass tab bar above is doing — otherwise the desktop behind the window
@@ -224,6 +227,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     // Keep in sync with tabbar.css's --window-rim.
     windowRim?.setBackgroundColor(resolvedTheme === "dark" ? "#4d4d4d" : "#ececec");
     tabbarView.webContents.send("tabbar:theme", resolvedTheme);
+    loginServices.passwordsWindow.setTheme(themeKey, resolvedTheme);
     if (focusAddressBar) tabbarView.webContents.focus();
     // Keep a visible browser tab's own blank-canvas background matching the
     // theme the bar is now showing (glass tab bar work, 2026-09-25) — most
@@ -459,6 +463,11 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
       // Per-tab save-password state (isolated-world context id, held capture).
       const tabLoginCapture = loginServices.loginCapture.forTab();
       if (kind === "browser") {
+        // Site icon for the Passwords window: the first favicon of a page whose origin has a saved login.
+        view.webContents.on("page-favicon-updated", (_e, favicons) => {
+          const origin = normalizeOrigin(view.webContents.getURL());
+          if (origin) void loginServices.faviconCache.seen(origin, favicons).catch(() => undefined);
+        });
         try {
           view.webContents.debugger.attach("1.3");
           debuggerAttached = true;
@@ -1237,6 +1246,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
   // recreates a window on dock "activate" without quitting the app. Without
   // this, every close/reopen cycle leaks the ipcMain listeners above plus
   // every tab's WebContentsView (renderer process stays alive).
+  // The Passwords window follows the main window the user focused last.
+  win.on("focus", () => loginServices.passwordsWindow.focusMain(themeKey));
   win.on("closed", () => {
     ipcMain.removeListener("tabbar:new", onTabbarNew);
     ipcMain.removeListener("tabbar:new-menu", onTabbarNewMenu);
@@ -1247,6 +1258,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     ipcMain.removeListener("editor:document-title", onEditorDocumentTitle);
     ipcMain.removeHandler("browser:command");
     nativeTheme.removeListener("updated", onSystemThemeChanged);
+    loginServices.passwordsWindow.setTheme(themeKey, null);
     unsubscribeMcpStatus();
     tabs.destroyAll();
     tabbarView.webContents.close();

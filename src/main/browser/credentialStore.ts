@@ -65,6 +65,8 @@ export interface CredentialSummary {
   origin: string;
   username: string;
   label: string;
+  /** Epoch ms of the last fill; absent when never used. */
+  lastUsedAt?: number;
 }
 
 /** A decrypted entry. Held only for the moment a login is typed. */
@@ -296,6 +298,7 @@ export function createCredentialStore(deps: CredentialStoreDeps) {
     origin: e.origin,
     username: e.username,
     label: e.label,
+    ...(e.lastUsedAt !== undefined ? { lastUsedAt: e.lastUsedAt } : {}),
   });
 
   return {
@@ -344,6 +347,45 @@ export function createCredentialStore(deps: CredentialStoreDeps) {
       const host = normalizeHost(origin);
       save({ ...file, entries, never: file.never.filter((h) => h !== host) });
       return { id, origin, replaced: existing !== undefined };
+    },
+
+    /**
+     * The id of the entry add() would replace for this site + username (same
+     * normalization as add()), or null when none exists or the input is unusable.
+     */
+    findExisting: (site: string, username: string): string | null => {
+      const origin = normalizeOrigin(site);
+      if (!origin) return null;
+      const name = username.trim();
+      return load().entries.find((e) => e.origin === origin && e.username === name)?.id ?? null;
+    },
+
+    /**
+     * Edits one entry in place (id and origin stay; `lastUsedAt` is kept).
+     * `password` omitted or empty keeps the stored one. Throws a fixed-message
+     * Error like add(); a username that another entry on the same origin
+     * already uses is refused.
+     */
+    update: (
+      id: string,
+      patch: { username: string; password?: string; label?: string },
+    ): void => {
+      const file = load();
+      const target = file.entries.find((e) => e.id === id);
+      if (!target) throw new Error("That login no longer exists.");
+      const username = patch.username.trim();
+      if (!isNonEmptyString(username, MAX_FIELD)) throw new Error("Enter a username.");
+      const next: StoredEntry = { ...target, username };
+      if (patch.label !== undefined) next.label = patch.label.trim().slice(0, MAX_FIELD);
+      if (patch.password !== undefined && patch.password !== "") {
+        if (!deps.cipher.isAvailable()) throw new Error("Encryption is not available on this system.");
+        if (!isNonEmptyString(patch.password, MAX_PASSWORD)) throw new Error("Enter a password.");
+        next.password = deps.cipher.encrypt(patch.password).toString("base64");
+      }
+      if (file.entries.some((e) => e.id !== id && e.origin === target.origin && e.username === username)) {
+        throw new Error("A login for that username already exists on this site.");
+      }
+      save({ ...file, entries: file.entries.map((e) => (e.id === id ? next : e)) });
     },
 
     remove: (id: string): boolean => {

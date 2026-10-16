@@ -104,7 +104,9 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `mcp:call` main→tab only (`{callId, tool, args}`)
 - `mcp:result` tab→main (`{callId, type: "tool_result" | "tool_error", result?, error?}`)
 - `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture" | "applyFixture" | "releaseFixture" | "fillLogin" | "startJournal" | "stopJournal" | "captureCheckpoint", args}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; see "Built-in browser tab" below
-- `passwords:list` / `passwords:add` / `passwords:remove` / `passwords:never-remove` Passwords window→main, **invoke/handle**, each sender-checked against that window's own webContents; handlers are registered when the window opens and removed when it closes. No reply ever holds a password — see "Saved logins" below
+- `passwords:list` / `passwords:add` / `passwords:update` / `passwords:remove` / `passwords:never-remove` Passwords window→main, **invoke/handle**, each sender-checked against that window's own webContents; handlers are registered when the window opens and removed when it closes. No reply ever holds a password — see "Saved logins" below
+- `passwords:theme` main→Passwords window, payload `{ theme: "light" | "dark", vibrancyMatches: boolean }`. `theme` is the tab-bar theme (`tabbar:theme`) of the main window the user focused last (BaseWindow `focus`; each window's push is kept under its own key in `themeSource.ts`). If that window is closed or none was focused yet, the latest push of any open main window applies; with none left it follows `nativeTheme` again. `vibrancyMatches` is false when `theme` differs from the OS appearance: macOS sidebar vibrancy follows the OS, so the renderer then paints the sidebar opaque (`data-opaque-sidebar`). Pushed on window load and whenever the effective `{theme, vibrancyMatches}` changes (an unchanged value is not re-sent)
+- `passwords:changed` main→Passwords window, no payload. Sent when a site icon was stored (favicon fetched). The renderer re-reads `passwords:list` and refreshes the sidebar, rows and, in view mode only, the detail pane; an open Add/Edit form is never rebuilt
 
 Both ends of every channel live in this repo — the editor only ever touches
 the preload API, never a channel name. `test/ipcContract.test.ts` scans `src/`
@@ -615,7 +617,30 @@ changes; merge order there: backend, frontend, then this repo).
   File ▸ Passwords…, a local action: it forwards no `menu:command` id, so
   pen-editor's pinned id list is unchanged), `src/passwords/` (plain-script
   renderer like the tab bar; CSP `default-src 'none'`), `src/preload/passwords.ts`,
-  request handling in `browser/passwordsApi.ts`. The application menu is
+  request handling in `browser/passwordsApi.ts`. Site tiles are neutral (a
+  globe, or the site's icon through `<img>`; CSP adds `img-src data:` only).
+  Icons never come from the Passwords window: `window.ts` listens to
+  `page-favicon-updated` on browser tabs and `browser/faviconCache.ts` (pure,
+  fs and fetch injected) downloads the FIRST favicon through the
+  `persist:penbrowser` session (http/https, image types only, 64 KB, 3 s) for
+  origins that have a saved login, keeping data URLs per origin in
+  `browser-favicons.json` (200 entries). Each icon is stored with the favicon URL it came from: a page that later
+  reports another URL is refetched, a failed fetch of a URL is retried after
+  10 minutes (not for the whole run). The icon of an origin goes when its last
+  login is removed (`passwordsApi.remove`) and icons of origins without a login
+  are filtered out on load. `passwords:list` adds an optional `icon` per entry;
+  an icon seen before the login was saved is fetched in the background on the
+  next `list`, and every stored icon (that one or one from
+  `page-favicon-updated` while the window is open) sends `passwords:changed`,
+  so the tiles update without a manual refresh. The data-URL pattern for icons
+  is a single copy, `isIconDataUrl` in `src/passwords/helpers.ts` (main
+  `require`s it; the renderer, a plain script, uses it as a global).
+  `passwords:add` answers `{ ok:false, exists:true, id }` when a login for the
+  same normalized origin + username exists, and replaces its password only
+  when the payload carries `replace: true` (the New login form shows an inline
+  warning and a "Replace" button first). A save reply that arrives after its
+  form was discarded or replaced only refreshes the list data. Copy on encryption is platform-specific (`api.isMac`). The
+  application menu is
   app-global, so while this window is focused EVERY main-window menu action
   (new tab, open, export, tab switching...) is ignored and File ▸ Close Tab
   (Cmd/Ctrl+W) closes this window (`closeTarget.ts`: `MENU_ACTION_SCOPE`,
@@ -636,7 +661,7 @@ Security rules (breaking one is a bug even when the feature works):
    IPC reply, window title, dialog text or analytics event. Captured
    passwords live in memory until the user answers the prompt.
 2. `passwords:list` returns origin, username, label — never a password. The
-   renderer sends a password in (`passwords:add`) and never gets it back.
+   renderer sends a password in (`passwords:add` and `passwords:update`) and never gets it back; both answer `{ ok: true, id }` with the saved entry id only.
 3. Fill only into a page whose normalized origin (scheme, host, port)
    equals the entry's, top frame only.
 4. A page must not trigger the save flow by itself or read the store: the
