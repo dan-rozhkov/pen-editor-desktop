@@ -133,8 +133,8 @@ anything window-scoped would die and never come back — the same shape as
 the `Menu.setApplicationMenu` wart noted above. `window.ts` only *reports*
 tab create/destroy/active into the service; it never owns MCP state itself.
 
-`tools/list` serves the static `src/main/mcp/toolManifest.json` (32 tools: the
-28 backend `BRIDGED_TOOL_NAMES`, the 3 static guideline tools, and desktop-only
+`tools/list` serves the static `src/main/mcp/toolManifest.json` (30 tools: the
+26 backend `BRIDGED_TOOL_NAMES`, the 3 static guideline tools, and desktop-only
 `list_editor_tabs`; every tool except `list_editor_tabs` also gets an optional
 `tabId`). Do not edit the JSON: it is written by `npx tsx
 scripts/gen-tool-manifest.ts` from the hand-maintained `TOOLS` array and

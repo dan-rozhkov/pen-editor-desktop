@@ -179,13 +179,13 @@ describe("tool manifest — layers / embed HTML / canvas layout tools", () => {
   });
 });
 
-describe("tool manifest — design system / style / component tools", () => {
+describe("tool manifest — style / component tools", () => {
   const byName = (name: string) => {
     const t = (manifest.tools as Array<ToolDef & { annotations?: Record<string, boolean> }>).find((x) => x.name === name);
     if (!t) throw new Error(`Tool "${name}" not found in manifest`);
     return t;
   };
-  const READ = ["get_design_system", "lint_design", "get_styles", "get_text_styles"];
+  const READ = ["get_styles", "get_text_styles"];
   const DESTRUCTIVE = ["set_styles", "set_text_styles", "define_component", "extract_component", "detach_instance", "delete_component"];
   const NON_DESTRUCTIVE = ["apply_fill_style", "apply_text_style", "apply_effect_style"];
 
@@ -203,8 +203,6 @@ describe("tool manifest — design system / style / component tools", () => {
   });
 
   it("required arguments match the backend shapes", () => {
-    expect(byName("get_design_system").inputSchema.required ?? []).toEqual([]);
-    expect(byName("lint_design").inputSchema.required ?? []).toEqual([]);
     expect(byName("set_text_styles").inputSchema.required).toEqual(["textStyles"]);
     expect(byName("apply_fill_style").inputSchema.required).toEqual(["nodeIds", "styleId"]);
     expect(byName("apply_text_style").inputSchema.required).toEqual(["nodeIds", "textStyleId"]);
