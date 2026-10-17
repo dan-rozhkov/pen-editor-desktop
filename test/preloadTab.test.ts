@@ -153,3 +153,44 @@ describe("preload/tab.ts browser checkpoint journal commands", () => {
     expect(invokeMock).toHaveBeenCalledWith("browser:command", { command: "captureCheckpoint", args: { token: "tok" } });
   });
 });
+
+describe("preload/tab.ts isolated browser sessions", () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue("ok");
+    exposedApi = undefined;
+    await import("../src/preload/tab");
+  });
+
+  it("the shared browser sends no session key", async () => {
+    await exposedApi.browser.open({ url: "https://a.test" });
+    expect(invokeMock.mock.calls[0][1]).toEqual({ command: "open", args: { url: "https://a.test" } });
+    expect("session" in invokeMock.mock.calls[0][1]).toBe(false);
+  });
+
+  it("isolated(id) has every method of browser and tags each call with the session", async () => {
+    const iso = exposedApi.browser.isolated("run-1");
+    const methods = [
+      "open", "act", "findImages", "snapshot", "perform", "read", "screenshot", "tabs", "capture",
+      "applyFixture", "releaseFixture", "fillLogin", "startJournal", "stopJournal", "captureCheckpoint",
+    ];
+    for (const m of methods) expect(typeof iso[m], m).toBe("function");
+    for (const m of methods) {
+      invokeMock.mockClear();
+      await iso[m]({});
+      expect(invokeMock.mock.calls[0][0]).toBe("browser:command");
+      expect(invokeMock.mock.calls[0][1]).toMatchObject({ command: m, session: "run-1" });
+    }
+  });
+
+  it("isolated(undefined) still carries a session key, so main rejects it instead of using the shared browser", async () => {
+    await exposedApi.browser.isolated(undefined).snapshot();
+    expect("session" in invokeMock.mock.calls[0][1]).toBe(true);
+  });
+
+  it("closeSession sends the closeSession command", async () => {
+    await exposedApi.browser.closeSession("run-1");
+    expect(invokeMock).toHaveBeenCalledWith("browser:command", { command: "closeSession", session: "run-1" });
+  });
+});

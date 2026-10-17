@@ -12,6 +12,9 @@ export interface JournalController {
   captureCheckpoint(token?: string): Promise<unknown>;
 }
 
+/** Fixed answer when the caller does not own a running journal (also used by isolated sessions). */
+export const ERR_NO_JOURNAL = "no checkpoint journal owned by this editor tab";
+
 /** A journal older than this may be taken over (browse subagent deadline is 15 min). */
 export const JOURNAL_STALE_MS = 20 * 60 * 1000;
 
@@ -86,7 +89,7 @@ export class JournalOwners {
 
   async capture(sender: number, token: string | undefined): Promise<unknown> {
     if (token === undefined || !this.owns(sender, token)) {
-      return { ok: false, error: "no checkpoint journal owned by this editor tab" };
+      return { ok: false, error: ERR_NO_JOURNAL };
     }
     return this.controller.captureCheckpoint(token);
   }

@@ -103,7 +103,7 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below
 - `mcp:call` main→tab only (`{callId, tool, args}`)
 - `mcp:result` tab→main (`{callId, type: "tool_result" | "tool_error", result?, error?}`)
-- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture" | "applyFixture" | "releaseFixture" | "fillLogin" | "startJournal" | "stopJournal" | "captureCheckpoint", args}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; see "Built-in browser tab" below
+- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture" | "applyFixture" | "releaseFixture" | "fillLogin" | "startJournal" | "stopJournal" | "captureCheckpoint" | "closeSession", args, session?}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; `session` (optional) routes to an isolated session, `closeSession` ends one (no new channel); see "Built-in browser tab" and "Isolated sessions" below
 - `passwords:list` / `passwords:add` / `passwords:update` / `passwords:remove` / `passwords:never-remove` Passwords window→main, **invoke/handle**, each sender-checked against that window's own webContents; handlers are registered when the window opens and removed when it closes. No reply ever holds a password — see "Saved logins" below
 - `passwords:theme` main→Passwords window, payload `{ theme: "light" | "dark", vibrancyMatches: boolean }`. `theme` is the tab-bar theme (`tabbar:theme`) of the main window the user focused last (BaseWindow `focus`; each window's push is kept under its own key in `themeSource.ts`). If that window is closed or none was focused yet, the latest push of any open main window applies; with none left it follows `nativeTheme` again. `vibrancyMatches` is false when `theme` differs from the OS appearance: macOS sidebar vibrancy follows the OS, so the renderer then paints the sidebar opaque (`data-opaque-sidebar`). Pushed on window load and whenever the effective `{theme, vibrancyMatches}` changes (an unchanged value is not re-sent)
 - `passwords:changed` main→Passwords window, no payload. Sent when a site icon was stored (favicon fetched). The renderer re-reads `passwords:list` and refreshes the sidebar, rows and, in view mode only, the detail pane; an open Add/Edit form is never rebuilt
@@ -184,15 +184,16 @@ shows the agent's cursor arrow before that tab's title (blue on the active
 tab, pale grey on an inactive one, no animation; editor tabs never). Only
 page-driving `browser:command`s count (`isAgentPageCommand` in
 `src/main/agentActivity.ts`: not journal/checkpoint/`releaseFixture`, not
-`tabs` `list`, not unknown commands). `window.ts` calls `tabs.markAgentTab(...)`
-with the tab the command drove, at command start and again in `finally`
-(so `tabs new`/`switch` and popups show on the new tab), and
-`begin()`/`end()` on the pure `agentActivity` tracker, which counts in-flight
-commands and holds "working" for `AGENT_ACTIVITY_IDLE_MS` (4s) so the icon
-does not flicker while the LLM thinks between steps; after `dispose()` it
-ignores late calls. `TabManager` turns this into `TabsSnapshot.agentTabId`:
-the marked tab while working and still a live browser tab, otherwise null.
-There is no fallback: closing that tab clears the icon, and user tab switches
+`tabs` `list`, not unknown commands). `window.ts` calls `begin(tabId)`/`end(tabId)` on the
+pure per-tab tracker (`createTabAgentActivity`) with the tab the command
+started on, and `pulse(tabId)` on the tab it landed on if that differs
+(`tabs new`/`switch`, popups). Each tab has its own in-flight count and holds
+"working" for `AGENT_ACTIVITY_IDLE_MS` (4s) so the icon does not flicker while
+the LLM thinks between steps, so parallel isolated sessions light their own
+tabs and one finishing never clears another's; a session with no tab yet marks
+nothing. `TabManager.setAgentTabWorking` turns this into
+`TabsSnapshot.agentTabIds`: the marked tabs that are still live browser tabs.
+There is no fallback: closing a tab clears its icon, and user tab switches
 do not move it until the next agent command. It rides on `tabbar:state` (no
 extra IPC channel). The renderer draws the same arrow geometry as the in-page
 cursor from `@sideform/browser-agent`, plus a visually hidden "Agent is
@@ -447,12 +448,13 @@ message }`, message trimmed to 200 chars, capped at `DIALOG_QUEUE_CAP` (10)
 can't grow this unboundedly) that `drainDialogs()` empties.
 
 Review finding 3: auto-handling only ever applies **while an agent browser
-command is actually in flight.** `window.ts` keeps a plain, window-scoped
-`browserCommandsInFlight` counter, incremented/decremented around the whole
-`onBrowserCommand` dispatch (every `browser:command` IPC call — `try`/
+command is actually in flight.** `window.ts` keeps a window-scoped `ScopeCounter`
+(`commandsInFlight`, per scope: the shared browser or one isolated session),
+incremented/decremented around the whole command dispatch (`try`/
 `finally` so a throwing command can't leave it stuck above zero);
-`Page.javascriptDialogOpening`'s handler checks `isAgentCommandInFlight()`
-first and, outside a command, returns without calling
+`Page.javascriptDialogOpening`'s handler checks `commandsInFlight.active(<the
+tab's own scope>)` — a session command never auto-answers a dialog in a tab the
+user browses — and, outside a command, returns without calling
 `Page.handleJavaScriptDialog` or queuing anything at all — the user sees and
 answers that dialog themselves, the same as in any other browser. Before
 this fix, *any* JS dialog on a browser tab — including one the user
@@ -732,3 +734,92 @@ as `releaseFixture()`: `render-process-gone`, main-frame non-same-document
 `did-start-navigation` (also fires on a tab's first load; harmless, the tab owns
 nothing yet), and destroy of an editor tab. It stops only the journals that tab
 owns, with their tokens. Never for browser tabs.
+
+## Isolated sessions (`browser.isolated(id)` / `browser.closeSession(id)`)
+
+Design: `docs/superpowers/specs/2026-10-17-isolated-parallel-browse-design.md`
+("Desktop contract"). A private browser per QA run so several run at once
+without sharing cookies, tabs, fixtures or mocks. The shared browser
+(`browser.*` without `isolated`) is unchanged.
+
+- **API** (`src/preload/tab.ts`): `browser.isolated(id)` returns the same methods
+  as `browser`, each call adding `session: id` to the `browser:command` payload
+  (contextBridge proxies the returned object, e2e-verified). `isolated(undefined)`
+  still sends the key, so main rejects it: a lost id never falls back to the
+  shared browser. `browser.closeSession(id)` sends `{command: "closeSession", session}`.
+- **Every decision is pure** in `src/main/browserSessions.ts` (`window.ts` only
+  adapts Electron): id pattern `^[A-Za-z0-9_-]{1,64}$` (key present with a bad
+  value is an error, key absent is shared); `planSessionCommand` (what a command
+  gets given the session's state: unknown command, foreign, missing, closed,
+  live); `PartitionPool`; `BrowserSessions` (ownership, in-flight tracking,
+  tombstones, orphan lookup); `ScopeCounter`.
+- **Which commands create.** Only `open`, `tabs` with `action: "new"`,
+  `applyFixture`, `startJournal`. Any other command on a missing session →
+  `{error: "no such browser session"}`; `releaseFixture`/`stopJournal`/
+  `captureCheckpoint` answer naturally (`{ok:true}`, `false`, `{ok:false,error}`
+  with the shared `ERR_NO_JOURNAL`). Unknown commands never create. Validation
+  happens before any partition is taken.
+- **Tombstones.** `closeSession` (also for an id that never existed or is still
+  waiting for a slot) remembers the id (tombstones are keyed by (owner editor tab, id), so one
+  tab's close never blocks another tab's id, and are dropped when the owner is
+  destroyed, not on reload; cap 10 000, oldest evicted;
+  a creation still waiting for a slot is cancelled by the close): every later command →
+  `{error: "browser session closed"}` (cleanup commands keep their natural
+  answers). A closed id is never recreated; run ids are unique per run.
+- **Partition pool (app-global, all windows).** 6 slots `qa-0`..`qa-5`, memory
+  only (no `persist:`); `denyAllPermissions` once per slot. A session takes a free
+  slot; on close the partition is wiped (`clearStorageData` + `clearCache`) and
+  only then the slot returns. Cap = pool size. With no free slot the creating
+  command waits FIFO up to 60 s (`PEN_DESKTOP_SESSION_SLOT_WAIT_MS` overrides, for
+  tests), then `{error: "too many parallel browser sessions"}`.
+- **Per-session state:** its own `BrowserController` (built by the same
+  `makeController` factory as the shared one), `BrowserTarget`, `FetchRouter`
+  (a mock never touches another session or the shared tabs) and `JournalOwners`
+  (the shared journal guard is skipped). `fresh` clears only that partition.
+- **Pending creation counts as existing.** A command arriving while the session is
+  still being created waits for it (`stateOf` → `pending`). A throwing create
+  releases the slot and gives the creator and every waiter `{error: "could not
+  create browser session"}`.
+- **One command list.** `src/main/browserCommands.ts` (`BROWSER_COMMANDS`,
+  `PAGE_DRIVING_COMMANDS`) feeds the session planner and the agent-activity icon;
+  `test/ipcContract.test.ts` pins the `window.ts` dispatch switch and the preload
+  to it.
+- **Tab scoping.** `TabEntry.session` + a `scope` argument on every browser-tab
+  lookup in `TabManager` (undefined = shared). A scope never sees another
+  scope's tabs and the agent pin is per scope, so the shared agent cannot drive a
+  session tab and vice versa. A popup of a session tab opens in the same session and is loaded through ITS OWN
+  handle (it is a background tab, so the active tab is the editor or the user's
+  browser). `tabs switch` in a session only repoints that session's agent tab (no
+  activate/focus). A user click or tab-cycle on a session tab does not repoint the
+  session's agent tab (only shared tabs follow the user's focus). Closing the active
+  tab never auto-activates a session tab: with only session tabs left an editor tab
+  is respawned.
+- **Background tabs.** A session tab never becomes active and gets no address-bar
+  focus (`setVisible(false)`); the editor keeps focus. The user clicks it to
+  watch. A hidden session tab still screenshots. Shared tabs behave as before.
+- **No saved logins:** `fillLogin` in a session → `saved logins are not available
+  in an isolated session`; save-password capture and the favicon cache are not
+  installed on session tabs.
+- **Ownership:** a session belongs to the editor tab that created it; any other
+  editor tab gets `{error}`.
+- **Close** (idempotent; a second `closeSession` returns the SAME promise, resolved
+  when teardown finished; `BrowserSessions.close`): the owner is checked first (a
+  non-owner closes and tombstones nothing), then tombstone → wait for in-flight
+  commands (30 s) → if still running, close the session's tabs FIRST (unblocks stuck
+  commands) and wait once more (30 s) → release fixture, stop journal, close tabs and
+  wait until every session webContents is really destroyed → `closeAllConnections`,
+  `clearStorageData`, `clearCache`, `clearAuthCache`, `clearHostResolverCache`, then
+  verify `ses.cookies.get({})` is empty → return the slot. Commands still stuck after
+  the second wait, a failed wipe step, a leftover cookie or a failed destroy
+  **quarantine the slot** for the rest of the app run (logged); the session itself is
+  dropped from the registry (controller and router freed) and does not count in `size`.
+  A slot whose deny-all permission policy threw (`SlotUnusableError`) is quarantined
+  too: the policy is marked only after it worked. Once closing, a command or popup can
+  no longer open a tab for the session (`requireLiveSession`). Orphans (owner
+  `did-start-navigation`, `render-process-gone`, destroy) close all the owner's
+  sessions, including ones still waiting for a slot (the waiter leaves the pool queue
+  and the creating command gets `browser session closed`), next to `releaseFixture`.
+- Tests: `test/browserSessions.test.ts`, the scope/background blocks in
+  `test/tabManager.test.ts`, `createTabAgentActivity` in `test/agentActivity.test.ts`,
+  the `isolated` block in `test/preloadTab.test.ts`, the command check in
+  `test/ipcContract.test.ts`, and `e2e/browser-sessions.spec.ts`.

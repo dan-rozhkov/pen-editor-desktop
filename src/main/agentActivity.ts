@@ -8,21 +8,11 @@
  * keeps the icon steady in the gaps between browse steps while the LLM
  * thinks, instead of flickering on every command.
  */
+import { PAGE_DRIVING_COMMANDS } from "./browserCommands";
+
 export const AGENT_ACTIVITY_IDLE_MS = 4000;
 
-const PAGE_COMMANDS = new Set([
-  "open",
-  "act",
-  "findImages",
-  "snapshot",
-  "perform",
-  "read",
-  "screenshot",
-  "tabs",
-  "capture",
-  "applyFixture",
-  "fillLogin",
-]);
+const PAGE_COMMANDS = PAGE_DRIVING_COMMANDS;
 
 /**
  * Whether a `browser:command` drives a page and so counts as agent activity.
@@ -93,6 +83,65 @@ export function createAgentActivity(opts: AgentActivityOptions): AgentActivity {
     dispose() {
       disposed = true;
       cancelTimer();
+    },
+  };
+}
+
+export interface TabAgentActivityOptions extends Omit<AgentActivityOptions, "onChange"> {
+  onChange: (tabId: number, working: boolean) => void;
+}
+
+export interface TabAgentActivity {
+  begin(tabId: number): void;
+  end(tabId: number): void;
+  /** begin + end: shows the icon on a tab the agent just landed on (new/switch/popup). */
+  pulse(tabId: number): void;
+  dispose(): void;
+}
+
+/**
+ * One activity tracker per browser tab, each with its own in-flight count and
+ * idle hold, so parallel runs (isolated sessions) light up their own tabs and
+ * one finishing never clears another's icon.
+ */
+export function createTabAgentActivity(opts: TabAgentActivityOptions): TabAgentActivity {
+  const perTab = new Map<number, AgentActivity>();
+  let disposed = false;
+  const get = (tabId: number): AgentActivity => {
+    let a = perTab.get(tabId);
+    if (!a) {
+      const created: AgentActivity = createAgentActivity({
+        ...opts,
+        onChange: (working) => {
+          opts.onChange(tabId, working);
+          if (!working) {
+            created.dispose();
+            if (perTab.get(tabId) === created) perTab.delete(tabId);
+          }
+        },
+      });
+      perTab.set(tabId, created);
+      a = created;
+    }
+    return a;
+  };
+  return {
+    begin: (id) => {
+      if (!disposed) get(id).begin();
+    },
+    end: (id) => {
+      if (!disposed) get(id).end();
+    },
+    pulse: (id) => {
+      if (disposed) return;
+      const a = get(id);
+      a.begin();
+      a.end();
+    },
+    dispose: () => {
+      disposed = true;
+      for (const a of perTab.values()) a.dispose();
+      perTab.clear();
     },
   };
 }

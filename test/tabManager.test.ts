@@ -597,7 +597,7 @@ describe("resolveMcpActiveTab", () => {
   });
 });
 
-describe("agentTabId", () => {
+describe("agentTabIds", () => {
   function make() {
     const states: TabsSnapshot[] = [];
     let n = 1;
@@ -613,75 +613,60 @@ describe("agentTabId", () => {
     return { tm, states };
   }
 
-  it("is null when the agent is not working", () => {
+  it("is empty when no tab is marked", () => {
     const { tm } = make();
     tm.newTab();
-    const b = tm.newTab("browser");
-    tm.markAgentTab(b);
-    expect(tm.getSnapshot().agentTabId).toBeNull();
+    tm.newTab("browser");
+    expect(tm.getSnapshot().agentTabIds).toEqual([]);
   });
 
-  it("is the marked browser tab while working", () => {
+  it("lists every marked browser tab, each cleared on its own", () => {
     const { tm } = make();
     tm.newTab();
-    const b = tm.newTab("browser");
-    tm.markAgentTab(b);
-    tm.newTab();
-    tm.setAgentWorking(true);
-    expect(tm.getSnapshot().agentTabId).toBe(b);
-    tm.setAgentWorking(false);
-    expect(tm.getSnapshot().agentTabId).toBeNull();
+    const b1 = tm.newTab("browser");
+    const b2 = tm.newTab("browser", "s");
+    tm.setAgentTabWorking(b1, true);
+    tm.setAgentTabWorking(b2, true);
+    expect(tm.getSnapshot().agentTabIds).toEqual([b1, b2]);
+    tm.setAgentTabWorking(b1, false);
+    expect(tm.getSnapshot().agentTabIds).toEqual([b2]);
   });
 
-  it("is null when the agent's tab is closed and no browser tab remains", () => {
-    const { tm } = make();
-    tm.newTab();
-    const b = tm.newTab("browser");
-    tm.markAgentTab(b);
-    tm.setAgentWorking(true);
-    tm.closeTab(b);
-    expect(tm.getSnapshot().agentTabId).toBeNull();
-  });
-
-  it("is null, not another browser tab, when the agent's tab is closed", () => {
+  it("drops a tab that closes, without moving the mark to another tab", () => {
     const { tm } = make();
     const b1 = tm.newTab("browser");
     const b2 = tm.newTab("browser");
-    tm.markAgentTab(b1);
-    tm.setAgentWorking(true);
+    tm.setAgentTabWorking(b1, true);
     tm.closeTab(b1);
     expect(tm.getSnapshot().tabs.some((t) => t.id === b2)).toBe(true);
-    expect(tm.getSnapshot().agentTabId).toBeNull();
+    expect(tm.getSnapshot().agentTabIds).toEqual([]);
   });
 
   it("does not move when the user activates another browser tab", () => {
     const { tm } = make();
     const b1 = tm.newTab("browser");
     const b2 = tm.newTab("browser");
-    tm.markAgentTab(b1);
-    tm.setAgentWorking(true);
+    tm.setAgentTabWorking(b1, true);
     tm.activate(b2);
-    expect(tm.getSnapshot().agentTabId).toBe(b1);
+    expect(tm.getSnapshot().agentTabIds).toEqual([b1]);
   });
 
-  it("is null when there is no browser tab at all", () => {
+  it("ignores an editor tab", () => {
     const { tm } = make();
     const e = tm.newTab();
-    tm.markAgentTab(e);
-    tm.setAgentWorking(true);
-    expect(tm.getSnapshot().agentTabId).toBeNull();
+    tm.setAgentTabWorking(e, true);
+    expect(tm.getSnapshot().agentTabIds).toEqual([]);
   });
 
-  it("emits only when the working flag or marked tab changes", () => {
+  it("emits only on change", () => {
     const { tm, states } = make();
     const b = tm.newTab("browser");
     const before = states.length;
-    tm.setAgentWorking(true);
-    tm.setAgentWorking(true);
-    tm.markAgentTab(b);
-    tm.markAgentTab(b);
+    tm.setAgentTabWorking(b, true);
+    tm.setAgentTabWorking(b, true);
+    tm.setAgentTabWorking(b, false);
+    tm.setAgentTabWorking(b, false);
     expect(states.length).toBe(before + 2);
-    expect(states[states.length - 1].agentTabId).toBe(b);
   });
 });
 
@@ -755,7 +740,7 @@ describe("shouldFocusAddressBar", () => {
     activeTheme: null,
     mcpStatus: "off",
     mcpActiveWebContentsId: 1,
-    agentTabId: null,
+    agentTabIds: [],
   };
 
   const emptyBrowserSnapshot: TabsSnapshot = {
@@ -768,7 +753,7 @@ describe("shouldFocusAddressBar", () => {
     activeTheme: null,
     mcpStatus: "off",
     mcpActiveWebContentsId: 1,
-    agentTabId: null,
+    agentTabIds: [],
   };
 
   it("is true on editor -> empty-URL browser tab activation", () => {
@@ -812,5 +797,137 @@ describe("shouldFocusAddressBar", () => {
       ],
     };
     expect(shouldFocusAddressBar(emptyBrowserSnapshot, titleChanged)).toBe(false);
+  });
+});
+
+describe("TabManager scopes (isolated browser sessions)", () => {
+  let sessionsSeen: (string | undefined)[];
+  let tm: TabManager;
+
+  beforeEach(() => {
+    sessionsSeen = [];
+    let wc = 1;
+    tm = new TabManager({
+      createView: (_kind: TabKind, session?: string) => {
+        sessionsSeen.push(session);
+        const v = makeFakeView();
+        v.getWebContentsId.mockReturnValue(wc++);
+        return v;
+      },
+      editorUrl: "https://pen-editor.onrender.com",
+      onStateChanged: () => {},
+    });
+    tm.newTab("editor");
+  });
+
+  it("passes the session to createView for browser tabs only", () => {
+    tm.newTab("browser", "a");
+    tm.newTab("browser");
+    tm.newTab("editor", "a");
+    expect(sessionsSeen).toEqual([undefined, "a", undefined, undefined]);
+  });
+
+  it("the shared browser never sees a session tab, and a session never sees the shared ones", () => {
+    const shared = tm.newTab("browser");
+    const a = tm.newTab("browser", "a");
+    const b = tm.newTab("browser", "b");
+    expect(tm.listBrowserTabs().map((t) => t.tabId)).toEqual([shared]);
+    expect(tm.listBrowserTabs("a").map((t) => t.tabId)).toEqual([a]);
+    expect(tm.listBrowserTabs("b").map((t) => t.tabId)).toEqual([b]);
+    // b is the ACTIVE tab, yet the shared lookup still resolves its own tab.
+    expect(tm.currentBrowserTabId()).toBe(shared);
+    expect(tm.currentBrowserTabId("a")).toBe(a);
+    expect(tm.browserHandle("a")).toBe(tm.browserTabHandleById(a, "a"));
+    expect(tm.browserTabHandleById(a)).toBeNull();
+    expect(tm.browserTabHandleById(shared, "a")).toBeNull();
+  });
+
+  it("a session tab opens in the background: no activation, hidden, active tab unchanged", () => {
+    const editorId = tm.getSnapshot().activeId;
+    const before = tm.count();
+    const a = tm.newTab("browser", "a");
+    expect(tm.count()).toBe(before + 1);
+    expect(tm.getSnapshot().activeId).toBe(editorId);
+    expect(tm.getSnapshot().activeKind).toBe("editor");
+    // Clicking it makes it the active tab.
+    tm.activate(a);
+    expect(tm.getSnapshot().activeId).toBe(a);
+  });
+
+  it("closing the active tab never auto-activates a session tab when a normal neighbour exists", () => {
+    const editor = tm.getSnapshot().activeId!;
+    tm.newTab("browser", "a"); // background, right after the editor
+    const shared = tm.newTab("browser"); // active
+    tm.newTab("browser", "b");
+    tm.closeTab(shared);
+    expect(tm.getSnapshot().activeId).toBe(editor);
+  });
+
+  it("a shared browser tab still activates", () => {
+    const b = tm.newTab("browser");
+    expect(tm.getSnapshot().activeId).toBe(b);
+  });
+
+  it("an unknown session has no current tab", () => {
+    tm.newTab("browser");
+    expect(tm.currentBrowserTabId("nope")).toBeNull();
+    expect(tm.browserHandle("nope")).toBeNull();
+  });
+
+  it("pins the agent tab per scope and ignores a pin that points into another scope", () => {
+    const a1 = tm.newTab("browser", "a");
+    const a2 = tm.newTab("browser", "a");
+    const shared = tm.newTab("browser");
+    tm.setAgentBrowserTabId(a1, "a");
+    expect(tm.currentBrowserTabId("a")).toBe(a1);
+    expect(tm.currentBrowserTabId()).toBe(shared);
+    // A session id pinned as the SHARED agent tab does not resolve.
+    tm.setAgentBrowserTabId(a2);
+    expect(tm.currentBrowserTabId()).toBe(shared);
+  });
+
+  it("a user click or cycle on a session tab does not repoint the session's agent tab", () => {
+    const a1 = tm.newTab("browser", "a");
+    const a2 = tm.newTab("browser", "a");
+    const shared = tm.newTab("browser");
+    tm.setAgentBrowserTabId(a2, "a");
+    tm.setAgentBrowserTabId(shared);
+    tm.activate(a1);
+    expect(tm.currentBrowserTabId("a")).toBe(a2);
+    expect(tm.currentBrowserTabId()).toBe(shared);
+    tm.activate(shared);
+    tm.nextTab();
+    tm.nextTab();
+    expect(tm.currentBrowserTabId("a")).toBe(a2);
+  });
+
+  it("when only session tabs would remain, closing the active tab respawns an editor tab instead of activating one", () => {
+    // [editor, session a] with the editor active: close the editor.
+    const editor = tm.getSnapshot().activeId!;
+    const a = tm.newTab("browser", "a");
+    tm.closeTab(editor);
+    const snap = tm.getSnapshot();
+    expect(snap.activeKind).toBe("editor");
+    expect(snap.activeId).not.toBe(a);
+    expect(snap.tabs.filter((t) => t.kind === "editor")).toHaveLength(1);
+  });
+
+  it("closeSessionTabs closes only that session's tabs", () => {
+    const shared = tm.newTab("browser");
+    tm.newTab("browser", "a");
+    tm.newTab("browser", "a");
+    const b = tm.newTab("browser", "b");
+    tm.closeSessionTabs("a");
+    expect(tm.listBrowserTabs("a")).toEqual([]);
+    expect(tm.listBrowserTabs().map((t) => t.tabId)).toEqual([shared]);
+    expect(tm.listBrowserTabs("b").map((t) => t.tabId)).toEqual([b]);
+  });
+
+  it("closing a pinned session tab clears the pin", () => {
+    const a1 = tm.newTab("browser", "a");
+    const a2 = tm.newTab("browser", "a");
+    tm.setAgentBrowserTabId(a1, "a");
+    tm.closeTab(a1);
+    expect(tm.currentBrowserTabId("a")).toBe(a2);
   });
 });

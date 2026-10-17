@@ -274,13 +274,11 @@ export interface TabsSnapshot {
    */
   mcpActiveWebContentsId: number | null;
   /**
-   * The browser tab the agent is driving right now, or null. Drives the
-   * agent-cursor icon in the tab strip. Set only while `setAgentWorking(true)`
-   * is in effect and the tab last marked via `markAgentTab` is still a live
-   * browser tab. Closing it yields null (no jump to another tab); user tab
-   * switches do not move it.
+   * The browser tabs the agent is driving right now (agent-cursor icon). A tab
+   * is in the set from `setAgentTabWorking(id, true)` until it is cleared or
+   * closed. Several at once when isolated sessions run in parallel.
    */
-  agentTabId: number | null;
+  agentTabIds: number[];
   /**
    * True exactly when this specific push should move OS/DOM focus into the
    * tab bar's address input. Never set by TabManager itself — `getSnapshot()`
@@ -302,6 +300,8 @@ interface TabEntry {
   url?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
+  /** Isolated browser session this tab belongs to (browser tabs only); undefined = the shared browser. */
+  session?: string;
 }
 
 /**
@@ -324,10 +324,8 @@ export class TabManager {
    * is ever destroyed — see the doc comment on `TabsSnapshot.mcpActiveWebContentsId`.
    */
   private lastEditorWebContentsId: number | null = null;
-  /** The browser tab the agent's last page command drove (icon target). */
-  private agentActivityTabId: number | null = null;
-  /** Whether the agent is mid-session in the browser (see agentActivity.ts). */
-  private agentWorking = false;
+  /** Browser tabs the agent is working in (icon targets; see agentActivity.ts). */
+  private readonly agentWorkingTabs = new Set<number>();
   private lastLayout: { content: { width: number; height: number }; tabbarHeight: number; edge: number } | null =
     null;
   /**
@@ -347,20 +345,29 @@ export class TabManager {
    * fallback rule already covers "no explicit agent tab".
    */
   private agentBrowserTabId: number | null = null;
+  /**
+   * The same pin per isolated browser session (session id -> TabManager id).
+   * Every browser-tab lookup below takes a `scope`: undefined is the shared
+   * browser, a string is one session. A scope never sees another scope's tabs,
+   * so the shared agent cannot drive a session tab and a session cannot drive
+   * the user's tabs.
+   */
+  private readonly sessionAgentTabIds = new Map<string, number>();
 
   constructor(
     private readonly opts: {
-      createView: (kind: TabKind) => TabViewHandle;
+      createView: (kind: TabKind, session?: string) => TabViewHandle;
       editorUrl: string;
       onStateChanged: (s: TabsSnapshot) => void;
     },
   ) {}
 
-  newTab(kind: TabKind = "editor"): number {
+  newTab(kind: TabKind = "editor", session?: string): number {
     const id = this.nextId++;
-    const view = this.opts.createView(kind);
+    const view = this.opts.createView(kind, kind === "browser" ? session : undefined);
     const entry: TabEntry = {
       id,
+      session: kind === "browser" ? session : undefined,
       title: kind === "browser" ? "New Tab" : "Untitled",
       kind,
       view,
@@ -403,7 +410,14 @@ export class TabManager {
     }
     this.tabs.push(entry);
     if (this.lastLayout) this.applyLayout(entry);
-    this.setActive(id);
+    if (kind === "browser" && session !== undefined) {
+      // An isolated session's tab opens in the BACKGROUND: the editor keeps
+      // focus and the active tab. The user can click it to watch.
+      view.setVisible(false);
+      this.emit();
+    } else {
+      this.setActive(id);
+    }
     return id;
   }
 
@@ -422,12 +436,19 @@ export class TabManager {
       this.lastEditorWebContentsId = other ? other.view.getWebContentsId() : null;
     }
     if (this.agentBrowserTabId === id) this.agentBrowserTabId = null;
-    if (this.agentActivityTabId === id) this.agentActivityTabId = null;
-    if (this.tabs.length === 0) {
+    for (const [sid, tid] of this.sessionAgentTabIds) if (tid === id) this.sessionAgentTabIds.delete(sid);
+    this.agentWorkingTabs.delete(id);
+    const isSession = (t: TabEntry) => t.kind === "browser" && t.session !== undefined;
+    // "Last tab closed" also covers: only background session tabs remain, which
+    // are never auto-activated. An editor tab is respawned instead.
+    if (this.tabs.length === 0 || (this.activeId === id && this.tabs.every(isSession))) {
       this.activeId = null;
       this.newTab("editor"); // newTab emits — closing the last tab always respawns an editor tab.
     } else if (this.activeId === id) {
-      const neighbor = this.tabs[Math.max(0, idx - 1)];
+      // Never auto-activate a session tab (they live in the background).
+      const before = this.tabs.slice(0, idx).reverse();
+      const after = this.tabs.slice(idx);
+      const neighbor = before.find((t) => !isSession(t)) ?? after.find((t) => !isSession(t))!;
       this.setActive(neighbor.id); // setActive emits
     } else {
       this.emit();
@@ -460,7 +481,9 @@ export class TabManager {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab) return;
     this.setActive(id);
-    if (tab.kind === "browser") this.agentBrowserTabId = id;
+    // Only the shared browser follows the user's focus; a session's agent tab is
+    // repointed by the session's own commands, never by a click.
+    if (tab.kind === "browser" && tab.session === undefined) this.pinAgentTab(undefined, id);
   }
 
   nextTab(): void {
@@ -492,8 +515,8 @@ export class TabManager {
    * null when no browser tab is open (design doc §1/§3 — read-only browser
    * commands fail cleanly in that last case, and `ensurePage()` creates one).
    */
-  browserHandle(): BrowserTabHandle | null {
-    const id = this.resolveBrowserTabId();
+  browserHandle(scope?: string): BrowserTabHandle | null {
+    const id = this.resolveBrowserTabId(scope);
     return id === null ? null : (this.tabs.find((t) => t.id === id)?.view ?? null);
   }
 
@@ -507,19 +530,34 @@ export class TabManager {
    * two callers needed the id specifically — factored out here rather than
    * duplicated so the two can never drift from `browserHandle()`'s own
    * resolution rule. */
-  currentBrowserTabId(): number | null {
-    return this.resolveBrowserTabId();
+  currentBrowserTabId(scope?: string): number | null {
+    return this.resolveBrowserTabId(scope);
   }
 
-  private resolveBrowserTabId(): number | null {
-    if (this.agentBrowserTabId !== null) {
-      const agent = this.tabs.find((t) => t.id === this.agentBrowserTabId && t.kind === "browser");
+  private inScope(t: TabEntry, scope: string | undefined): boolean {
+    return t.kind === "browser" && t.session === scope;
+  }
+
+  private pinnedAgentTab(scope: string | undefined): number | null {
+    return scope === undefined ? this.agentBrowserTabId : (this.sessionAgentTabIds.get(scope) ?? null);
+  }
+
+  private pinAgentTab(scope: string | undefined, id: number | null): void {
+    if (scope === undefined) this.agentBrowserTabId = id;
+    else if (id === null) this.sessionAgentTabIds.delete(scope);
+    else this.sessionAgentTabIds.set(scope, id);
+  }
+
+  private resolveBrowserTabId(scope?: string): number | null {
+    const pinned = this.pinnedAgentTab(scope);
+    if (pinned !== null) {
+      const agent = this.tabs.find((t) => t.id === pinned && this.inScope(t, scope));
       if (agent) return agent.id;
     }
     const active = this.tabs.find((t) => t.id === this.activeId);
-    if (active?.kind === "browser") return active.id;
+    if (active && this.inScope(active, scope)) return active.id;
     for (let i = this.tabs.length - 1; i >= 0; i--) {
-      if (this.tabs[i].kind === "browser") return this.tabs[i].id;
+      if (this.inScope(this.tabs[i], scope)) return this.tabs[i].id;
     }
     return null;
   }
@@ -529,28 +567,20 @@ export class TabManager {
    * fallback rule. Passing an id that isn't a live browser tab is silently
    * accepted (mirrors `activate`'s own leniency) — `browserHandle()` simply
    * won't find it and falls through to its existing rule. */
-  setAgentBrowserTabId(id: number | null): void {
-    this.agentBrowserTabId = id;
+  setAgentBrowserTabId(id: number | null, scope?: string): void {
+    this.pinAgentTab(scope, id);
   }
 
-  /** Records which browser tab the agent's command drove, for the tab-strip
-   * icon. Emits only on change. */
-  markAgentTab(id: number | null): void {
-    if (this.agentActivityTabId === id) return;
-    this.agentActivityTabId = id;
+  /** Marks one browser tab as worked on by the agent (or not). Emits only on change. */
+  setAgentTabWorking(id: number, working: boolean): void {
+    if (this.agentWorkingTabs.has(id) === working) return;
+    if (working) this.agentWorkingTabs.add(id);
+    else this.agentWorkingTabs.delete(id);
     this.emit();
   }
 
-  private isLiveBrowserTab(id: number | null): boolean {
-    return id !== null && this.tabs.some((t) => t.id === id && t.kind === "browser");
-  }
-
-  /** Marks the agent as working (or not) in the browser; surfaces as
-   * `TabsSnapshot.agentTabId`. A no-op when unchanged. */
-  setAgentWorking(working: boolean): void {
-    if (this.agentWorking === working) return;
-    this.agentWorking = working;
-    this.emit();
+  private isLiveBrowserTab(id: number): boolean {
+    return this.tabs.some((t) => t.id === id && t.kind === "browser");
   }
 
   /** Full browser use's `tabs` command (@sideform/browser-agent/controller): every
@@ -558,10 +588,10 @@ export class TabManager {
    * agent's *effective* current tab (`browserHandle()`'s own rule, not
    * necessarily the tab strip's `activeId`) — window.ts maps this straight
    * into `BrowserTarget.listPages()`. */
-  listBrowserTabs(): BrowserTabInfo[] {
-    const current = this.browserHandle();
+  listBrowserTabs(scope?: string): BrowserTabInfo[] {
+    const current = this.browserHandle(scope);
     return this.tabs
-      .filter((t) => t.kind === "browser")
+      .filter((t) => this.inScope(t, scope))
       .map((t) => ({
         tabId: t.id,
         url: t.url ?? "",
@@ -575,9 +605,19 @@ export class TabManager {
    * only ever returns *one* tab's handle (the agent's current one); dialog
    * draining needs every open browser tab's own handle, tagged with its id,
    * which this (paired with `listBrowserTabs()`) provides. */
-  browserTabHandleById(id: number): BrowserTabHandle | null {
-    const tab = this.tabs.find((t) => t.id === id && t.kind === "browser");
+  browserTabHandleById(id: number, scope?: string): BrowserTabHandle | null {
+    const tab = this.tabs.find((t) => t.id === id && this.inScope(t, scope));
     return tab ? tab.view : null;
+  }
+
+  /** webContents ids of one session's tabs (so teardown can wait for them to be destroyed). */
+  sessionWebContentsIds(session: string): number[] {
+    return this.tabs.filter((t) => t.kind === "browser" && t.session === session).map((t) => t.view.getWebContentsId());
+  }
+
+  /** Closes every tab of one isolated session (session teardown). */
+  closeSessionTabs(session: string): void {
+    for (const t of this.tabs.filter((x) => x.kind === "browser" && x.session === session)) this.closeTab(t.id);
   }
 
   isEditorTab(webContentsId: number): boolean {
@@ -601,7 +641,7 @@ export class TabManager {
       activeTheme: this.resolveActiveTheme(active),
       mcpStatus: this.mcpStatus,
       mcpActiveWebContentsId: resolveMcpActiveTab(active?.kind ?? null, activeWebContentsId, this.lastEditorWebContentsId),
-      agentTabId: this.agentWorking && this.isLiveBrowserTab(this.agentActivityTabId) ? this.agentActivityTabId : null,
+      agentTabIds: [...this.agentWorkingTabs].filter((id) => this.isLiveBrowserTab(id)),
     };
   }
 
@@ -699,7 +739,7 @@ export class TabManager {
     const idx = this.tabs.findIndex((t) => t.id === this.activeId);
     const next = this.tabs[(idx + delta + this.tabs.length) % this.tabs.length];
     this.setActive(next.id);
-    if (next.kind === "browser") this.agentBrowserTabId = next.id;
+    if (next.kind === "browser" && next.session === undefined) this.pinAgentTab(undefined, next.id);
   }
 
   private setActive(id: number): void {

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { app, BaseWindow, View, WebContentsView, Menu, dialog, ipcMain, nativeTheme, session, shell } from "electron";
+import { app, BaseWindow, View, WebContentsView, Menu, dialog, ipcMain, nativeTheme, session, shell, webContents } from "electron";
 import {
   TabManager,
   shouldFocusAddressBar,
@@ -35,8 +35,36 @@ import { isLoginBindingCall, promptChoiceFromButton, savePromptCopy, type LoginC
 import { normalizeOrigin, type CredentialStore } from "./browser/credentialStore";
 import type { FaviconCache } from "./browser/faviconCache";
 import type { PasswordsWindow } from "./passwordsWindow";
-import { createAgentActivity, isAgentPageCommand } from "./agentActivity";
+import { createTabAgentActivity, isAgentPageCommand } from "./agentActivity";
 import { decideCloseTarget, guardMenuActions } from "./closeTarget";
+import { denyAllPermissions } from "./browser/permissions";
+import {
+  BrowserSessions,
+  ERR_INVALID_SESSION_ID,
+  ERR_SESSION_CLOSED,
+  ERR_SESSION_NOT_OWNED,
+  PartitionPool,
+  SlotUnusableError,
+  ScopeCounter,
+  planSessionCommand,
+  parseSessionId,
+} from "./browserSessions";
+
+/**
+ * App-wide, shared by every window: the partitions `qa-0`..`qa-5` that isolated
+ * sessions take turns in. The wait for a free slot is tunable for tests.
+ */
+const partitionPool = new PartitionPool(undefined, Number(process.env.PEN_DESKTOP_SESSION_SLOT_WAIT_MS) || undefined);
+
+/** Per-session state of an isolated browser session (see browserSessions.ts). */
+interface SessionCtx {
+  ses: Electron.Session;
+  router: FetchRouter;
+  controller: BrowserController;
+  journal: JournalOwners;
+  /** Set when the drain timed out and the tabs were closed early. */
+  tabsClosed?: Promise<boolean>;
+}
 
 /** App-scoped saved-logins services (created once in index.ts, like mcpService). */
 export interface LoginServices {
@@ -287,10 +315,13 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
   // at all — so a dialog that opened while the agent was idle gets resolved
   // (and queued for reporting) the moment the agent's next command starts,
   // rather than hanging that command's own `executeJavaScript` call.
-  let browserCommandsInFlight = 0;
-  // Drives the tab strip's agent-cursor icon; the hold/flicker rules live in agentActivity.ts.
-  const agentActivity = createAgentActivity({ onChange: (working) => tabs.setAgentWorking(working) });
-  const isAgentCommandInFlight = () => browserCommandsInFlight > 0;
+  // Per scope (shared browser / one session): a dialog is auto-handled only
+  // while a command of ITS OWN scope runs, so a session command never answers
+  // a dialog in a tab the user is browsing.
+  const commandsInFlight = new ScopeCounter();
+  // Drives the tab strip's agent-cursor icons, one tracker per tab; the
+  // hold/flicker rules live in agentActivity.ts.
+  const agentActivity = createTabAgentActivity({ onChange: (tabId, working) => tabs.setAgentTabWorking(tabId, working) });
   // Review finding 3: each tab's own dialog queue is capped — an agent loop
   // that never drains it (a crashed/stuck agent, or a page that spams
   // dialogs) must not grow this without bound; the oldest entries are
@@ -319,10 +350,22 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
 
   // --- tabs ---
   const fetchRouter = new FetchRouter();
+  const sessions = new BrowserSessions<SessionCtx>(partitionPool, undefined, (what, err) => console.error(`browser sessions: ${what}`, err));
+  // A session tab is created only for a live session: a late command or popup
+  // of a closing one must not open a tab nobody will close.
+  const requireLiveSession = (id: string) => {
+    const s = sessions.peek(id);
+    if (!s || !sessions.isLive(id)) throw new Error(ERR_SESSION_CLOSED);
+    return s;
+  };
+  // Assigned once the session helpers exist; createView's handlers call it.
+  let closeSessionsOwnedBy: (owner: number, gone?: boolean) => void = () => {};
   const tabs = new TabManager({
     editorUrl,
     onStateChanged: pushState,
-    createView: (kind: TabKind): TabViewHandle => {
+    createView: (kind: TabKind, sessionId?: string): TabViewHandle => {
+      // An isolated session's tab: its own in-memory partition, its own router.
+      const sessionCtx = sessionId ? sessions.peek(sessionId)?.ctx : undefined;
       const view = new WebContentsView(
         kind === "browser"
           ? {
@@ -332,7 +375,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
                 // cookies are never in it, and whatever the user logs into
                 // here is all the agent can ever reach. Deliberately no
                 // preload: a browser tab must never see `penDesktop`.
-                partition: "persist:penbrowser",
+                // An isolated session gets a pool slot `qa-0`..`qa-5` (no `persist:`): memory only.
+                partition: sessionId ? requireLiveSession(sessionId).partition : "persist:penbrowser",
                 contextIsolation: true,
                 nodeIntegration: false,
                 sandbox: true,
@@ -467,7 +511,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
       const tabLoginCapture = loginServices.loginCapture.forTab();
       if (kind === "browser") {
         // Site icon for the Passwords window: the first favicon of a page whose origin has a saved login.
-        view.webContents.on("page-favicon-updated", (_e, favicons) => {
+        if (!sessionId) view.webContents.on("page-favicon-updated", (_e, favicons) => {
           const origin = normalizeOrigin(view.webContents.getURL());
           if (origin) void loginServices.faviconCache.seen(origin, favicons).catch(() => undefined);
         });
@@ -485,8 +529,9 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
             // Save-password prompt (browser/loginCapture.ts). `params` holds the
             // captured password: it goes straight into the handler and nowhere
             // else. The site comes from the payload's own `location.origin`.
+            // Off in an isolated session: the store holds the user's real logins.
             const captureLogin = () =>
-              void tabLoginCapture
+              sessionId ? undefined : void tabLoginCapture
                 .handleCdpEvent(method, params, {
                   send: (m, p) => view.webContents.debugger.sendCommand(m, p),
                   ask: async (req) => {
@@ -532,7 +577,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
               // the agent's *next* command starts, `onBrowserCommand`'s
               // pre-dispatch sweep (via `applyDialogPolicy`) resolves it then
               // instead — see this tab's own `applyDialogPolicy` above.
-              if (isAgentCommandInFlight()) applyDialogPolicy();
+              if (commandsInFlight.active(sessionId)) applyDialogPolicy();
               return;
             }
             // Wave 1 speed: network-quiet settle bookkeeping — see
@@ -562,9 +607,11 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
           // commands are only answered once the first navigation commits, so
           // waiting for them before loadURL() would deadlock. install() covers
           // that first document; Page.frameNavigated covers every later one.
-          tabLoginCapture
-            .install((method, params) => view.webContents.debugger.sendCommand(method, params))
-            .catch(() => console.error("browser tab: save-password capture unavailable for this tab"));
+          if (!sessionId) {
+            tabLoginCapture
+              .install((method, params) => view.webContents.debugger.sendCommand(method, params))
+              .catch(() => console.error("browser tab: save-password capture unavailable for this tab"));
+          }
         } catch (err) {
           debuggerAttached = false;
           console.error("browser tab: debugger attach failed — press/hover/dialogs unavailable for this tab", err);
@@ -577,8 +624,9 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         // Network mocks (PageFixture `network`): a browser tab with a debugger
         // joins the router, which enables Fetch on it while routing is active.
         // Editor tabs never get here.
-        if (debuggerAttached) {
-          unregisterFromFetchRouter = fetchRouter.registerTab(
+        const router = sessionId ? sessionCtx?.router : fetchRouter;
+        if (debuggerAttached && router) {
+          unregisterFromFetchRouter = router.registerTab(
             {
               sendCommand: (method, params) => view.webContents.debugger.sendCommand(method, params),
               onEvent: (cb) => {
@@ -601,6 +649,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         const releaseOrphanedFixture = () => {
           browserController.releaseFixture().catch((err) => console.error("editor tab: releaseFixture failed", err));
           journalOwners.stopOwnedBy(viewId);
+          closeSessionsOwnedBy(viewId);
         };
         view.webContents.on("render-process-gone", releaseOrphanedFixture);
         view.webContents.on("did-start-navigation", (details) => {
@@ -633,6 +682,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         // anyway). Popups open as a new browser tab instead of escaping to
         // the system browser.
         attachBrowserTabPolicy(view.webContents, (url) => {
+          // A popup of a session that is closing is dropped.
+          if (sessionId && !sessions.isLive(sessionId)) return;
           // Review finding 7: only repoint the agent when *this* tab (the
           // one whose popup policy just fired) is the tab the agent is
           // currently driving. Before this check, a popup from *any* browser
@@ -642,7 +693,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
           // today's fallback rule if unset", so comparing against it (rather
           // than agentBrowserTabId directly) covers both cases the same way
           // the rest of this bridge does.
-          const openedByAgentTab = tabs.browserHandle()?.getWebContentsId() === viewId;
+          const openedByAgentTab = tabs.browserHandle(sessionId)?.getWebContentsId() === viewId;
           if (!openedByAgentTab) {
             // Second-pass review finding 2: pin the agent's CURRENT tab id
             // before `newTab` below runs its own `setActive` — which would
@@ -652,16 +703,17 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
             // `browserHandle()`'s "active tab if it's a browser tab" fallback
             // silently follow this popup even though its opener has nothing
             // to do with the agent at all.
-            const currentAgentTabId = tabs.currentBrowserTabId();
-            if (currentAgentTabId !== null) tabs.setAgentBrowserTabId(currentAgentTabId);
+            const currentAgentTabId = tabs.currentBrowserTabId(sessionId);
+            if (currentAgentTabId !== null) tabs.setAgentBrowserTabId(currentAgentTabId, sessionId);
           }
-          const popupId = tabs.newTab("browser");
+          // A popup of a session tab stays in that session (same partition).
+          const popupId = tabs.newTab("browser", sessionId);
           if (openedByAgentTab) {
             // Fixes upstream jev-ultrafast #61: a popup opened from the tab
             // the agent is driving becomes the agent's new current tab, so
             // the very next browser command targets it instead of the tab
             // that spawned it.
-            tabs.setAgentBrowserTabId(popupId);
+            tabs.setAgentBrowserTabId(popupId, sessionId);
           }
           // The popup still becomes the *active* tab in the strip either
           // way (newTab's own setActive call) — only whether the agent
@@ -670,8 +722,10 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
           // agentBrowserTabId — see activate()'s doc comment (finding 4) —
           // so a non-agent popup opens without stealing the agent even
           // though it's now the visibly active tab.
+          // Load through the popup's OWN handle: a session popup opens in the
+          // background, so the active tab is the editor or the user's browser.
           tabs
-            .activeHandle()
+            .browserTabHandleById(popupId, sessionId)
             ?.loadURL(url)
             .catch((err) => console.error("browser tab: popup navigation failed", err));
         });
@@ -760,6 +814,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
             mcpService.unregisterTab(viewId);
             browserController.releaseFixture().catch((err) => console.error("editor tab: releaseFixture failed", err));
             journalOwners.stopOwnedBy(viewId);
+            closeSessionsOwnedBy(viewId, true);
           }
           if (debuggerAttached) {
             try {
@@ -963,9 +1018,12 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     },
   });
 
-  const browserSession = () => session.fromPartition("persist:penbrowser");
   // --- built-in browser (design doc §3/§4, full browser use §"tabs") ---
-  const browserTarget: BrowserTarget = {
+  // One target per scope: the shared browser (`scope` undefined, partition
+  // persist:penbrowser) or one isolated session (a pool slot partition `qa-0`..`qa-5`). A target
+  // sees only the tabs of its own scope (TabManager's `scope` argument), its
+  // own cookie jar and its own network-mock router.
+  const makeBrowserTarget = (scope: string | undefined, ses: Electron.Session, router: FetchRouter): BrowserTarget => ({
     ensurePage: async (): Promise<BrowserPageHandle> => {
       // Second-pass review finding 2: pin agentBrowserTabId even when
       // returning an *existing* tab, not only when creating one — before
@@ -974,41 +1032,45 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
       // tab, and a null agentBrowserTabId is exactly what let a non-agent
       // popup's fallback-tab rule silently steal the agent (see the popup
       // callback above).
-      const existingId = tabs.currentBrowserTabId();
+      const existingId = tabs.currentBrowserTabId(scope);
       if (existingId !== null) {
-        tabs.setAgentBrowserTabId(existingId);
-        const existing = tabs.browserHandle();
+        tabs.setAgentBrowserTabId(existingId, scope);
+        const existing = tabs.browserHandle(scope);
         if (existing) return existing;
       }
-      const id = tabs.newTab("browser");
+      if (scope !== undefined) requireLiveSession(scope);
+      const id = tabs.newTab("browser", scope);
       // A freshly created tab becomes the agent's tab outright — there is
       // no other candidate for browserHandle()'s fallback rule to prefer
       // anyway, but this keeps agentBrowserTabId meaningful from the start
       // rather than only ever being set by a popup or an explicit
       // tabs({action:"switch"|"new"}) call.
-      tabs.setAgentBrowserTabId(id);
-      const created = tabs.browserHandle();
+      tabs.setAgentBrowserTabId(id, scope);
+      const created = tabs.browserHandle(scope);
       if (!created) throw new Error("Failed to create a browser tab.");
       return created;
     },
-    currentPage: (): BrowserPageHandle | null => tabs.browserHandle(),
-    listPages: async () => tabs.listBrowserTabs(),
+    currentPage: (): BrowserPageHandle | null => tabs.browserHandle(scope),
+    listPages: async () => tabs.listBrowserTabs(scope),
     selectPage: async (tabId: number) => {
-      const found = tabs.listBrowserTabs().some((t) => t.tabId === tabId);
+      const found = tabs.listBrowserTabs(scope).some((t) => t.tabId === tabId);
       if (!found) return false;
       // Second-pass review finding 10: `activate()` already sets
       // agentBrowserTabId for a browser tab (see its own doc comment) — the
       // explicit `setAgentBrowserTabId` call that used to follow it here was
       // redundant (tabId is already confirmed to be a browser tab's id, via
       // the `found` check above).
-      tabs.activate(tabId);
+      // A session only repoints its own agent tab: never activate or focus
+      // (the editor keeps the foreground). The shared browser follows the user's focus.
+      if (scope !== undefined) tabs.setAgentBrowserTabId(tabId, scope);
+      else tabs.activate(tabId);
       return true;
     },
     closePage: async (tabId: number) => {
-      // "close only closes browser tabs" — an editor tab id, or any id not
-      // currently open, is rejected rather than silently closing the wrong
-      // kind of tab.
-      const found = tabs.listBrowserTabs().some((t) => t.tabId === tabId);
+      // "close only closes browser tabs" — an editor tab id, a tab of another
+      // scope, or any id not currently open, is rejected rather than silently
+      // closing the wrong tab.
+      const found = tabs.listBrowserTabs(scope).some((t) => t.tabId === tabId);
       if (!found) return false;
       tabs.closeTab(tabId);
       return true;
@@ -1020,34 +1082,36 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     // parameter stays on the `BrowserTarget` interface for shape parity with
     // the other three tab-management methods, but is unused here now.
     newPage: async () => {
-      const id = tabs.newTab("browser");
-      tabs.setAgentBrowserTabId(id);
-      const created = tabs.listBrowserTabs().find((t) => t.tabId === id);
+      if (scope !== undefined) requireLiveSession(scope);
+      const id = tabs.newTab("browser", scope);
+      tabs.setAgentBrowserTabId(id, scope);
+      const created = tabs.listBrowserTabs(scope).find((t) => t.tabId === id);
       return created ?? { tabId: id, url: "", title: "New Tab", current: true };
     },
-    // PageFixture `network`: CDP Fetch on browser tabs only (see fetchRouting.ts).
+    // PageFixture `network`: CDP Fetch on this scope's browser tabs only (see fetchRouting.ts).
     // With no browser tab yet it still returns a remover; tabs opened while
     // routing is active are enabled on creation.
     routeRequests: (handler) => {
       // A tab whose debugger attach failed is never registered: refuse rather
       // than report mocks active that this tab would ignore.
-      fetchRouter.assertCurrentTabInterceptable(tabs.browserHandle()?.getWebContentsId() ?? null);
-      return fetchRouter.routeRequests(handler);
+      router.assertCurrentTabInterceptable(tabs.browserHandle(scope)?.getWebContentsId() ?? null);
+      return router.routeRequests(handler);
     },
-    // PageFixture cookies / `fresh`: the dedicated browser partition only —
-    // never the editor session or the default session (see fixtureSession.ts).
-    getCookies: (urls) => fixtureSession.getCookies(browserSession(), urls),
-    setCookies: (cookies) => fixtureSession.setCookies(browserSession(), cookies),
+    // PageFixture cookies / `fresh`: this scope's partition only — never the
+    // editor session or the default session (see fixtureSession.ts).
+    getCookies: (urls) => fixtureSession.getCookies(ses, urls),
+    setCookies: (cookies) => fixtureSession.setCookies(ses, cookies),
     resetSession: (origins) =>
       fixtureSession.resetSession(
-        browserSession(),
+        ses,
         {
-          listBrowserTabIds: () => tabs.listBrowserTabs().map((t) => t.tabId),
+          listBrowserTabIds: () => tabs.listBrowserTabs(scope).map((t) => t.tabId),
           closeTab: async (id) => {
             tabs.closeTab(id);
           },
           openBlankTab: async () => {
-            tabs.setAgentBrowserTabId(tabs.newTab("browser"));
+            if (scope !== undefined) requireLiveSession(scope);
+            tabs.setAgentBrowserTabId(tabs.newTab("browser", scope), scope);
           },
         },
         origins,
@@ -1057,13 +1121,14 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     // tab, not just whichever one browserHandle() currently prefers.
     pageHandles: async () => {
       const entries: { tabId: number; page: BrowserPageHandle }[] = [];
-      for (const t of tabs.listBrowserTabs()) {
-        const page = tabs.browserTabHandleById(t.tabId);
+      for (const t of tabs.listBrowserTabs(scope)) {
+        const page = tabs.browserTabHandleById(t.tabId, scope);
         if (page) entries.push({ tabId: t.tabId, page });
       }
       return entries;
     },
-  };
+  });
+  const browserTarget = makeBrowserTarget(undefined, session.fromPartition("persist:penbrowser"), fetchRouter);
   // Agent cursor settings: the View menu's saved choice, with the env vars
   // (PEN_DESKTOP_BROWSER_CURSOR / _CURSOR_MOTION) winning when set. The
   // controller reads both through getters on every move, so a menu change
@@ -1076,12 +1141,99 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     writeCursorSettings(cursorSettingsPath, cursorSettings);
     rebuildMenu();
   };
-  const browserController = new BrowserController(browserTarget, {
-    cursor: () => effectiveCursor().enabled,
-    cursorMotion: () => effectiveCursor().motion,
-  });
+  // One options factory for the shared controller and every session's.
+  const makeController = (target: BrowserTarget) =>
+    new BrowserController(target, {
+      cursor: () => effectiveCursor().enabled,
+      cursorMotion: () => effectiveCursor().motion,
+    });
+  const browserController = makeController(browserTarget);
 
   const journalOwners = new JournalOwners(browserController);
+
+  // --- isolated sessions (browserSessions.ts holds the decisions) ---
+  const createSessionCtx = (id: string, partition: string): SessionCtx => {
+    const ses = session.fromPartition(partition);
+    // Once per pool slot, app-wide (the Session object is a singleton per name).
+    // Marked only after it worked: a slot is never used without deny-all.
+    if (!partitionPool.isPrepared(partition)) {
+      try {
+        denyAllPermissions(ses);
+      } catch (err) {
+        throw new SlotUnusableError(`deny-all permissions failed on ${partition}: ${String(err)}`);
+      }
+      partitionPool.markPrepared(partition);
+    }
+    const router = new FetchRouter();
+    const controller = makeController(makeBrowserTarget(id, ses, router));
+    return { ses, router, controller, journal: new JournalOwners(controller) };
+  };
+  // Closes a session's tabs and resolves true once every webContents is really
+  // destroyed (a wipe must not race a live page still writing storage).
+  const waitDestroyed = (wcId: number): Promise<boolean> =>
+    new Promise((resolve) => {
+      const wc = webContents.fromId(wcId);
+      if (!wc || wc.isDestroyed()) return resolve(true);
+      const timer = setTimeout(() => resolve(false), 5000);
+      wc.once("destroyed", () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+  const closeTabsAndWait = async (id: string): Promise<boolean> => {
+    const ids = tabs.sessionWebContentsIds(id);
+    tabs.closeSessionTabs(id);
+    return (await Promise.all(ids.map(waitDestroyed))).every(Boolean);
+  };
+  // Wipes everything a session left in its partition. True only when every
+  // step worked and the partition is verifiably empty; otherwise the registry
+  // keeps the slot out of the pool.
+  const teardownSession = async (id: string, s: { owner: number; ctx: SessionCtx }): Promise<boolean> => {
+    const { controller, journal, ses } = s.ctx;
+    await controller.releaseFixture().catch((err) => console.error("browser session: releaseFixture failed", err));
+    journal.stopOwnedBy(s.owner);
+    let clean = await (s.ctx.tabsClosed ?? closeTabsAndWait(id));
+    if (!clean) console.error("browser session: tabs were not destroyed in time");
+    const steps: [string, () => Promise<unknown>][] = [
+      ["closeAllConnections", () => ses.closeAllConnections()],
+      ["clearStorageData", () => ses.clearStorageData()],
+      ["clearCache", () => ses.clearCache()],
+      ["clearAuthCache", () => ses.clearAuthCache()],
+      ["clearHostResolverCache", () => ses.clearHostResolverCache()],
+    ];
+    for (const [name, run] of steps) {
+      try {
+        await run();
+      } catch (err) {
+        clean = false;
+        console.error(`browser session: ${name} failed`, err);
+      }
+    }
+    try {
+      if ((await ses.cookies.get({})).length > 0) {
+        clean = false;
+        console.error("browser session: cookies left after the wipe");
+      }
+    } catch (err) {
+      clean = false;
+      console.error("browser session: cookie check failed", err);
+    }
+    return clean;
+  };
+  // Idempotent (see BrowserSessions.close for the order and the quarantine rules).
+  const closeSessionById = (id: string, owner: number): Promise<void> =>
+    sessions.close(id, owner, {
+      // Drain timed out: closing the tabs unblocks the stuck commands.
+      abort: (s) => {
+        s.ctx.tabsClosed = closeTabsAndWait(id);
+      },
+      teardown: (s) => teardownSession(id, s),
+    });
+  // Orphans: the owner editor tab reloaded, crashed or closed (`gone`: destroyed for good).
+  closeSessionsOwnedBy = (owner: number, gone = false) => {
+    for (const id of sessions.idsOwnedBy(owner)) void closeSessionById(id, owner);
+    if (gone) sessions.forgetOwner(owner);
+  };
 
   const onBrowserCommand = async (event: Electron.IpcMainInvokeEvent, payload: unknown) => {
     // Single source of truth for "which webContents id is an editor tab" —
@@ -1092,6 +1244,45 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     if (!isRecord(payload) || typeof payload.command !== "string") {
       return { error: "Malformed browser command." };
     }
+    const sender = event.sender.id;
+    const parsedSession = parseSessionId(payload);
+    if (!parsedSession.ok) return { error: parsedSession.error };
+    const sessionId = parsedSession.id;
+    if (payload.command === "closeSession") {
+      if (sessionId === undefined) return { error: ERR_INVALID_SESSION_ID };
+      const owner = sessions.ownerOf(sessionId);
+      if (owner !== undefined && owner !== sender) return { error: ERR_SESSION_NOT_OWNED };
+      await closeSessionById(sessionId, sender);
+      return { ok: true };
+    }
+    // The controller, journal and tab scope this command runs against: one
+    // isolated session's, or the shared browser's.
+    let controller = browserController;
+    let journal = journalOwners;
+    let exitSession: (() => void) | null = null;
+    if (sessionId !== undefined) {
+      const plan = planSessionCommand(payload.command, payload.args, sessions.stateOf(sessionId, sender));
+      if (plan.action === "reply") return plan.value;
+      const entered = await sessions.acquire(sessionId, sender, plan.create, (partition) => createSessionCtx(sessionId, partition));
+      if (!entered.ok) return { error: entered.error };
+      exitSession = entered.exit;
+      controller = entered.session.ctx.controller;
+      journal = entered.session.ctx.journal;
+    }
+    try {
+      return await runBrowserCommand(payload as Record<string, unknown> & { command: string }, sender, sessionId, controller, journal);
+    } finally {
+      exitSession?.();
+    }
+  };
+
+  const runBrowserCommand = async (
+    payload: Record<string, unknown> & { command: string },
+    sender: number,
+    sessionId: string | undefined,
+    controller: BrowserController,
+    journal: JournalOwners,
+  ) => {
     // Second-pass review finding 1: resolve every browser tab's currently
     // open dialog (if any) before dispatching this command — see
     // `applyDialogPolicy`'s doc comment (tabManager.ts) for why this can't
@@ -1104,47 +1295,49 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     // accepting it would lose their form input (third-pass review). A
     // dialog left open on a tab the agent later switches back to is swept
     // then, by that command.
-    const agentTabId = tabs.currentBrowserTabId();
-    if (agentTabId !== null) tabs.browserTabHandleById(agentTabId)?.applyDialogPolicy?.();
+    const agentTabId = tabs.currentBrowserTabId(sessionId);
+    if (agentTabId !== null) tabs.browserTabHandleById(agentTabId, sessionId)?.applyDialogPolicy?.();
     // Review finding 3: brackets the whole dispatch, not just the
     // BrowserController call, so a dialog raised anywhere during this
     // command's async work (including its own settle waits) is auto-handled
     // — decremented in `finally` so a rejected/throwing command never leaves
     // this counter stuck above zero.
-    browserCommandsInFlight++;
+    commandsInFlight.inc(sessionId);
     const drivesPage = isAgentPageCommand(payload.command, payload.args);
-    if (drivesPage) {
-      tabs.markAgentTab(tabs.currentBrowserTabId());
-      agentActivity.begin();
-    }
+    // The tab this command starts on (null for a session that has no tab yet).
+    const startTab = drivesPage ? tabs.currentBrowserTabId(sessionId) : null;
+    if (startTab !== null) agentActivity.begin(startTab);
     try {
       // A page-changing command from a tab that does not own the running
-      // journal would be recorded into it: end that journal first.
-      journalOwners.beforeCommand(event.sender.id, payload.command, payload.args, (id) => tabs.isEditorTab(id));
+      // journal would be recorded into it: end that journal first. (A session
+      // has one owner and its own journal: nothing to end.)
+      if (sessionId === undefined) {
+        journal.beforeCommand(sender, payload.command, payload.args, (id) => tabs.isEditorTab(id));
+      }
       switch (payload.command) {
         case "open":
-          return await browserController.open(payload.args);
+          return await controller.open(payload.args);
         case "act":
-          return await browserController.act(payload.args);
+          return await controller.act(payload.args);
         case "findImages":
-          return await browserController.findImages(payload.args);
+          return await controller.findImages(payload.args);
         case "snapshot":
-          return await browserController.snapshot();
+          return await controller.snapshot();
         case "perform":
-          return await browserController.perform(payload.args);
+          return await controller.perform(payload.args);
         case "read":
-          return await browserController.read(payload.args);
+          return await controller.read(payload.args);
         case "screenshot":
-          return await browserController.screenshot(payload.args);
+          return await controller.screenshot(payload.args);
         case "tabs":
-          return await browserController.tabs(payload.args);
+          return await controller.tabs(payload.args);
         case "capture":
-          return await browserController.capture(payload.args);
+          return await controller.capture(payload.args);
         case "fillLogin": {
           // The model gets only { ok, origin, label, filled, submitted } or a
           // fixed error — never a password, a username or controller text.
           return await fillLogin(payload.args, {
-            controller: browserController,
+            controller,
             store: loginServices.credentialStore,
             getUrl: () => tabs.browserHandle()?.getURL() ?? null,
           });
@@ -1153,36 +1346,38 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
           // The page's AbortSignal cannot cross IPC, so `opts` is dropped.
           // A non-object fixture is rejected by the controller (stage "validate").
           const fixture = isRecord(payload.args) ? payload.args.fixture : undefined;
-          return await browserController.applyFixture(fixture as Parameters<BrowserController["applyFixture"]>[0], { allowNetworkMocks: true });
+          return await controller.applyFixture(fixture as Parameters<BrowserController["applyFixture"]>[0], { allowNetworkMocks: true });
         }
         case "releaseFixture": {
-          await browserController.releaseFixture(rawToken(payload.args));
+          await controller.releaseFixture(rawToken(payload.args));
           return { ok: true };
         }
         // Checkpoint journal. Args are untrusted: malformed ones are ignored.
         // The CheckpointResult (cookies/storage) goes back to the calling
         // editor tab only.
         // Ownership (which editor tab may stop/read the journal) is decided
-        // in journalOwners.ts; the controller is shared by all editor tabs.
+        // in journalOwners.ts; the shared controller is used by all editor tabs.
         case "startJournal": {
           const parsed = parseJournalOrigins(payload.args);
           if (!parsed.ok) return { error: "invalid origins" };
-          return journalOwners.start(event.sender.id, (id) => tabs.isEditorTab(id), parsed.origins);
+          return journal.start(sender, (id) => tabs.isEditorTab(id), parsed.origins);
         }
         case "stopJournal":
-          return journalOwners.stop(event.sender.id, parseToken(payload.args));
+          return journal.stop(sender, parseToken(payload.args));
         case "captureCheckpoint":
-          return await journalOwners.capture(event.sender.id, parseToken(payload.args));
+          return await journal.capture(sender, parseToken(payload.args));
         default:
           return { error: `Unknown browser command: ${payload.command}` };
       }
     } finally {
-      browserCommandsInFlight--;
+      commandsInFlight.dec(sessionId);
       // A command can settle after the window closed: never push state then.
-      if (drivesPage && !win.isDestroyed()) {
-        // `tabs new`/`switch` and popups repoint the agent mid-command.
-        tabs.markAgentTab(tabs.currentBrowserTabId());
-        agentActivity.end();
+      if (!win.isDestroyed()) {
+        if (startTab !== null) agentActivity.end(startTab);
+        // `tabs new`/`switch` and popups repoint the agent mid-command: the tab
+        // it landed on gets the icon too (and holds it for the idle period).
+        const endTab = tabs.currentBrowserTabId(sessionId);
+        if (drivesPage && endTab !== null && endTab !== startTab) agentActivity.pulse(endTab);
       }
     }
   };

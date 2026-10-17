@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, it, expect } from "vitest";
+import { BROWSER_COMMANDS, PAGE_DRIVING_COMMANDS } from "../src/main/browserCommands";
 
 /**
  * IPC channel contract. Channel names are plain strings matched at runtime by
@@ -109,5 +110,35 @@ describe("IPC channel contract", () => {
   it("every ipcMain listener is torn down again (window close/reopen must not leak)", () => {
     const leaked = [...mainReceives].filter((name) => !mainRemoves.has(name));
     expect(leaked).toEqual([]);
+  });
+});
+
+describe("browser:command commands", () => {
+  // `browser:command` is one channel carrying many commands, so the channel scan
+  // above cannot see a command added on one side only. One list
+  // (src/main/browserCommands.ts) must agree with the dispatch switch in
+  // window.ts, the preload, and the session planner.
+  const windowSource = readFileSync(join(SRC, "main/window.ts"), "utf8");
+  const handled = new Set([...windowSource.matchAll(/^\s*case "(\w+)":/gm)].map((m) => m[1]));
+  const preload = readFileSync(join(SRC, "preload/tab.ts"), "utf8");
+  const sentByPreload = new Set([...preload.matchAll(/command: "(\w+)"/g)].map((m) => m[1]));
+  const list = [...BROWSER_COMMANDS].sort();
+
+  it("window.ts dispatches exactly the commands in the list", () => {
+    expect([...handled].filter((c) => (list as string[]).includes(c) || c === "default").sort()).toEqual(list);
+    for (const c of handled) if (c !== "default") expect(list, `${c} is dispatched but not in BROWSER_COMMANDS`).toContain(c);
+  });
+
+  it("the preload sends exactly the list plus closeSession", () => {
+    expect([...sentByPreload].sort()).toEqual([...list, "closeSession"].sort());
+  });
+
+  it("closeSession is handled in window.ts and the payload carries `session`", () => {
+    expect(windowSource).toContain('payload.command === "closeSession"');
+    expect(preload).toContain("session: scope.session");
+  });
+
+  it("the page-driving commands are a subset of the list", () => {
+    for (const c of PAGE_DRIVING_COMMANDS) expect(list).toContain(c);
   });
 });

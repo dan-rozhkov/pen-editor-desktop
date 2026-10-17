@@ -20,8 +20,8 @@ type TabsSnapshot = {
    * browser does on a new tab.
    */
   focusAddressBar?: boolean;
-  /** The browser tab the agent is driving right now (agent-cursor icon). */
-  agentTabId?: number | null;
+  /** The browser tabs the agent is driving right now (agent-cursor icon). */
+  agentTabIds?: number[];
 };
 type UITheme = "light" | "dark";
 
@@ -144,7 +144,7 @@ window.penTabbar.onState((state) => {
     el.className = tab.id === state.activeId ? "tab active" : "tab";
     el.addEventListener("mousedown", () => window.penTabbar.activateTab(tab.id));
 
-    if (tab.kind === "browser" && tab.id === state.agentTabId) {
+    if (tab.kind === "browser" && state.agentTabIds?.includes(tab.id)) {
       el.appendChild(agentCursorIcon());
       const hint = document.createElement("span");
       hint.className = "sr-only";

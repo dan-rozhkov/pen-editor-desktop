@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createAgentActivity, isAgentPageCommand, AGENT_ACTIVITY_IDLE_MS } from "../src/main/agentActivity";
+import { createAgentActivity, createTabAgentActivity, isAgentPageCommand, AGENT_ACTIVITY_IDLE_MS } from "../src/main/agentActivity";
 
 describe("createAgentActivity", () => {
   let onChange: ReturnType<typeof vi.fn<(working: boolean) => void>>;
@@ -128,5 +128,58 @@ describe("isAgentPageCommand", () => {
     expect(isAgentPageCommand("tabs", { action: "new" })).toBe(true);
     expect(isAgentPageCommand("tabs", { action: "switch" })).toBe(true);
     expect(isAgentPageCommand("tabs", undefined)).toBe(true);
+  });
+});
+
+describe("createTabAgentActivity", () => {
+  function make() {
+    const calls: [number, boolean][] = [];
+    const timers: { fn: () => void; ms: number; done: boolean }[] = [];
+    const a = createTabAgentActivity({
+      onChange: (id, w) => calls.push([id, w]),
+      idleMs: 100,
+      setTimeout: (fn, ms) => {
+        const t = { fn, ms, done: false };
+        timers.push(t);
+        return t;
+      },
+      clearTimeout: (h) => {
+        (h as { done: boolean }).done = true;
+      },
+    });
+    const fire = () => timers.filter((t) => !t.done).forEach((t) => ((t.done = true), t.fn()));
+    return { a, calls, fire };
+  }
+
+  it("tracks tabs independently: one finishing leaves the other lit", () => {
+    const { a, calls, fire } = make();
+    a.begin(1);
+    a.begin(2);
+    a.end(1);
+    fire();
+    expect(calls).toEqual([
+      [1, true],
+      [2, true],
+      [1, false],
+    ]);
+  });
+
+  it("pulse lights a tab and lets it go after the idle hold", () => {
+    const { a, calls, fire } = make();
+    a.pulse(3);
+    expect(calls).toEqual([[3, true]]);
+    fire();
+    expect(calls).toEqual([
+      [3, true],
+      [3, false],
+    ]);
+  });
+
+  it("ignores calls after dispose", () => {
+    const { a, calls } = make();
+    a.dispose();
+    a.begin(1);
+    a.pulse(1);
+    expect(calls).toEqual([]);
   });
 });
