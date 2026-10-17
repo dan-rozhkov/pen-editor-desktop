@@ -800,9 +800,13 @@ without sharing cookies, tabs, fixtures or mocks. The shared browser
   Limit: on Linux a never-shown view does not paint, so `screenshot` of a
   session tab answers `Screenshot capture failed (empty image).` (`capturePage`
   `stayHidden` does not help; e2e asserts the error there). macOS captures it.
-- **No saved logins:** `fillLogin` in a session → `saved logins are not available
-  in an isolated session`; save-password capture and the favicon cache are not
-  installed on session tabs.
+- **Saved logins work (fill only):** `fillLogin` runs in a session against that
+  session's agent tab (`tabs.browserHandle(sessionId)`), so parallel runs can sign
+  in under different saved accounts of one site: `label` picks the account by
+  label, else by username (case-insensitive; the "unknown label" reply lists
+  labels only, never usernames). Save-password capture and the favicon cache are
+  still not installed on session tabs. (Changed 2026-10-17; it used to answer
+  `saved logins are not available in an isolated session`.)
 - **Ownership:** a session belongs to the editor tab that created it; any other
   editor tab gets `{error}`.
 - **Close** (idempotent; a second `closeSession` returns the SAME promise, resolved

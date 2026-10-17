@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BrowserSessions,
   ERR_INVALID_SESSION_ID,
-  ERR_LOGINS_UNAVAILABLE,
   ERR_NO_SUCH_SESSION,
   DRAIN_TIMEOUT_MS,
   ERR_SESSION_CLOSED,
@@ -101,10 +100,14 @@ describe("planSessionCommand", () => {
     }
   });
 
-  it("a live session runs its commands, without creating; fillLogin is refused", () => {
+  it("fillLogin on a missing session does not create one", () => {
+    expect(planSessionCommand("fillLogin", {}, "missing")).toEqual({ action: "reply", value: { error: ERR_NO_SUCH_SESSION } });
+  });
+
+  it("a live session runs its commands, without creating, fillLogin included", () => {
     expect(planSessionCommand("open", {}, "live")).toEqual({ action: "run", create: false });
     expect(planSessionCommand("releaseFixture", {}, "live")).toEqual({ action: "run", create: false });
-    expect(planSessionCommand("fillLogin", {}, "live")).toEqual({ action: "reply", value: { ok: false, error: ERR_LOGINS_UNAVAILABLE } });
+    expect(planSessionCommand("fillLogin", {}, "live")).toEqual({ action: "run", create: false });
   });
 });
 

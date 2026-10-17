@@ -149,6 +149,16 @@ describe("credentialStore", () => {
     });
   });
 
+  it("a label that is no label falls back to the username; label wins; labels list holds no usernames", () => {
+    const { store } = makeStore();
+    store.add({ site: "example.com", username: "alice", password: "pa", label: "Admin" });
+    store.add({ site: "example.com", username: "bob", password: "pb", label: "alice" });
+    store.add({ site: "example.com", username: "carol", password: "pc" });
+    expect(store.findForOrigin("example.com", " CAROL ")).toMatchObject({ ok: true, entry: { username: "carol" } });
+    expect(store.findForOrigin("example.com", "alice")).toMatchObject({ ok: true, entry: { username: "bob" } });
+    expect(store.findForOrigin("example.com", "nobody")).toEqual({ ok: false, reason: "label", labels: ["Admin", "alice"] });
+  });
+
   it("without a label: the only entry, else the most recently used", () => {
     let t = 1000;
     const { store } = makeStore({ now: () => t });

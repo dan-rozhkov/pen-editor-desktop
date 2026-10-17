@@ -399,8 +399,9 @@ export function createCredentialStore(deps: CredentialStoreDeps) {
     /**
      * The entry for a page origin (scheme, host and port must all equal).
      * With `label`: the entry on that origin whose label equals it
-     * (case-insensitive), else `reason: "label"` with the labels on that
-     * origin. Without: the only entry, else the most recently used one
+     * (case-insensitive), else the entry whose username equals it (trimmed,
+     * case-insensitive), else `reason: "label"` with the labels (never
+     * usernames) on that origin. Without: the only entry, else the most recently used one
      * (`lastUsedAt`; never-used entries rank last, then newest added).
      * `rawUrl` is normalized again here, so a raw page URL works.
      */
@@ -411,7 +412,9 @@ export function createCredentialStore(deps: CredentialStoreDeps) {
       let picked: StoredEntry | undefined;
       const wanted = label?.trim().toLowerCase();
       if (wanted) {
-        picked = onHost.find((e) => e.label.toLowerCase() === wanted);
+        picked =
+          onHost.find((e) => e.label.toLowerCase() === wanted) ??
+          onHost.find((e) => e.username.trim().toLowerCase() === wanted);
         if (!picked) {
           return { ok: false, reason: "label", labels: onHost.map((e) => e.label).filter((l) => l !== "") };
         }

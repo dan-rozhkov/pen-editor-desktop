@@ -34,8 +34,6 @@ export const ERR_SESSION_NOT_OWNED = "browser session belongs to another editor 
 export const ERR_SESSION_CLOSED = "browser session closed";
 export const ERR_NO_SUCH_SESSION = "no such browser session";
 export const ERR_SESSION_CREATE_FAILED = "could not create browser session";
-/** Fixed text: a saved login must never be typed into an isolated session. */
-export const ERR_LOGINS_UNAVAILABLE = "saved logins are not available in an isolated session";
 
 /**
  * Thrown by a session factory when its pool slot cannot be made safe (e.g. the
@@ -98,7 +96,6 @@ export function planSessionCommand(command: string, args: unknown, state: Sessio
     return { action: "reply", value: { error: ERR_NO_SUCH_SESSION } };
   }
   // "live" and "pending" (being created): the command waits for the creation, then acts on it.
-  if (command === "fillLogin") return { action: "reply", value: { ok: false, error: ERR_LOGINS_UNAVAILABLE } };
   return { action: "run", create: false };
 }
 

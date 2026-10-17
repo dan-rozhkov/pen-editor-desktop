@@ -32,6 +32,7 @@ export interface FillLoginDeps {
 }
 
 export interface FillLoginArgs {
+  /** Picks the account: a saved label, else a saved username (case-insensitive). Usernames are never echoed back. */
   label?: string;
   submit: boolean;
 }

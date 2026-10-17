@@ -168,9 +168,10 @@ test("two parallel isolated sessions keep separate cookies, network mocks and ta
       expect(String(shotA.imageData)).toMatch(/^data:image\/jpeg;base64,/);
     }
 
-    // --- saved logins are not available in a session ---
+    // --- fillLogin runs in a session (no saved login for the fixture site -> a fixed error, never the old refusal) ---
     const login = await call(editor, "A", "fillLogin", {});
-    expect(login).toEqual({ ok: false, error: "saved logins are not available in an isolated session" });
+    expect(login.ok).toBe(false);
+    expect(String(login.error)).not.toMatch(/not available in an isolated session/);
 
     // --- closeSession closes that session's tabs and wipes its cookies ---
     const before = pagesAt(app, `${site}/me`).length;

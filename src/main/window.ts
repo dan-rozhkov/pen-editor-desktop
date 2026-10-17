@@ -1342,7 +1342,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
           return await fillLogin(payload.args, {
             controller,
             store: loginServices.credentialStore,
-            getUrl: () => tabs.browserHandle()?.getURL() ?? null,
+            getUrl: () => tabs.browserHandle(sessionId)?.getURL() ?? null,
           });
         }
         case "applyFixture": {

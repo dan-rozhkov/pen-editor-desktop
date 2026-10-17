@@ -17,7 +17,9 @@ sequentially and share state.
 
 1. **Only QA runs are isolated.** `browse_agent({ qa: true })` runs in its own
    isolated browser session. A plain `browse_agent` keeps the shared session
-   (it needs the user's logins). No new tool parameter.
+   (it needs the user's logins). No new tool parameter. *(Note 2026-10-17: an
+   isolated session still starts with no cookies, but it may fill saved logins
+   - see "Saved logins" below.)*
 2. **Only isolated QA runs are parallel.** In the frontend, a `browse_agent`
    call with `qa: true` on a client that supports isolation does not block the
    tool loop: several such calls of one model step run at the same time, at
@@ -50,8 +52,11 @@ browser.closeSession(sessionId: string): Promise<{ ok: true } | { error: string 
   are auto-handled only while a command of the SAME scope runs.
 - Per-session state: controller (snapshot ids, cursor, fixture, journal), fetch
   routing (mocks apply only to that session's tabs), `fresh` resets only that
-  session. Saved logins: `fillLogin` returns an error in an isolated session and
-  the save-prompt capture is off there (the store is the user's real logins).
+  session. Saved logins: `fillLogin` works in an isolated session (fill only; it reads the
+  session's own agent tab). `label` picks the account by label, else by username.
+  The save-prompt capture and favicon cache are off there. *Decision changed
+  2026-10-17:* it first returned an error here; users run several scenarios under
+  different saved accounts of one site, so the fill is allowed.
 - The session is owned by the editor tab that created it (sender webContents id).
   Commands for a session from another editor tab → `{ error }`.
 - `closeSession`: tombstones the id (every later command → `{ error: "browser session closed" }`,
