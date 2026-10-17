@@ -45,6 +45,6 @@
     }
   },
   "dependencies": {
-    "@sideform/browser-agent": "github:dan-rozhkov/browser-agent#v0.2.16"
+    "@sideform/browser-agent": "github:dan-rozhkov/browser-agent#v0.2.20"
   }
 }
