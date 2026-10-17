@@ -35,6 +35,7 @@ import { isLoginBindingCall, promptChoiceFromButton, savePromptCopy, type LoginC
 import { normalizeOrigin, type CredentialStore } from "./browser/credentialStore";
 import type { FaviconCache } from "./browser/faviconCache";
 import type { PasswordsWindow } from "./passwordsWindow";
+import { createAgentActivity, isAgentPageCommand } from "./agentActivity";
 import { decideCloseTarget, guardMenuActions } from "./closeTarget";
 
 /** App-scoped saved-logins services (created once in index.ts, like mcpService). */
@@ -287,6 +288,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
   // (and queued for reporting) the moment the agent's next command starts,
   // rather than hanging that command's own `executeJavaScript` call.
   let browserCommandsInFlight = 0;
+  // Drives the tab strip's agent-cursor icon; the hold/flicker rules live in agentActivity.ts.
+  const agentActivity = createAgentActivity({ onChange: (working) => tabs.setAgentWorking(working) });
   const isAgentCommandInFlight = () => browserCommandsInFlight > 0;
   // Review finding 3: each tab's own dialog queue is capped — an agent loop
   // that never drains it (a crashed/stuck agent, or a page that spams
@@ -1109,6 +1112,11 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     // — decremented in `finally` so a rejected/throwing command never leaves
     // this counter stuck above zero.
     browserCommandsInFlight++;
+    const drivesPage = isAgentPageCommand(payload.command, payload.args);
+    if (drivesPage) {
+      tabs.markAgentTab(tabs.currentBrowserTabId());
+      agentActivity.begin();
+    }
     try {
       // A page-changing command from a tab that does not own the running
       // journal would be recorded into it: end that journal first.
@@ -1170,6 +1178,12 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
       }
     } finally {
       browserCommandsInFlight--;
+      // A command can settle after the window closed: never push state then.
+      if (drivesPage && !win.isDestroyed()) {
+        // `tabs new`/`switch` and popups repoint the agent mid-command.
+        tabs.markAgentTab(tabs.currentBrowserTabId());
+        agentActivity.end();
+      }
     }
   };
   ipcMain.handle("browser:command", onBrowserCommand);
@@ -1260,6 +1274,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     nativeTheme.removeListener("updated", onSystemThemeChanged);
     loginServices.passwordsWindow.setTheme(themeKey, null);
     unsubscribeMcpStatus();
+    agentActivity.dispose();
     tabs.destroyAll();
     tabbarView.webContents.close();
   });

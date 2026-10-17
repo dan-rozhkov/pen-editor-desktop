@@ -20,6 +20,8 @@ type TabsSnapshot = {
    * browser does on a new tab.
    */
   focusAddressBar?: boolean;
+  /** The browser tab the agent is driving right now (agent-cursor icon). */
+  agentTabId?: number | null;
 };
 type UITheme = "light" | "dark";
 
@@ -114,12 +116,41 @@ urlInputEl.addEventListener("blur", () => {
   if (latestActiveUrl !== undefined) urlInputEl.value = latestActiveUrl;
 });
 
+// Same arrow geometry as the in-page agent cursor (browser-agent pageScripts
+// ARROW_POINTS). Built with createElementNS: the CSP forbids inline markup
+// tricks and colours come from classes.
+function agentCursorIcon(): SVGSVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("class", "agent-cursor");
+  svg.setAttribute("viewBox", "-2.4 -2.6 24.2 24.4");
+  svg.setAttribute("aria-hidden", "true");
+  for (const [cls, width] of [["rim", "7.8"], ["body", "5.4"]]) {
+    const poly = document.createElementNS(ns, "polygon");
+    poly.setAttribute("class", cls);
+    poly.setAttribute("points", "2.2,1.6 17.6,8.5 10.8,12.4 6.2,17.7");
+    poly.setAttribute("stroke-width", width);
+    poly.setAttribute("stroke-linejoin", "round");
+    poly.setAttribute("stroke-linecap", "round");
+    svg.appendChild(poly);
+  }
+  return svg;
+}
+
 window.penTabbar.onState((state) => {
   tabsEl.textContent = "";
   for (const tab of state.tabs) {
     const el = document.createElement("div");
     el.className = tab.id === state.activeId ? "tab active" : "tab";
     el.addEventListener("mousedown", () => window.penTabbar.activateTab(tab.id));
+
+    if (tab.kind === "browser" && tab.id === state.agentTabId) {
+      el.appendChild(agentCursorIcon());
+      const hint = document.createElement("span");
+      hint.className = "sr-only";
+      hint.textContent = "Agent is working";
+      el.appendChild(hint);
+    }
 
     const title = document.createElement("span");
     title.className = "title";

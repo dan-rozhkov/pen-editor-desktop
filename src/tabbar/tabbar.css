@@ -23,6 +23,12 @@
      — Codex's split (glass chrome, solid content). */
   --bar-glass: rgba(246, 246, 246, 0.78);
   --window-rim: #ececec;
+  /* Brand pair is theme-independent, so it is declared once; only the idle
+     (background-tab) pair is redefined per theme. */
+  --agent-cursor: #0d99ff;
+  --agent-cursor-rim: #ffffff;
+  --agent-cursor-idle: #c4c4c4;
+  --agent-cursor-idle-rim: #ffffff;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -40,6 +46,8 @@
        appearance the OS vibrancy blur is actually rendering. */
     --bar-glass: rgba(26, 26, 26, 0.85);
     --window-rim: #4d4d4d;
+    --agent-cursor-idle: #5e5e5e;
+    --agent-cursor-idle-rim: #2a2a2a;
   }
 }
 
@@ -54,6 +62,8 @@
   --text-active: rgba(0, 0, 0, 0.87);
   --bar-glass: rgba(246, 246, 246, 0.78);
   --window-rim: #ececec;
+  --agent-cursor-idle: #c4c4c4;
+  --agent-cursor-idle-rim: #ffffff;
 }
 
 :root[data-theme="dark"] {
@@ -67,6 +77,8 @@
   --text-active: rgba(255, 255, 255, 0.87);
   --bar-glass: rgba(26, 26, 26, 0.85);
   --window-rim: #4d4d4d;
+  --agent-cursor-idle: #5e5e5e;
+  --agent-cursor-idle-rim: #2a2a2a;
 }
 
 body {
@@ -136,6 +148,25 @@ body {
   -webkit-app-region: no-drag;
 }
 .tab .title { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+/* The agent's cursor arrow, shown before the title of the browser tab it is
+   driving. Static on purpose — motion in the tab strip would pull the eye. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+.agent-cursor {
+  flex: 0 0 auto; width: 14px; height: 14px;
+  filter: drop-shadow(0 0.5px 1px rgba(0, 0, 0, 0.4));
+}
+.agent-cursor .rim { fill: var(--agent-cursor-rim); stroke: var(--agent-cursor-rim); }
+.agent-cursor .body { fill: var(--agent-cursor); stroke: var(--agent-cursor); }
+/* Greyed out when the agent's tab is in the background; softer shadow so it
+   recedes instead of looking like a stuck blue badge. */
+.tab:not(.active) .agent-cursor {
+  filter: drop-shadow(0 0.5px 0.5px rgba(0, 0, 0, 0.15));
+}
+.tab:not(.active) .agent-cursor .rim { fill: var(--agent-cursor-idle-rim); stroke: var(--agent-cursor-idle-rim); }
+.tab:not(.active) .agent-cursor .body { fill: var(--agent-cursor-idle); stroke: var(--agent-cursor-idle); }
 .tab:not(.active):hover { background: var(--control-hover-bg); color: var(--text-active); }
 .tab.active {
   /* No border-color/border-radius override here (unlike the old pill) —

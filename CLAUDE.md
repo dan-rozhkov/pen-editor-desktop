@@ -179,6 +179,25 @@ browser tab the design agent can drive to pull visual references from the
 open web (Pinterest in particular). Design spec:
 `docs/superpowers/specs/2026-09-18-builtin-browser-design.md`.
 
+**Agent-activity icon.** While the agent drives a browser tab, the tab strip
+shows the agent's cursor arrow before that tab's title (blue on the active
+tab, pale grey on an inactive one, no animation; editor tabs never). Only
+page-driving `browser:command`s count (`isAgentPageCommand` in
+`src/main/agentActivity.ts`: not journal/checkpoint/`releaseFixture`, not
+`tabs` `list`, not unknown commands). `window.ts` calls `tabs.markAgentTab(...)`
+with the tab the command drove, at command start and again in `finally`
+(so `tabs new`/`switch` and popups show on the new tab), and
+`begin()`/`end()` on the pure `agentActivity` tracker, which counts in-flight
+commands and holds "working" for `AGENT_ACTIVITY_IDLE_MS` (4s) so the icon
+does not flicker while the LLM thinks between steps; after `dispose()` it
+ignores late calls. `TabManager` turns this into `TabsSnapshot.agentTabId`:
+the marked tab while working and still a live browser tab, otherwise null.
+There is no fallback: closing that tab clears the icon, and user tab switches
+do not move it until the next agent command. It rides on `tabbar:state` (no
+extra IPC channel). The renderer draws the same arrow geometry as the in-page
+cursor from `@sideform/browser-agent`, plus a visually hidden "Agent is
+working" label.
+
 A browser tab's `WebContentsView` is constructed with
 `partition: "persist:penbrowser"` — its own session, separate from the
 editor tabs' — and **no preload at all**: `contextIsolation`/`sandbox` are

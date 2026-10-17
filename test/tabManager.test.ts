@@ -597,6 +597,94 @@ describe("resolveMcpActiveTab", () => {
   });
 });
 
+describe("agentTabId", () => {
+  function make() {
+    const states: TabsSnapshot[] = [];
+    let n = 1;
+    const tm = new TabManager({
+      createView: () => {
+        const v = makeFakeView();
+        v.getWebContentsId.mockReturnValue(n++);
+        return v;
+      },
+      editorUrl: "https://pen-editor.onrender.com",
+      onStateChanged: (s) => states.push(s),
+    });
+    return { tm, states };
+  }
+
+  it("is null when the agent is not working", () => {
+    const { tm } = make();
+    tm.newTab();
+    const b = tm.newTab("browser");
+    tm.markAgentTab(b);
+    expect(tm.getSnapshot().agentTabId).toBeNull();
+  });
+
+  it("is the marked browser tab while working", () => {
+    const { tm } = make();
+    tm.newTab();
+    const b = tm.newTab("browser");
+    tm.markAgentTab(b);
+    tm.newTab();
+    tm.setAgentWorking(true);
+    expect(tm.getSnapshot().agentTabId).toBe(b);
+    tm.setAgentWorking(false);
+    expect(tm.getSnapshot().agentTabId).toBeNull();
+  });
+
+  it("is null when the agent's tab is closed and no browser tab remains", () => {
+    const { tm } = make();
+    tm.newTab();
+    const b = tm.newTab("browser");
+    tm.markAgentTab(b);
+    tm.setAgentWorking(true);
+    tm.closeTab(b);
+    expect(tm.getSnapshot().agentTabId).toBeNull();
+  });
+
+  it("is null, not another browser tab, when the agent's tab is closed", () => {
+    const { tm } = make();
+    const b1 = tm.newTab("browser");
+    const b2 = tm.newTab("browser");
+    tm.markAgentTab(b1);
+    tm.setAgentWorking(true);
+    tm.closeTab(b1);
+    expect(tm.getSnapshot().tabs.some((t) => t.id === b2)).toBe(true);
+    expect(tm.getSnapshot().agentTabId).toBeNull();
+  });
+
+  it("does not move when the user activates another browser tab", () => {
+    const { tm } = make();
+    const b1 = tm.newTab("browser");
+    const b2 = tm.newTab("browser");
+    tm.markAgentTab(b1);
+    tm.setAgentWorking(true);
+    tm.activate(b2);
+    expect(tm.getSnapshot().agentTabId).toBe(b1);
+  });
+
+  it("is null when there is no browser tab at all", () => {
+    const { tm } = make();
+    const e = tm.newTab();
+    tm.markAgentTab(e);
+    tm.setAgentWorking(true);
+    expect(tm.getSnapshot().agentTabId).toBeNull();
+  });
+
+  it("emits only when the working flag or marked tab changes", () => {
+    const { tm, states } = make();
+    const b = tm.newTab("browser");
+    const before = states.length;
+    tm.setAgentWorking(true);
+    tm.setAgentWorking(true);
+    tm.markAgentTab(b);
+    tm.markAgentTab(b);
+    expect(states.length).toBe(before + 2);
+    expect(states[states.length - 1].agentTabId).toBe(b);
+  });
+});
+
 // Finding 1 regression: closing the active *editor* tab whose neighbor is a
 // browser tab used to leave TabManager's internal "last editor tab" pointer
 // aimed at the now-destroyed webContents id — the exact regression
@@ -667,6 +755,7 @@ describe("shouldFocusAddressBar", () => {
     activeTheme: null,
     mcpStatus: "off",
     mcpActiveWebContentsId: 1,
+    agentTabId: null,
   };
 
   const emptyBrowserSnapshot: TabsSnapshot = {
@@ -679,6 +768,7 @@ describe("shouldFocusAddressBar", () => {
     activeTheme: null,
     mcpStatus: "off",
     mcpActiveWebContentsId: 1,
+    agentTabId: null,
   };
 
   it("is true on editor -> empty-URL browser tab activation", () => {

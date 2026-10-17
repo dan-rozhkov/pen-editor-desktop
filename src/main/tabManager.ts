@@ -274,6 +274,14 @@ export interface TabsSnapshot {
    */
   mcpActiveWebContentsId: number | null;
   /**
+   * The browser tab the agent is driving right now, or null. Drives the
+   * agent-cursor icon in the tab strip. Set only while `setAgentWorking(true)`
+   * is in effect and the tab last marked via `markAgentTab` is still a live
+   * browser tab. Closing it yields null (no jump to another tab); user tab
+   * switches do not move it.
+   */
+  agentTabId: number | null;
+  /**
    * True exactly when this specific push should move OS/DOM focus into the
    * tab bar's address input. Never set by TabManager itself — `getSnapshot()`
    * leaves it `undefined` — because the decision (`shouldFocusAddressBar`
@@ -316,6 +324,10 @@ export class TabManager {
    * is ever destroyed — see the doc comment on `TabsSnapshot.mcpActiveWebContentsId`.
    */
   private lastEditorWebContentsId: number | null = null;
+  /** The browser tab the agent's last page command drove (icon target). */
+  private agentActivityTabId: number | null = null;
+  /** Whether the agent is mid-session in the browser (see agentActivity.ts). */
+  private agentWorking = false;
   private lastLayout: { content: { width: number; height: number }; tabbarHeight: number; edge: number } | null =
     null;
   /**
@@ -410,6 +422,7 @@ export class TabManager {
       this.lastEditorWebContentsId = other ? other.view.getWebContentsId() : null;
     }
     if (this.agentBrowserTabId === id) this.agentBrowserTabId = null;
+    if (this.agentActivityTabId === id) this.agentActivityTabId = null;
     if (this.tabs.length === 0) {
       this.activeId = null;
       this.newTab("editor"); // newTab emits — closing the last tab always respawns an editor tab.
@@ -520,6 +533,26 @@ export class TabManager {
     this.agentBrowserTabId = id;
   }
 
+  /** Records which browser tab the agent's command drove, for the tab-strip
+   * icon. Emits only on change. */
+  markAgentTab(id: number | null): void {
+    if (this.agentActivityTabId === id) return;
+    this.agentActivityTabId = id;
+    this.emit();
+  }
+
+  private isLiveBrowserTab(id: number | null): boolean {
+    return id !== null && this.tabs.some((t) => t.id === id && t.kind === "browser");
+  }
+
+  /** Marks the agent as working (or not) in the browser; surfaces as
+   * `TabsSnapshot.agentTabId`. A no-op when unchanged. */
+  setAgentWorking(working: boolean): void {
+    if (this.agentWorking === working) return;
+    this.agentWorking = working;
+    this.emit();
+  }
+
   /** Full browser use's `tabs` command (@sideform/browser-agent/controller): every
    * currently open browser tab, in creation order, plus which one is the
    * agent's *effective* current tab (`browserHandle()`'s own rule, not
@@ -568,6 +601,7 @@ export class TabManager {
       activeTheme: this.resolveActiveTheme(active),
       mcpStatus: this.mcpStatus,
       mcpActiveWebContentsId: resolveMcpActiveTab(active?.kind ?? null, activeWebContentsId, this.lastEditorWebContentsId),
+      agentTabId: this.agentWorking && this.isLiveBrowserTab(this.agentActivityTabId) ? this.agentActivityTabId : null,
     };
   }
 
