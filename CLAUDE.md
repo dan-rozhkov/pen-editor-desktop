@@ -797,6 +797,9 @@ without sharing cookies, tabs, fixtures or mocks. The shared browser
 - **Background tabs.** A session tab never becomes active and gets no address-bar
   focus (`setVisible(false)`); the editor keeps focus. The user clicks it to
   watch. A hidden session tab still screenshots. Shared tabs behave as before.
+  Limit: on Linux a never-shown view does not paint, so `screenshot` of a
+  session tab answers `Screenshot capture failed (empty image).` (`capturePage`
+  `stayHidden` does not help; e2e asserts the error there). macOS captures it.
 - **No saved logins:** `fillLogin` in a session → `saved logins are not available
   in an isolated session`; save-password capture and the favicon cache are not
   installed on session tabs.

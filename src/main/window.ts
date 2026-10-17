@@ -945,10 +945,10 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         // separate `get_screenshot` tool).
         capture: async () => {
           try {
-            // stayHidden: an isolated-session tab is never shown, and on
-            // Linux capturePage() of a hidden view returns an empty image
-            // unless the page is told to paint while staying hidden.
-            const image = await view.webContents.capturePage(undefined, { stayHidden: true });
+            // A never-shown view (an isolated-session tab) captures fine on
+            // macOS; on Linux it returns an empty image (stayHidden does not
+            // help), which the controller reports as an { error }.
+            const image = await view.webContents.capturePage();
             if (image.isEmpty()) return null;
             const size = image.getSize();
             const SCREENSHOT_MAX_WIDTH = 1280;
