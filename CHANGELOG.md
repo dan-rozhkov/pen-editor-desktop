@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.6.0] - 2026-10-17
+
+### Added
+- **Isolated browser sessions for parallel QA runs.** Each `browse_agent` QA run can get its own private browser: its own cookies, storage, tabs, fixtures and network mocks. Several QA scenarios run at the same time and do not share state. The shared built-in browser does not change.
+  - A pool of 6 in-memory sessions for the whole app. A run that finds no free slot waits up to 60 s. When a session closes, its data is wiped before the slot is used again.
+  - Session tabs open in the background. Click a tab to watch the run.
+- **Saved logins in isolated sessions.** A QA run signs in with a login you saved, so parallel runs can use different accounts of the same site. The agent picks the account by its label or by its username. The password still never reaches the model. Session tabs do not ask to save passwords.
+- **Agent cursor on the tab strip.** The browser tab the agent drives shows the agent's cursor before its title, so you can see which tab is working.
+
+### Fixed
+- Screenshots of hidden session tabs. On Linux a tab that was never shown cannot paint, so the screenshot now returns a clear error.
+
+### Removed
+- `get_design_system` and `lint_design` are no longer in the MCP tool list (the design-system tools were removed from the editor).
+
 ## [0.5.0] - 2026-10-16
 
 ### Changed
