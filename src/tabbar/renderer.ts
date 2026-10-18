@@ -29,6 +29,8 @@ type TabsSnapshot = {
   /** Island gap / corner radius in px (layout.ts), for the address row CSS. */
   islandGap?: number;
   islandRadius?: number;
+  addressRowHeight?: number;
+  tabRowHeight?: number;
 };
 type UITheme = "light" | "dark";
 
@@ -186,6 +188,8 @@ window.penTabbar.onState((state) => {
   // The tab row's left padding is max(mac traffic-light padding, this) — see tabbar.css.
   if (state.islandGap !== undefined) document.documentElement.style.setProperty("--island-gap", `${state.islandGap}px`);
   if (state.islandRadius !== undefined) document.documentElement.style.setProperty("--island-radius", `${state.islandRadius}px`);
+  if (state.addressRowHeight !== undefined) document.documentElement.style.setProperty("--address-row-height", `${state.addressRowHeight}px`);
+  if (state.tabRowHeight !== undefined) document.documentElement.style.setProperty("--tab-row-height", `${state.tabRowHeight}px`);
   const collapsed = state.panelCollapsed === true;
   togglePanelEl.setAttribute("aria-pressed", String(!collapsed));
   togglePanelEl.setAttribute("aria-label", collapsed ? "Show agent panel" : "Hide agent panel");

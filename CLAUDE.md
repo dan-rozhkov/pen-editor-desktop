@@ -71,7 +71,7 @@ also holds the traffic lights); below it two rounded islands, the panel at `x = 
 `gap`, then the tab area (active tab view + empty-state view), then `gap` to the right
 edge and `gap` to the bottom edge. The panel island starts at the tab ROW height (38,
 `tabRowHeight`) whatever the address row does; only the tab area starts below the address
-row. Default 1440x900: panel `{x:8, y:38, w:380}`, tab area `{x:396, w:1036}` (y 38, or 70
+row. Default 1440x900: panel `{x:8, y:38, w:380}`, tab area `{x:396, w:1036}` (y 38, or 79
 with an address row). `tabStripLeft` = the tab area's left edge. Radius: `ISLAND_RADIUS`
 (12) is set ONCE per view with `WebContentsView.setBorderRadius` (Electron 43) at creation
 (panel, empty view, every tab view); `layout()` only places views. There is no window rim
@@ -90,16 +90,17 @@ The active
 tab pill keeps its own translucent `--glass-tab-active` (unchanged).
 
 *Address row.* Painted in the island colour as the top of the tab island: inset to the tab
-area's x-range, rounded top corners. Gap and radius are NOT hardcoded in CSS: `layout.ts`
+area's x-range, rounded top corners, and it mirrors the agent chat header row of the frontend
+(pen-editor `ChatPanel` `OpenChatHeader`: `px-2 py-1.5 gap-1 border-b border-border-default`, 28px
+icon buttons, title `text-sm font-medium text-text-primary`): height `ADDRESS_ROW_HEIGHT` = 41
+(28 + 2*6 + 1px border; `layout.ts`, sent as `addressRowHeight` -> CSS `--address-row-height`),
+padding 0 8px, gap 4px, `border-bottom: 1px solid var(--border)` (#e0e0e0 / #404040), URL text 14px/500
+in `--text-active`. Panel header and address row both start at the tab row height (38), so their
+bottom borders share one line (y = 78). Gap and radius are NOT hardcoded in CSS: `layout.ts`
 returns them (`gap`, `radius`), `window.ts` sends them on `tabbar:state` (`islandGap`,
 `islandRadius`) and `renderer.ts` writes `--island-gap` / `--island-radius` (pinned by
 `layout.test.ts`). The tab VIEW starts exactly below the row (`tabArea`): no page content is
-hidden (an earlier "view 12px under the row" trick hid the top of every page and was removed).
-The tab bar view is `radius` px taller than the row (`layout.tabTail`) and its `::after` tail
-paints that strip in the island colour, so the notches under the tab view's rounded top corners
-are island-coloured, not glass. Known cosmetic limit: the page's own rounded top corners show
-against that island colour (e.g. a white page on the dark island shows two small dark wedges).
-"+" sits at the right edge.
+hidden. A parent View's radius does not clip child WebContentsViews in Electron 43, so browser pages keep all-corner rounding; the page's rounded top corners show small wedges against the island-colour tail (which starts 1px below the row, `top: calc(100% + 1px)`, so it does not cover the border).
 
 *Theme and tint.* The app/OS appearance is NEVER changed (no `nativeTheme.themeSource`: it is
 app-wide and would flip `prefers-color-scheme` for browser tabs, isolated sessions and QA

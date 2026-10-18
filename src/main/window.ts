@@ -37,7 +37,7 @@ import {
 } from "@sideform/browser-agent/controller";
 import { resolveAgentPanelUrl, resolveCanvasTabUrl, INITIAL_TABS } from "./config";
 import { secureWebPreferences } from "./webPreferences";
-import { ISLAND_GAP, ISLAND_RADIUS, agentPanelWidthFor, computeWindowLayout } from "./layout";
+import { ADDRESS_ROW_HEIGHT, ISLAND_GAP, ISLAND_RADIUS, TAB_ROW_HEIGHT, agentPanelWidthFor, computeWindowLayout } from "./layout";
 import { AGENT_PANEL_SETTINGS_FILE, readAgentPanelSettings, writeAgentPanelSettings } from "./agentPanelSettings";
 import { isRecord, parseJournalOrigins, parseToken, rawToken } from "./checkpointArgs";
 import { JournalOwners } from "./journalOwners";
@@ -94,12 +94,6 @@ export interface LoginServices {
   loginCapture: LoginCapture;
   passwordsWindow: PasswordsWindow;
 }
-
-export const TABBAR_HEIGHT = 38;
-// The address row (design doc `2026-09-18-builtin-browser-design.md` §2) —
-// rendered as a second row inside the existing tab-bar view, shown only
-// when the active tab is a browser tab.
-export const CHROME_HEIGHT = 32;
 
 // Real ipcMain wiring for McpService.registerAppLevelIpc — kept here (not in
 // service.ts, which stays Electron-free for testability, see its header
@@ -400,6 +394,8 @@ export function createMainWindow(
       // Island numbers from layout.ts (CSS --island-gap / --island-radius).
       islandGap: geometry.gap,
       islandRadius: geometry.radius,
+      addressRowHeight: geometry.addressRowHeight,
+      tabRowHeight: TAB_ROW_HEIGHT,
     });
     const themed = resolveWindowTheme({ activeTheme: s.activeTheme, remembered: rememberedEditorTheme, system: FALLBACK_THEME });
     rememberedEditorTheme = themed.remembered;
@@ -1857,13 +1853,13 @@ export function createMainWindow(
   // applied below (a panel toggle or an address row changes them).
   const computeLayout = (activeKind: TabsSnapshot["activeKind"]) => {
     const { width, height } = win.getContentBounds();
-    const tabbarHeight = TABBAR_HEIGHT + (activeKind === "browser" ? CHROME_HEIGHT : 0);
+    const tabbarHeight = TAB_ROW_HEIGHT + (activeKind === "browser" ? ADDRESS_ROW_HEIGHT : 0);
     return computeWindowLayout({
       width,
       height,
       tabbarHeight,
       panelWidth: agentPanelWidthFor(panelCollapsed),
-      tabRowHeight: TABBAR_HEIGHT,
+      tabRowHeight: TAB_ROW_HEIGHT,
       islands: { gap: ISLAND_GAP, radius: ISLAND_RADIUS },
     });
   };

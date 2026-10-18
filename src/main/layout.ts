@@ -18,6 +18,14 @@ export const AGENT_PANEL_MAX_FRACTION = 0.5;
 /** Glass + islands: gap between the islands and to the window edges, and their corner radius (px). */
 export const ISLAND_GAP = 8;
 export const ISLAND_RADIUS = 12;
+/** Tab strip row height (the panel island starts here). */
+export const TAB_ROW_HEIGHT = 38;
+/**
+ * Browser address row height = the agent chat header row of the frontend (ChatPanel `OpenChatHeader`:
+ * `py-1.5` 6+6, a 28px `size-7` icon button, `border-b` 1) = 41. Both header rows start at the tab
+ * row height, so their bottom borders sit on one line across the window.
+ */
+export const ADDRESS_ROW_HEIGHT = 41;
 
 /**
  * Clamp a requested panel width to [MIN, 50% of the window]. In a window
@@ -60,6 +68,8 @@ export interface WindowLayout {
   panelVisible: boolean;
   /** Island gap (px). Sent to the tab bar (CSS `--island-gap`). */
   gap: number;
+  /** Address row height (px) the tab bar page uses (CSS `--address-row-height`); 0 without a row. */
+  addressRowHeight: number;
   /** Height of the island-colour tail the tab bar page paints under the address row (0 without a row). */
   tabTail: number;
   /** Corner radius of the panel / tab-area islands. */
@@ -89,13 +99,15 @@ function computeIslandLayout(input: WindowLayoutInput, gapIn: number, radiusIn: 
   // of the tab island and that tail (island colour, drawn by the tab bar page) fills the notches
   // under the tab view's rounded top corners. The tab view itself starts exactly below the row
   // (`tabArea`): no page content is ever hidden.
-  const tail = tabbarHeight > rowHeight ? Math.min(radius, Math.max(0, height - tabbarHeight)) : 0;
+  const addressRowHeight = tabbarHeight - rowHeight;
+  const tail = addressRowHeight > 0 ? Math.min(radius, Math.max(0, height - tabbarHeight)) : 0;
   return {
     panel: { x: panelX, y: rowHeight, width: panelW, height: Math.max(0, height - rowHeight - gap) },
     panelVisible: panelW > 0,
     tabbar: { x: 0, y: 0, width, height: tabbarHeight + tail },
     radius,
     gap,
+    addressRowHeight,
     tabTail: tail,
     tabArea: { x: tabX, y: tabbarHeight, width: tabW, height: tabBodyH },
     tabStripLeft: tabX,
@@ -114,3 +126,4 @@ export function computeWindowLayout(input: WindowLayoutInput): WindowLayout {
 export function agentPanelWidthFor(collapsed: boolean): number {
   return collapsed ? 0 : AGENT_PANEL_DEFAULT_WIDTH;
 }
+

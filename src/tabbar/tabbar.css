@@ -14,7 +14,7 @@ body {
 
 /* --- tab strip (row 1, always visible) --- */
 .tab-row {
-  height: 38px;
+  height: var(--tab-row-height, 38px);
   box-sizing: border-box;
   position: relative;
   display: flex;
@@ -99,16 +99,20 @@ body {
 /* --- address row (row 2, browser tabs only — design doc §2) --- */
 .chrome-row {
   position: relative;
-  height: 32px;
+  /* Mirrors the agent chat header row (pen-editor ChatPanel OpenChatHeader: `flex items-center gap-1
+     border-b border-border-default px-2 py-1.5`, a 28px icon button => 41px with the 1px border). The
+     height comes from layout.ts (ADDRESS_ROW_HEIGHT) through the tabbar:state snapshot. */
+  height: var(--address-row-height, 41px);
   box-sizing: border-box;
   /* The top of the tab island: island colour and rounded top corners
      (--island-gap / --island-radius come from layout.ts through the tabbar:state snapshot). */
   background: var(--island-bg);
+  border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   margin: 0 var(--island-gap, 8px) 0 var(--tab-strip-left, 0px);
-  padding: 0 6px;
+  padding: 0 8px;
   border-radius: var(--island-radius, 12px) var(--island-radius, 12px) 0 0;
   app-region: drag;
   -webkit-app-region: drag;
@@ -117,14 +121,14 @@ body {
 .nav-btn {
   flex: 0 0 28px; width: 28px; height: 28px;
   display: inline-flex; align-items: center; justify-content: center;
-  border: 0; background: none; color: var(--glass-text); cursor: pointer;
+  border: 0; background: none; color: var(--text-active); cursor: pointer;
   border-radius: 6px; padding: 0;
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
 .browser-tools-btn { margin-left: auto; }
 .nav-btn svg { width: 16px; height: 16px; }
-.nav-btn:hover:not(:disabled) { color: var(--text-active); background: var(--glass-tab-hover); }
+.nav-btn:hover:not(:disabled) { background: var(--glass-tab-hover); }
 .nav-btn:disabled { opacity: 0.35; cursor: default; }
 .nav-btn:focus-visible { outline: 1px solid currentColor; outline-offset: -2px; }
 /* Centered on the whole row, not on the space left of the nav buttons —
@@ -150,7 +154,10 @@ body {
   border-radius: 6px;
   background: transparent;
   color: var(--text-active);
-  font: inherit;
+  /* The chat header title: text-sm font-medium text-text-primary. */
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
   text-align: center;
   text-overflow: ellipsis;
   padding: 0 10px;
@@ -165,7 +172,7 @@ body {
    in the island colour, so the notches under the tab view's rounded top corners are not glass.
    The tab view itself starts exactly below the row: no page content is hidden. */
 .chrome-row::after {
-  content: ""; position: absolute; left: 0; right: 0; top: 100%; height: var(--island-radius, 12px); background: var(--island-bg);
+  content: ""; position: absolute; left: 0; right: 0; top: calc(100% + 1px); height: var(--island-radius, 12px); background: var(--island-bg); /* below the 1px border */
 }
 
 /* --- sidebar toggle and leading tab icons --- */

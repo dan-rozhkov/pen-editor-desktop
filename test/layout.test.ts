@@ -9,6 +9,8 @@ import {
   ISLAND_GAP,
   ISLAND_RADIUS,
   agentPanelWidthFor,
+  ADDRESS_ROW_HEIGHT,
+  TAB_ROW_HEIGHT,
 } from "../src/main/layout";
 
 describe("clampAgentPanelWidth", () => {
@@ -64,17 +66,25 @@ describe("computeWindowLayout (glass + islands)", () => {
 
 describe("islands: address row (tab view under the row) and collapsed panel", () => {
   const islands = { gap: 8, radius: 12 };
-  it("panel stays at the tab row height; the tab view starts exactly below the row; the tab bar has a radius-tall tail", () => {
-    const l = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 70, tabRowHeight: 38, panelWidth: 380, islands });
+  it("panel stays at the tab row height; the tab view starts exactly below the row; radius-tall tail", () => {
+    const l = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 79, tabRowHeight: 38, panelWidth: 380, islands });
     expect(l.panel).toEqual({ x: 8, y: 38, width: 380, height: 754 });
-    expect(l.tabArea).toEqual({ x: 396, y: 70, width: 796, height: 722 });
-    expect(l.tabbar).toEqual({ x: 0, y: 0, width: 1200, height: 82 });
+    expect(l.tabArea).toEqual({ x: 396, y: 79, width: 796, height: 713 });
+    expect(l.tabbar).toEqual({ x: 0, y: 0, width: 1200, height: 91 });
+    expect(l.addressRowHeight).toBe(41);
     expect(l.tabTail).toBe(12);
   });
-  it("no tail without an address row", () => {
+  it("no address row height without a row", () => {
     const a = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 38, tabRowHeight: 38, panelWidth: 380, islands });
     expect(a.tabbar.height).toBe(38);
+    expect(a.addressRowHeight).toBe(0);
     expect(a.tabTail).toBe(0);
+  });
+  it("the address row is as tall as the chat header row (28px icon button + 2*6 padding + 1px border) and both start at the tab row", () => {
+    expect(ADDRESS_ROW_HEIGHT).toBe(28 + 2 * 6 + 1);
+    expect(TAB_ROW_HEIGHT).toBe(38);
+    const l = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: TAB_ROW_HEIGHT + ADDRESS_ROW_HEIGHT, tabRowHeight: TAB_ROW_HEIGHT, panelWidth: 380, islands });
+    expect(l.panel.y + ADDRESS_ROW_HEIGHT).toBe(l.tabArea.y);
   });
   it("passes gap and radius through for the tab bar (CSS variables), pinned in tabbar.css", () => {
     const l = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 70, tabRowHeight: 38, panelWidth: 380, islands: { gap: 6, radius: 10 } });
@@ -83,6 +93,8 @@ describe("islands: address row (tab view under the row) and collapsed panel", ()
     const css = fs.readFileSync(path.join(__dirname, "../src/tabbar/tabbar.css"), "utf8");
     expect(css).toContain("var(--island-gap");
     expect(css).toContain("var(--island-radius");
+    expect(css).toContain(`var(--address-row-height, ${ADDRESS_ROW_HEIGHT}px)`);
+    expect(css).toContain(`var(--tab-row-height, ${TAB_ROW_HEIGHT}px)`);
     expect(css).not.toMatch(/border-radius:\s*12px 12px 0 0/);
     expect(css).not.toMatch(/margin:\s*0 8px 0/);
   });

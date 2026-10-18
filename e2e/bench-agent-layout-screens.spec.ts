@@ -339,7 +339,7 @@ async function launch(opts: { dark?: boolean; tag: string; emptyShot?: string })
 }
 
 async function waitPanel(panel: Page): Promise<void> {
-  await panel.getByPlaceholder("Ask the design agent...").or(panel.getByTestId("chat-list-new")).first().waitFor({ state: "visible", timeout: 90_000 });
+  await panel.getByPlaceholder("Ask Sideform Agent…").or(panel.getByTestId("chat-list-new")).first().waitFor({ state: "visible", timeout: 90_000 });
 }
 
 interface TabInfo {
@@ -375,7 +375,7 @@ async function newCanvasPage(shell: Shell, label: string, before: number): Promi
 }
 
 async function send(panel: Page, text: string): Promise<void> {
-  const input = panel.getByPlaceholder("Ask the design agent...");
+  const input = panel.getByPlaceholder("Ask Sideform Agent…");
   await input.waitFor({ state: "visible", timeout: 30_000 });
   await input.fill(text);
   await input.press("Enter");
@@ -394,7 +394,7 @@ async function newChat(panel: Page): Promise<void> {
   const header = panel.getByTestId("create-chat-button");
   if (await header.isVisible().catch(() => false)) await header.click();
   else await panel.getByTestId("chat-list-new").click();
-  await panel.getByPlaceholder("Ask the design agent...").waitFor({ state: "visible", timeout: 15_000 });
+  await panel.getByPlaceholder("Ask Sideform Agent…").waitFor({ state: "visible", timeout: 15_000 });
 }
 
 // ---- screenshots
@@ -504,7 +504,7 @@ test("agent layout: states 1-6 (light)", async () => {
   expect(new URL(panel.url()).pathname).toBe("/agent");
   expect(new URL(c1.url()).searchParams.get("chat")).toBe("off");
   await expect(c1.getByText("Agents", { exact: true })).toHaveCount(0);
-  expect(await panel.getByPlaceholder("Ask the design agent...").isVisible()).toBe(true);
+  expect(await panel.getByPlaceholder("Ask Sideform Agent…").isVisible()).toBe(true);
   await expect(panel.locator('[data-testid="message-list"], [role="log"]').getByText(/./)).toHaveCount(0).catch(() => undefined);
   note("01", `panel scene store present: ${await panel.evaluate(() => Boolean((window as never as { __sceneStore?: unknown }).__sceneStore))}`);
   note("01", "panel /agent + one canvas tab /app?chat=off, no Agents text on canvas");

@@ -308,14 +308,14 @@ class LatencyTracker {
 async function openChatPanel(page: Page): Promise<void> {
   // The agent panel opens on its chat list or on a chat. TODO(unverified): written without a live run
   // (needs network and tokens); same flow as bench-agent-layout-screens.spec.ts (waitPanel/newChat).
-  const input = page.getByPlaceholder("Ask the design agent...");
+  const input = page.getByPlaceholder("Ask Sideform Agent…");
   await input.or(page.getByTestId("chat-list-new")).first().waitFor({ state: "visible", timeout: 90_000 });
   if (!(await input.isVisible().catch(() => false))) await page.getByTestId("chat-list-new").click();
   await expect(input).toBeVisible({ timeout: 30_000 });
 }
 
 async function sendMessage(page: Page, text: string): Promise<void> {
-  const textarea = page.getByPlaceholder("Ask the design agent...");
+  const textarea = page.getByPlaceholder("Ask Sideform Agent…");
   await textarea.click();
   await textarea.fill(text);
   await page.locator('button[aria-label="Send"]').click();

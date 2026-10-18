@@ -135,12 +135,12 @@ test("live: QA mode diagnostics against a failing signup form", async ({}, testI
       console.log("PRIMED " + JSON.stringify(r).slice(0, 200));
     }
     // Panel state: chat list or an open chat (see bench-agent-layout-screens.spec.ts).
-    await editor.getByPlaceholder("Ask the design agent...").or(editor.getByTestId("chat-list-new")).first().waitFor({ state: "visible", timeout: 90_000 });
-    if (!(await editor.getByPlaceholder("Ask the design agent...").isVisible().catch(() => false))) await editor.getByTestId("chat-list-new").click();
+    await editor.getByPlaceholder("Ask Sideform Agent…").or(editor.getByTestId("chat-list-new")).first().waitFor({ state: "visible", timeout: 90_000 });
+    if (!(await editor.getByPlaceholder("Ask Sideform Agent…").isVisible().catch(() => false))) await editor.getByTestId("chat-list-new").click();
 
     for (let a = 0; a < attempts.length && !found; a++) {
       usedAttempt = a + 1;
-      const input = editor.getByPlaceholder("Ask the design agent...");
+      const input = editor.getByPlaceholder("Ask Sideform Agent…");
       await input.fill(attempts[a]);
       await input.press("Enter");
       const deadline = Date.now() + 80_000; let lastLog = 0;
