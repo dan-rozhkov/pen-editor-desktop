@@ -156,6 +156,8 @@ export const ZOOM_PRESETS: readonly number[] = [0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.
 export interface BrowserToolsState {
   /** False when the CDP debugger is not attached: Viewport items render disabled. */
   hasDebugger: boolean;
+  /** False when the tab has no committed document: Emulation.* would only wait (or crash), so Viewport items render disabled. */
+  hasDocument: boolean;
   viewport: ViewportPresetId;
   devToolsOpen: boolean;
   zoomFactor: number;
@@ -177,7 +179,7 @@ export function buildBrowserToolsMenuTemplate(
     label,
     type: "radio",
     checked: state.viewport === id,
-    enabled: state.hasDebugger,
+    enabled: state.hasDebugger && state.hasDocument,
     click: () => actions.setViewport(id),
   });
   return [
@@ -196,7 +198,7 @@ export function buildBrowserToolsMenuTemplate(
       // Electron's zoom is stored per HOST in the shared persist:penbrowser
       // partition, so it applies to every tab on this site and is remembered
       // across sessions. Deliberately not made per-tab.
-      label: "Zoom (this site)",
+      label: "Zoom",
       submenu: [
         // Accelerators are display-only; the application menu owns the shortcuts.
         { label: "Zoom In", accelerator: "CmdOrCtrl+Plus", registerAccelerator: false,

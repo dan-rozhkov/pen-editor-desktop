@@ -20,6 +20,13 @@ export type FetchMockHandler = (req: { url: string; method: string }) => FetchMo
 /** One browser tab's debugger session, as the router needs it. */
 export interface RoutedTab {
   sendCommand(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /**
+   * Optional: resolves once the tab can take page-state CDP (it has a committed
+   * document). Awaited only by `routeRequests` on an EXISTING tab; the
+   * fire-and-forget enable of a newly registered tab never waits for it.
+   * `boundMs`, when given, is a hard bound for this wait.
+   */
+  whenReady?(boundMs?: number): Promise<void>;
   /** Subscribe to the tab's CDP events; returns the unsubscribe. */
   onEvent(cb: (method: string, params: unknown) => void): () => void;
 }
@@ -38,6 +45,9 @@ interface TabState {
   chain: Promise<unknown>;
   tabId?: number;
 }
+
+/** How long `routeRequests` waits for a tab that is NOT the agent's own to commit its first document. */
+export const OTHER_TAB_READY_MS = 2_000;
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -71,7 +81,7 @@ export class FetchRouter {
     this.tabs.set(tab, state);
     if (this.routes.size > 0) {
       // Nobody can receive a throw here; log it.
-      this.enable(state).catch((err) => console.warn("[fetchRouting] could not enable Fetch on a new tab:", err));
+      this.enable(state, "none").catch((err) => console.warn("[fetchRouting] could not enable Fetch on a new tab:", err));
     }
     return () => {
       state.unsubscribe();
@@ -101,11 +111,16 @@ export class FetchRouter {
    * registered tab the call still succeeds (nothing to mock yet; tabs opened
    * later are covered while routing is active). The remover is idempotent.
    */
-  async routeRequests(handler: FetchMockHandler): Promise<() => Promise<void>> {
+  async routeRequests(handler: FetchMockHandler, currentWebContentsId: number | null = null): Promise<() => Promise<void>> {
     const route: Route = { handler, removal: new AbortController() };
     this.routes.add(route);
     const states = [...this.tabs.values()];
-    const results = await Promise.allSettled(states.map((state) => this.enable(state)));
+    // The agent's own tab must really be enabled (a failure fails the apply). Any other tab is
+    // best effort: one that cannot commit a document (crashed, aborted, still empty) is skipped
+    // and gets the fire-and-forget enable of a new tab, never blocking or failing the fixture.
+    const results = await Promise.allSettled(
+      states.map((state) => this.enable(state, state.tabId !== undefined && state.tabId === currentWebContentsId ? "required" : "bounded")),
+    );
     // A tab that closed during the call cannot be intercepted and needs no
     // interception: only failures on still-registered tabs fail the apply.
     const failed = results.some((r, i) => r.status === "rejected" && this.tabs.get(states[i].tab) === states[i]);
@@ -129,11 +144,33 @@ export class FetchRouter {
   }
 
   /** Resolves once the tab acknowledged Fetch.enable; rejects if it failed. */
-  private enable(state: TabState): Promise<void> {
-    return this.run(state, async () => {
+  private enable(state: TabState, ready: "none" | "required" | "bounded"): Promise<void> {
+    let skipped = false;
+    const done = this.run(state, async () => {
+      if (state.enabled || this.tabs.get(state.tab) !== state) return;
+      if (ready === "required") {
+        await state.tab.whenReady?.();
+      } else if (ready === "bounded" && state.tab.whenReady) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const ok = await Promise.race([
+          state.tab.whenReady(OTHER_TAB_READY_MS).then(() => true, () => false),
+          new Promise<false>((r) => (timer = setTimeout(() => r(false), OTHER_TAB_READY_MS))),
+        ]);
+        clearTimeout(timer);
+        if (!ok) {
+          skipped = true;
+          return;
+        }
+      }
       if (state.enabled || this.tabs.get(state.tab) !== state) return;
       await state.tab.sendCommand("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] });
       state.enabled = true;
+    });
+    return done.then(() => {
+      // Queued behind this op on the tab's chain; nobody awaits it (like a new tab's enable).
+      if (skipped && this.routes.size > 0) {
+        this.enable(state, "none").catch((err) => console.warn("[fetchRouting] could not enable Fetch on an uncommitted tab:", err));
+      }
     });
   }
 

@@ -191,6 +191,8 @@ export interface TabViewHandle {
    * `BrowserPageHandle.executeJavaScriptInFrame` — see its doc comment.
    */
   executeJavaScriptInFrame?(frameId: number, code: string, timeoutMs: number): Promise<unknown>;
+  /** Browser tools menu: the tab has a committed document (CDP page-state commands can be answered). */
+  hasDocument?(): boolean;
   /** Browser tools menu: whether the CDP debugger is attached RIGHT NOW (evaluated per call; detach can happen later). */
   hasDebugger?(): boolean;
   /** Browser tools menu: size of the tab's view, in DIPs. */

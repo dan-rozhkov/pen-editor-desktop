@@ -158,6 +158,8 @@ const makeBrowser = (scope?: { session: unknown }) => {
       call({ command: "applyFixture", args: { fixture } }),
     releaseFixture: (token?: string): Promise<unknown> =>
       call({ command: "releaseFixture", args: { token } }),
+    // Ends the emulation the agent's `viewport` action set (the run end). No args.
+    clearActEmulation: (): Promise<unknown> => call({ command: "clearActEmulation" }),
     // Saved logins (docs/superpowers/specs/2026-10-16-browser-saved-logins-design.md):
     // main types the stored login into the current tab's sign-in form. Only
     // { label?, submit? } leaves this preload; the result never holds a secret.

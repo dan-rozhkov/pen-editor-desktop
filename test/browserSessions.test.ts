@@ -60,6 +60,7 @@ describe("commandMayCreateSession", () => {
       ["screenshot", {}],
       ["fillLogin", {}],
       ["releaseFixture", {}],
+      ["clearActEmulation", {}],
       ["nope", {}],
     ] as const) {
       expect(commandMayCreateSession(c, a), `${c} ${JSON.stringify(a)}`).toBe(false);
@@ -89,6 +90,7 @@ describe("planSessionCommand", () => {
   it("cleanup commands answer naturally for a missing or closed session", () => {
     for (const state of ["missing", "closed"] as const) {
       expect(planSessionCommand("releaseFixture", {}, state)).toEqual({ action: "reply", value: { ok: true } });
+      expect(planSessionCommand("clearActEmulation", {}, state)).toEqual({ action: "reply", value: { ok: true } });
       expect(planSessionCommand("stopJournal", {}, state)).toEqual({ action: "reply", value: false });
       expect(planSessionCommand("captureCheckpoint", {}, state)).toEqual({ action: "reply", value: { ok: false, error: ERR_NO_JOURNAL } });
     }

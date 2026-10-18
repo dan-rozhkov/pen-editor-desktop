@@ -99,12 +99,12 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `tabbar:theme` main→tabbar (`light` | `dark`, active editor theme or system fallback)
 - `tabbar:new` / `tabbar:activate` / `tabbar:close` tabbar→main (sender-checked)
 - `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Editor Tab / New Browser Tab), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` has no UI caller any more; e2e drives it through `penTabbar.newTab()`, which a native menu can't be clicked through
-- `tabbar:tools-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the browser chrome row's sliders button: native menu (Viewport emulation via CDP, Open/Close Developer Tools, Zoom) for the active browser tab; builder in `src/main/browserToolsMenu.ts`
+- `tabbar:tools-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the browser chrome row's gear button: native menu (Viewport emulation via CDP, Open/Close Developer Tools, Zoom) for the active browser tab; builder in `src/main/browserToolsMenu.ts`
 - `tabbar:navigate` tabbar→main (sender-checked; `{action: "url" | "back" | "forward" | "reload", url?}`) — the address row driving the active browser tab, see "Built-in browser tab" below
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below
 - `mcp:call` main→tab only (`{callId, tool, args}`)
 - `mcp:result` tab→main (`{callId, type: "tool_result" | "tool_error", result?, error?}`)
-- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture" | "applyFixture" | "releaseFixture" | "fillLogin" | "startJournal" | "stopJournal" | "captureCheckpoint" | "assert" | "closeSession", args, session?}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; `session` (optional) routes to an isolated session, `closeSession` ends one (no new channel); see "Built-in browser tab" and "Isolated sessions" below
+- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture" | "applyFixture" | "releaseFixture" | "clearActEmulation" | "fillLogin" | "startJournal" | "stopJournal" | "captureCheckpoint" | "assert" | "closeSession", args, session?}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; `session` (optional) routes to an isolated session, `closeSession` ends one (no new channel); see "Built-in browser tab" and "Isolated sessions" below
 - `passwords:list` / `passwords:add` / `passwords:update` / `passwords:remove` / `passwords:never-remove` Passwords window→main, **invoke/handle**, each sender-checked against that window's own webContents; handlers are registered when the window opens and removed when it closes. No reply ever holds a password — see "Saved logins" below
 - `passwords:theme` main→Passwords window, payload `{ theme: "light" | "dark", vibrancyMatches: boolean }`. `theme` is the tab-bar theme (`tabbar:theme`) of the main window the user focused last (BaseWindow `focus`; each window's push is kept under its own key in `themeSource.ts`). If that window is closed or none was focused yet, the latest push of any open main window applies; with none left it follows `nativeTheme` again. `vibrancyMatches` is false when `theme` differs from the OS appearance: macOS sidebar vibrancy follows the OS, so the renderer then paints the sidebar opaque (`data-opaque-sidebar`). Pushed on window load and whenever the effective `{theme, vibrancyMatches}` changes (an unchanged value is not re-sent)
 - `passwords:changed` main→Passwords window, no payload. Sent when a site icon was stored (favicon fetched). The renderer re-reads `passwords:list` and refreshes the sidebar, rows and, in view mode only, the detail pane; an open Add/Edit form is never rebuilt
@@ -561,6 +561,36 @@ without `domain`, and `__Host-` cookies are set without `domain`.
   apply) per `fixtureToken`. A matching release resets the Browser tools
   Viewport radio of those tabs only. The menu itself sends through
   `sendCdpDirect`, so the user's own viewport is never taken for a fixture's.
+- **`Emulation.*` before the first commit crashes Electron 43** (main process
+  SIGSEGV, EXC_BAD_ACCESS at 0x0). A browser tab that never committed a
+  document must not receive it. `src/main/commitGate.ts` (pure, unit-tested)
+  plus `sendGated` in `window.ts`. Rules, each learned from a race:
+  - `ensure()` ONLY WAITS (for a navigation EVENT, never a CDP reply:
+    deadlock). It never loads anything; loading on demand cancelled a
+    navigation its caller had just started. The hidden `about:blank`
+    placeholder is loaded in two places only: at creation of a browser tab
+    (`startPlaceholderIfIdle`, ~100 ms after creation and only if the tab has not started a navigation by then: an immediate load raced `open`'s loadURL, and a committed about:blank makes Playwright report the page early; not awaited; `handle.loadURL` waits out an in-flight placeholder because Electron resolves a superseding `loadURL` at the placeholder's finish-load) and by the gate itself when the first
+    navigation was aborted with no commit (204/download: only
+    `did-stop-loading`, nothing loading, capped at 3).
+  - A commit is `did-navigate` OR `dom-ready` (a refused connection commits an
+    error page with no `did-navigate`). The placeholder also waits for its own
+    `dom-ready`, so a late one cannot satisfy a following `open`'s
+    `onceDomReady`. The 10 s timeout is quiet-time: start/redirect/loading
+    events re-arm it (hard cap 60 s while still loading). `render-process-gone`
+    resets the commit.
+  - Gated: the agent's `sendCdp`, the menu's `sendCdpDirect`, `getUaBrands`,
+    and FetchRouter's awaited enable in `routeRequests` on an EXISTING tab
+    (`RoutedTab.whenReady`). NOT gated: Page.enable/Network.enable at attach,
+    `registerTab`'s fire-and-forget Fetch.enable (a popup's first request must
+    still be mocked), the dialog handler and the login capture (both imply a
+    document; gating could deadlock).
+  - `getURL/getTitle/reportNavState` mask the placeholder through the gate's
+    exact `isPlaceholderShown()` flag, not a URL compare: an `about:blank`
+    opened on purpose is reported as such. The placeholder's history entry is
+    removed once a real page commits (also on the dom-ready-only error path),
+    then `reportNavState` refreshes `canGoBack`; a failed removal keeps the flag
+    and retries on the next navigation event.
+  Regression: `e2e/browser-emulate-first-command.spec.ts`.
 - DevTools opened from the Browser tools menu coexist with the automation
   debugger on Electron 43 (verified by `e2e/browser-qa-tools.spec.ts`): the
   debugger stays attached and `press`/`hover`/`screenshot`/`assert` keep working.
@@ -780,8 +810,8 @@ without sharing cookies, tabs, fixtures or mocks. The shared browser
   tombstones, orphan lookup); `ScopeCounter`.
 - **Which commands create.** Only `open`, `tabs` with `action: "new"`,
   `applyFixture`, `startJournal`. Any other command on a missing session →
-  `{error: "no such browser session"}`; `releaseFixture`/`stopJournal`/
-  `captureCheckpoint` answer naturally (`{ok:true}`, `false`, `{ok:false,error}`
+  `{error: "no such browser session"}`; `releaseFixture`/`clearActEmulation`/`stopJournal`/
+  `captureCheckpoint` answer naturally (`{ok:true}`, `{ok:true}`, `false`, `{ok:false,error}`
   with the shared `ERR_NO_JOURNAL`). Unknown commands never create. Validation
   happens before any partition is taken.
 - **Tombstones.** `closeSession` (also for an id that never existed or is still

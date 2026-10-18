@@ -173,7 +173,7 @@ describe("preload/tab.ts isolated browser sessions", () => {
     const iso = exposedApi.browser.isolated("run-1");
     const methods = [
       "open", "act", "findImages", "snapshot", "perform", "assert", "read", "screenshot", "tabs", "capture",
-      "applyFixture", "releaseFixture", "fillLogin", "startJournal", "stopJournal", "captureCheckpoint",
+      "applyFixture", "releaseFixture", "clearActEmulation", "fillLogin", "startJournal", "stopJournal", "captureCheckpoint",
     ];
     for (const m of methods) expect(typeof iso[m], m).toBe("function");
     for (const m of methods) {

@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
-import { FetchRouter, type RoutedTab, type FetchMockHandler } from "../src/main/fetchRouting";
+import { describe, expect, it, vi } from "vitest";
+import { FetchRouter, OTHER_TAB_READY_MS, type RoutedTab, type FetchMockHandler } from "../src/main/fetchRouting";
 
 class FakeTab implements RoutedTab {
   calls: { method: string; params?: Record<string, unknown> }[] = [];
   listeners = new Set<(m: string, p: unknown) => void>();
   failAll = false;
+  whenReady?: (boundMs?: number) => Promise<void>;
   sendCommand(method: string, params?: Record<string, unknown>) {
     this.calls.push({ method, params });
     return this.failAll ? Promise.reject(new Error("gone")) : Promise.resolve({});
@@ -29,6 +30,70 @@ async function setup(handler: FetchMockHandler) {
   const remove = await router.routeRequests(handler);
   return { router, tab, remove };
 }
+
+describe("FetchRouter whenReady", () => {
+  it("routeRequests waits for whenReady on an existing tab; a tab registered during routing does not", async () => {
+    const router = new FetchRouter();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const existing = new FakeTab();
+    existing.whenReady = () => gate;
+    router.registerTab(existing);
+    const pending = router.routeRequests(() => undefined);
+    await tick();
+    expect(existing.named("Fetch.enable")).toHaveLength(0);
+    release();
+    await pending;
+    expect(existing.named("Fetch.enable")).toHaveLength(1);
+    // A popup joining mid-routing: raw enable, whenReady never consulted.
+    const popup = new FakeTab();
+    popup.whenReady = () => new Promise<void>(() => undefined);
+    router.registerTab(popup);
+    await tick();
+    expect(popup.named("Fetch.enable")).toHaveLength(1);
+  });
+
+  it("fails the apply when whenReady rejects on the agent's own tab", async () => {
+    const router = new FetchRouter();
+    const tab = new FakeTab();
+    tab.whenReady = () => Promise.reject(new Error("timeout"));
+    router.registerTab(tab, 7);
+    await expect(router.routeRequests(() => undefined, 7)).rejects.toThrow(/could not enable/);
+  });
+
+  it("skips another tab whose whenReady rejects: the apply succeeds, the tab is enabled fire-and-forget", async () => {
+    const router = new FetchRouter();
+    const crashed = new FakeTab();
+    crashed.whenReady = () => Promise.reject(new Error("crashed"));
+    const own = new FakeTab();
+    router.registerTab(crashed, 1);
+    router.registerTab(own, 2);
+    await expect(router.routeRequests(() => undefined, 2)).resolves.toBeTypeOf("function");
+    expect(own.named("Fetch.enable")).toHaveLength(1);
+    await tick();
+    expect(crashed.named("Fetch.enable")).toHaveLength(1);
+  });
+
+  it("does not block on another tab that never commits: waits only the short bound", async () => {
+    vi.useFakeTimers();
+    try {
+      const router = new FetchRouter();
+      const stuck = new FakeTab();
+      stuck.whenReady = () => new Promise<void>(() => undefined);
+      router.registerTab(stuck, 1);
+      let done = false;
+      const p = router.routeRequests(() => undefined, null).then(() => (done = true));
+      await vi.advanceTimersByTimeAsync(OTHER_TAB_READY_MS - 1);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(2);
+      await p;
+      expect(done).toBe(true);
+      expect(stuck.named("Fetch.enable")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe("FetchRouter", () => {
   it("enables Fetch with a Request-stage wildcard pattern", async () => {

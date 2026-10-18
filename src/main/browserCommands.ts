@@ -17,6 +17,7 @@ export const BROWSER_COMMANDS = [
   "capture",
   "applyFixture",
   "releaseFixture",
+  "clearActEmulation",
   "fillLogin",
   "startJournal",
   "stopJournal",

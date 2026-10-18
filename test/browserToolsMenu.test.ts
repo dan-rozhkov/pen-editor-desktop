@@ -10,7 +10,7 @@ import {
   type BrowserToolsState,
 } from "../src/main/browserToolsMenu";
 
-const base: BrowserToolsState = { hasDebugger: true, viewport: "responsive", devToolsOpen: false, zoomFactor: 1, zoomLevel: 0 };
+const base: BrowserToolsState = { hasDebugger: true, hasDocument: true, viewport: "responsive", devToolsOpen: false, zoomFactor: 1, zoomLevel: 0 };
 const mkActions = (): BrowserToolsActions => ({ setViewport: vi.fn(), toggleDevTools: vi.fn(), setZoomFactor: vi.fn(), setZoomLevel: vi.fn() });
 const sub = (items: MenuItemConstructorOptions[], label: string) =>
   items.find((i) => i.label === label)!.submenu as MenuItemConstructorOptions[];
@@ -18,7 +18,7 @@ const sub = (items: MenuItemConstructorOptions[], label: string) =>
 describe("buildBrowserToolsMenuTemplate", () => {
   it("has Viewport, DevTools and Zoom in order", () => {
     const t = buildBrowserToolsMenuTemplate(base, mkActions());
-    expect(t.map((i) => i.label)).toEqual(["Viewport", "Open Developer Tools", "Zoom (this site)"]);
+    expect(t.map((i) => i.label)).toEqual(["Viewport", "Open Developer Tools", "Zoom"]);
   });
 
   it("lists viewport radios with the current choice checked", () => {
@@ -50,6 +50,12 @@ describe("buildBrowserToolsMenuTemplate", () => {
     expect(radios.every((i) => i.enabled === false)).toBe(true);
   });
 
+  it("disables viewport items on a tab without a committed document", () => {
+    const t = buildBrowserToolsMenuTemplate({ ...base, hasDocument: false }, mkActions());
+    const radios = sub(t, "Viewport").filter((i) => i.type === "radio");
+    expect(radios.every((i) => i.enabled === false)).toBe(true);
+  });
+
   it("toggles the DevTools label and action", () => {
     const a = mkActions();
     const open = buildBrowserToolsMenuTemplate({ ...base, devToolsOpen: true }, a);
@@ -61,7 +67,7 @@ describe("buildBrowserToolsMenuTemplate", () => {
   it("checks the current zoom preset and applies clicks", () => {
     const a = mkActions();
     const t = buildBrowserToolsMenuTemplate({ ...base, zoomFactor: 1.25 }, a);
-    const radios = sub(t, "Zoom (this site)").filter((i) => i.type === "radio");
+    const radios = sub(t, "Zoom").filter((i) => i.type === "radio");
     expect(radios.map((i) => i.label)).toEqual(["50%", "75%", "90%", "100%", "110%", "125%", "150%", "200%"]);
     expect(radios.filter((i) => i.checked).map((i) => i.label)).toEqual(["125%"]);
     radios[0].click!({} as never, undefined, {} as never);
@@ -70,13 +76,13 @@ describe("buildBrowserToolsMenuTemplate", () => {
 
   it("marks a preset checked within 0.01 of the factor", () => {
     const t = buildBrowserToolsMenuTemplate({ ...base, zoomFactor: 1.1 + 0.008 }, mkActions());
-    const radios = sub(t, "Zoom (this site)").filter((i) => i.type === "radio");
+    const radios = sub(t, "Zoom").filter((i) => i.type === "radio");
     expect(radios.filter((i) => i.checked).map((i) => i.label)).toEqual(["110%"]);
   });
 
   it("Zoom In / Out step the level by 0.5; Actual Size resets to 0", () => {
     const a = mkActions();
-    const z = sub(buildBrowserToolsMenuTemplate({ ...base, zoomLevel: 1 }, a), "Zoom (this site)");
+    const z = sub(buildBrowserToolsMenuTemplate({ ...base, zoomLevel: 1 }, a), "Zoom");
     for (const l of ["Zoom In", "Zoom Out", "Actual Size"]) z.find((i) => i.label === l)!.click!({} as never, undefined, {} as never);
     expect(vi.mocked(a.setZoomLevel).mock.calls.map((c) => c[0])).toEqual([1.5, 0.5, 0]);
   });

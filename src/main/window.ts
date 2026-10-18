@@ -37,6 +37,7 @@ import {
 import { isRecord, parseJournalOrigins, parseToken, rawToken } from "./checkpointArgs";
 import { JournalOwners } from "./journalOwners";
 import { FetchRouter } from "./fetchRouting";
+import { BLANK_DOCUMENT_URL, createCommitGate } from "./commitGate";
 import * as fixtureSession from "./fixtureSession";
 import { CURSOR_SETTINGS_FILE, type CursorSettings, readCursorSettings, resolveCursorSettings, writeCursorSettings } from "./cursorSettings";
 import type { McpService, IpcListenerGateway } from "./mcp/service";
@@ -418,7 +419,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
       let browserTabBlank = kind === "browser";
       if (kind === "browser") {
         view.webContents.on("did-start-navigation", (details) => {
-          if (!browserTabBlank || !details.isMainFrame) return;
+          // The placeholder document (ensureDocument below) keeps the tab blank.
+          if (!browserTabBlank || !details.isMainFrame || details.url === BLANK_DOCUMENT_URL) return;
           browserTabBlank = false;
           view.setBackgroundColor("#ffffff");
         });
@@ -434,6 +436,92 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
       // checks report a clear error for press/hover, and dialogs simply
       // aren't auto-handled — nothing else in this bridge depends on it.
       let debuggerAttached = false;
+      // Commit gate (commitGate.ts): `Emulation.*` CDP on a browser tab that has
+      // not committed a document crashes the Electron 43 main process (SIGSEGV;
+      // found with `applyFixture({ emulate })` as a scope's first command and
+      // with the Browser tools menu on a new empty tab), and most other CDP
+      // commands are only answered after the first commit. `sendGated` waits for
+      // a navigation EVENT first (never for a CDP reply: that would deadlock).
+      // It ONLY WAITS: the hidden about:blank placeholder is loaded here at tab
+      // creation (a blank tab, shortly after, not awaited) and by the gate when the first
+      // navigation was aborted with no commit, never on demand.
+      // Gated: the agent's `sendCdp`, the menu's `sendCdpDirect`, getUaBrands
+      // and FetchRouter's awaited enable on an existing tab. NOT gated:
+      // Page.enable / Network.enable at attach, the router's fire-and-forget
+      // enable for a new tab (a popup's first request must still be mocked),
+      // the dialog handler and the login capture (both imply a document).
+      const commitGate = createCommitGate({
+        isDestroyed: () => view.webContents.isDestroyed(),
+        isLoading: () => view.webContents.isLoading(),
+        loadPlaceholder: () => {
+          // Kept so handle.loadURL can wait it out: Electron resolves a loadURL() issued while
+          // about:blank is still loading at the PLACEHOLDER's finish-load, so `open` would come
+          // back "loaded" on about:blank with the real page still to come.
+          const p = view.webContents.loadURL(BLANK_DOCUMENT_URL);
+          const settled = p.then(() => undefined, () => undefined);
+          placeholderLoad = settled;
+          void settled.then(() => {
+            if (placeholderLoad === settled) placeholderLoad = null;
+          });
+          return p;
+        },
+      });
+      let placeholderLoad: Promise<void> | null = null;
+      const ensureDocument = (timeoutMs?: number): Promise<void> =>
+        kind === "browser" ? commitGate.ensure(timeoutMs === undefined ? undefined : { timeoutMs }) : Promise.resolve();
+      const sendGated = async (method: string, params?: Record<string, unknown>, gateTimeoutMs?: number): Promise<unknown> => {
+        await ensureDocument(gateTimeoutMs);
+        return view.webContents.debugger.sendCommand(method, params);
+      };
+      // The Browser tools menu runs in the tab's serial queue: an uncommitted tab must
+      // fail fast there, not wedge the queue for the gate's full 10 s.
+      const MENU_GATE_TIMEOUT_MS = 2_000;
+      // Exact: the gate knows whether the document on screen is its own placeholder.
+      const isPlaceholderShown = () => kind === "browser" && commitGate.isPlaceholderShown();
+      if (kind === "browser") {
+        const wc = view.webContents;
+        // The placeholder history entry must not become a Back target behind the first real page.
+        const dropPlaceholderEntry = () => {
+          if (!commitGate.hasStalePlaceholderEntry()) return;
+          const history = wc.navigationHistory;
+          if (history.getEntryAtIndex(0)?.url === BLANK_DOCUMENT_URL) {
+            // The new entry is not active yet: try again on the next navigation event.
+            if (history.getActiveIndex() <= 0) return;
+            try {
+              history.removeEntryAtIndex(0);
+            } catch (err) {
+              console.error("browser tab: could not remove the placeholder history entry", err);
+              return; // flag kept: retried on the next navigation event
+            }
+          }
+          commitGate.placeholderEntryRemoved();
+          reportNavState(); // canGoBack is stale until now
+        };
+        wc.on("did-start-navigation", (details) => {
+          if (details.isMainFrame && !details.isSameDocument) commitGate.onStartNavigation(details.url);
+        });
+        wc.on("did-redirect-navigation", (details) => {
+          if (details.isMainFrame) commitGate.onProgress();
+        });
+        wc.on("did-start-loading", () => commitGate.onProgress());
+        wc.on("did-navigate", (_e, url) => {
+          commitGate.onNavigated(url);
+          dropPlaceholderEntry();
+        });
+        wc.on("dom-ready", () => {
+          commitGate.onDomReady();
+          dropPlaceholderEntry();
+        });
+        wc.on("did-stop-loading", () => commitGate.onStopLoading());
+        wc.on("render-process-gone", () => commitGate.onRendererGone());
+        wc.once("destroyed", () => commitGate.onDestroyed());
+        // A blank tab gets a document of its own, so CDP never meets a document-less tab. A
+        // moment after creation, not in this tick: `open` creates a tab and loads its URL
+        // straight away (the placeholder would only race it), and a committed about:blank
+        // makes Playwright report the page before its real URL is known.
+        const placeholderTimer = setTimeout(() => commitGate.startPlaceholderIfIdle(), 100);
+        wc.once("destroyed", () => clearTimeout(placeholderTimer));
+      }
       // Subscribers to this tab's CDP events (FetchRouter) — one listener on
       // the debugger, fanned out here, so applies never leak listeners.
       const cdpEventListeners = new Set<(method: string, params: unknown) => void>();
@@ -517,6 +605,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         // one left for the user, since nothing here handled it.
         dialogQueue.push({ type, message });
         if (dialogQueue.length > DIALOG_QUEUE_CAP) dialogQueue.shift();
+        // Raw, not gated: a dialog implies a document, and waiting here could deadlock.
         view.webContents.debugger
           .sendCommand("Page.handleJavaScriptDialog", { accept, promptText: "" })
           .catch((err) => console.error("browser tab: failed to auto-handle JS dialog", err));
@@ -643,7 +732,11 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         if (debuggerAttached && router) {
           unregisterFromFetchRouter = router.registerTab(
             {
+              // Raw: the router's fire-and-forget enable on a new tab/popup must not wait for a
+              // commit (the popup's first request has to be mocked). `whenReady` gates only
+              // the awaited enable of `routeRequests` on an existing tab.
               sendCommand: (method, params) => view.webContents.debugger.sendCommand(method, params),
+              whenReady: (boundMs) => ensureDocument(boundMs),
               onEvent: (cb) => {
                 cdpEventListeners.add(cb);
                 return () => cdpEventListeners.delete(cb);
@@ -750,9 +843,11 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         null;
       const reportNavState = () => {
         if (!navListener) return;
+        // The placeholder document is not something the user navigated to: the tab still reads as new.
+        const blank = isPlaceholderShown();
         navListener({
-          url: view.webContents.getURL(),
-          title: view.webContents.getTitle(),
+          url: blank ? "" : view.webContents.getURL(),
+          title: blank ? "" : view.webContents.getTitle(),
           canGoBack: view.webContents.navigationHistory.canGoBack(),
           canGoForward: view.webContents.navigationHistory.canGoForward(),
         });
@@ -816,7 +911,18 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         return isFetchableStylesheetUrl(u);
       };
       return {
-        loadURL: (url) => view.webContents.loadURL(url),
+        loadURL: (url) => {
+          // Electron resolves a loadURL() issued while about:blank is still loading at the
+          // PLACEHOLDER's finish-load, so `open` would come back "loaded" on about:blank with
+          // the real page still to come. Stop the in-flight placeholder first (the gate is told,
+          // so the stop is not mistaken for an aborted first navigation) and load the real URL.
+          if (placeholderLoad && kind === "browser") {
+            commitGate.cancelPlaceholder();
+            placeholderLoad = null;
+            view.webContents.stop();
+          }
+          return view.webContents.loadURL(url);
+        },
         setBounds: (b) => view.setBounds(b),
         setVisible: (v) => view.setVisible(v),
         destroy: () => {
@@ -864,8 +970,9 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         onNavigationStateChanged: (cb) => {
           navListener = cb;
         },
-        getURL: () => view.webContents.getURL(),
-        getTitle: () => view.webContents.getTitle(),
+        // The placeholder document is not something the user or agent navigated to: it reads as empty.
+        getURL: () => (isPlaceholderShown() ? "" : view.webContents.getURL()),
+        getTitle: () => (isPlaceholderShown() ? "" : view.webContents.getTitle()),
         goBack: () => view.webContents.navigationHistory.goBack(),
         goForward: () => view.webContents.navigationHistory.goForward(),
         reload: () => view.webContents.reload(),
@@ -950,9 +1057,16 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         // TabManager.setActive's `view.setVisible(...)` calls above set, so
         // this needs no separate visibility bookkeeping of its own.
         isVisible: () => view.getVisible(),
+        // Skips the placeholder's own dom-ready (commitGate.lastDomReadyWasPlaceholder):
+        // the placeholder loads at tab creation, and `open` arms this right before loadURL.
         onceDomReady: () =>
           new Promise<void>((resolve) => {
-            view.webContents.once("dom-ready", () => resolve());
+            const onReady = () => {
+              if (kind === "browser" && commitGate.lastDomReadyWasPlaceholder()) return;
+              view.webContents.removeListener("dom-ready", onReady);
+              resolve();
+            };
+            view.webContents.on("dom-ready", onReady);
           }),
         // Full browser use's `screenshot` command (@sideform/browser-agent/controller).
         // Shared by both tab kinds — capturePage() needs no preload and
@@ -997,12 +1111,12 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         // for a fixture's.
         sendCdp: debuggerAttached
           ? (method, params) => {
-              if (!sessionId) agentEmulation.note(viewId, method);
-              return view.webContents.debugger.sendCommand(method, params);
+              if (!sessionId) agentEmulation.note(viewId, method, params);
+              return sendGated(method, params);
             }
           : undefined,
         sendCdpDirect: debuggerAttached
-          ? (method, params) => view.webContents.debugger.sendCommand(method, params)
+          ? (method, params) => sendGated(method, params, MENU_GATE_TIMEOUT_MS)
           : undefined,
         drainDialogs: () => dialogQueue.splice(0, dialogQueue.length),
         // Browser tools menu. DevTools vs the automation debugger: Electron
@@ -1013,12 +1127,16 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         // hasDebugger is evaluated per call: `debuggerAttached` flips to false
         // on a later detach, while `sendCdp` above is fixed at creation.
         hasDebugger: () => debuggerAttached,
+        hasDocument: () => kind !== "browser" || commitGate.hasDocument(),
         getViewSize: () => {
           const b = view.getBounds();
           return { width: b.width, height: b.height };
         },
         getUaBrands: async () => {
           try {
+            // executeJavaScript on a tab with no document never answers until
+            // the tab's first load: commit the placeholder first (new empty tab).
+            await ensureDocument(MENU_GATE_TIMEOUT_MS);
             const r: unknown = await view.webContents.executeJavaScript(
               "navigator.userAgentData ? navigator.userAgentData.brands.map(b => ({ brand: b.brand, version: b.version })) : null",
             );
@@ -1170,7 +1288,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
       // A tab whose debugger attach failed is never registered: refuse rather
       // than report mocks active that this tab would ignore.
       router.assertCurrentTabInterceptable(tabs.browserHandle(scope)?.getWebContentsId() ?? null);
-      return router.routeRequests(handler);
+      return router.routeRequests(handler, tabs.browserHandle(scope)?.getWebContentsId() ?? null);
     },
     // PageFixture cookies / `fresh`: this scope's partition only — never the
     // editor session or the default session (see fixtureSession.ts).
@@ -1464,6 +1582,14 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
           }
           return result;
         }
+        case "clearActEmulation": {
+          // Shared scope only. Forgetting the menu's record of EVERY tab the agent's viewport
+          // action touched is deliberate: the controller sweeps those tabs' overrides too, so a
+          // record of a user's own pick on such a tab would be stale anyway.
+          await controller.clearActEmulation().catch((err) => console.error("browser: clearActEmulation failed", err));
+          if (sessionId === undefined) resetViewportRecords(agentEmulation.clearAct());
+          return { ok: true };
+        }
         case "releaseFixture": {
           if (sessionId === undefined) await releaseSharedFixture(rawToken(payload.args));
           else await controller.releaseFixture(rawToken(payload.args));
@@ -1560,6 +1686,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
       buildBrowserToolsMenuTemplate(
         {
           hasDebugger: handle.hasDebugger?.() ?? false,
+          hasDocument: handle.hasDocument?.() ?? true,
           viewport: viewportByTab.get(handle) ?? "responsive",
           devToolsOpen: handle.isDevToolsOpened?.() ?? false,
           zoomFactor: handle.getZoomFactor?.() ?? 1,
@@ -1570,6 +1697,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
             const run = async () => {
               const send = handle.sendCdpDirect;
               if (!send || !handle.hasDebugger?.()) return;
+              // No early return on a missing document: a new tab commits its placeholder within
+              // ~100 ms, and the sends below wait at most MENU_GATE_TIMEOUT_MS for it.
               const prev = viewportByTab.get(handle) ?? "responsive";
               const commands = planViewportCommands(id, {
                 view: handle.getViewSize?.() ?? { width: 1e6, height: 1e6 },
@@ -1581,7 +1710,14 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
               } catch (err) {
                 console.error("browser tools: viewport emulation failed", err);
                 // Roll back to a known state: no overrides, recorded as responsive.
-                for (const c of planClearCommands()) await send(c.method, c.params).catch(() => {});
+                // Fail fast: when the first clear is rejected (e.g. no document), the rest would be too.
+                for (const c of planClearCommands()) {
+                  try {
+                    await send(c.method, c.params);
+                  } catch {
+                    break;
+                  }
+                }
                 viewportByTab.set(handle, "responsive");
                 return;
               }

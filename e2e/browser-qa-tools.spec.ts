@@ -197,7 +197,7 @@ test("Browser tools button exists right of the URL field and sends tabbar:tools-
     expect(typeof anchor.x).toBe("number");
     await expect.poll(() => env.app.evaluate(() => (globalThis as any).__menus.length as number)).toBe(before + 1);
     const rows = await menuState(env);
-    expect(rows.map((r) => r.label)).toEqual(["Viewport", "Open Developer Tools", "Zoom (this site)"]);
+    expect(rows.map((r) => r.label)).toEqual(["Viewport", "Open Developer Tools", "Zoom"]);
   } finally {
     await env.app.close();
   }
@@ -311,22 +311,22 @@ test("Zoom menu actions drive webContents.getZoomFactor", async () => {
     const factor = () =>
       env.app.evaluate(({ webContents }, siteUrl) => webContents.getAllWebContents().find((w) => w.getURL().startsWith(siteUrl))!.getZoomFactor(), site);
     expect(await factor()).toBeCloseTo(1, 5);
-    await clickMenu(env, "Zoom (this site)", "Zoom In");
+    await clickMenu(env, "Zoom", "Zoom In");
     expect(await factor()).toBeCloseTo(Math.pow(1.2, 0.5), 3);
-    await clickMenu(env, "Zoom (this site)", "Zoom In");
+    await clickMenu(env, "Zoom", "Zoom In");
     expect(await factor()).toBeCloseTo(1.2, 3);
-    await clickMenu(env, "Zoom (this site)", "Zoom Out");
-    await clickMenu(env, "Zoom (this site)", "Zoom Out");
-    await clickMenu(env, "Zoom (this site)", "Zoom Out");
+    await clickMenu(env, "Zoom", "Zoom Out");
+    await clickMenu(env, "Zoom", "Zoom Out");
+    await clickMenu(env, "Zoom", "Zoom Out");
     expect(await factor()).toBeCloseTo(Math.pow(1.2, -0.5), 3);
-    await clickMenu(env, "Zoom (this site)", "Actual Size");
+    await clickMenu(env, "Zoom", "Actual Size");
     expect(await factor()).toBeCloseTo(1, 5);
-    await clickMenu(env, "Zoom (this site)", "150%");
+    await clickMenu(env, "Zoom", "150%");
     expect(await factor()).toBeCloseTo(1.5, 3);
     await openToolsMenu(env);
     const zoom = (await menuState(env)).find((r) => r.label.startsWith("Zoom"))!.sub!;
     expect(zoom.filter((r) => r.checked).map((r) => r.label)).toEqual(["150%"]);
-    await clickMenu(env, "Zoom (this site)", "Actual Size");
+    await clickMenu(env, "Zoom", "Actual Size");
     expect(await factor()).toBeCloseTo(1, 5);
   } finally {
     await env.app.close();
@@ -425,6 +425,74 @@ test("fixture emulate iphone-15: width, screenshot aspect, release clears and re
     await openToolsMenu(env);
     expect(await viewportRadio(env)).toEqual(["Desktop — 1440×900"]);
     expect(Math.abs((await readInfo(env.site)).w - 1440)).toBeLessThanOrEqual(3);
+  } finally {
+    await env.app.close();
+  }
+});
+
+test("act viewport: iphone-15, custom, clearActEmulation restores width and UA; the menu record resets", async () => {
+  const env = await launch();
+  try {
+    const base = await readInfo(env.site);
+    // The user picks Pixel 8 first; the agent then changes the device itself.
+    await clickMenu(env, "Viewport", "Pixel 8");
+    await expect.poll(async () => (await readInfo(env.site)).w).toBe(412);
+
+    const iphone = await cmd(env.editor, "act", { action: "viewport", device: "iphone-15" });
+    expect(iphone.error, JSON.stringify(iphone)).toBeUndefined();
+    await expect.poll(async () => (await readInfo(env.site)).w).toBe(393);
+    expect((await readInfo(env.site)).ua).toContain("iPhone");
+
+    const custom = await cmd(env.editor, "act", { action: "viewport", device: "custom", width: 800, height: 600 });
+    expect(custom.error, JSON.stringify(custom)).toBeUndefined();
+    await expect.poll(async () => (await readInfo(env.site)).w).toBe(800);
+
+    // Until the clear, the radio still shows the user's earlier pick (reset on clear, like a fixture).
+    await openToolsMenu(env);
+    expect(await viewportRadio(env)).toEqual(["Pixel 8 — 412×915"]);
+
+    expect(await cmd(env.editor, "clearActEmulation")).toEqual({ ok: true });
+    await openToolsMenu(env);
+    expect(await viewportRadio(env)).toEqual(["Responsive (window size)"]);
+    await cmd(env.editor, "open", { url: `${site}/info` });
+    await expect.poll(async () => (await readInfo(env.site)).ua).not.toContain("iPhone");
+    expect((await readInfo(env.site)).w).toBe(base.w);
+    expect((await readInfo(env.site)).ua).toBe(base.ua);
+
+    // A second clear is a no-op.
+    expect(await cmd(env.editor, "clearActEmulation")).toEqual({ ok: true });
+  } finally {
+    await env.app.close();
+  }
+});
+
+test("act viewport in an isolated session: emulate, clearActEmulation, and a missing session answers {ok:true}", async () => {
+  const env = await launch();
+  try {
+    const iso = (method: string, ...args: unknown[]) =>
+      env.editor.evaluate(
+        ({ method, args }) =>
+          (((window as any).penDesktop.browser.isolated("qa-act") as Record<string, (...a: unknown[]) => Promise<unknown>>)[method])(...args),
+        { method, args },
+      ) as Promise<Res>;
+    const info = async () => {
+      const r = await iso("read");
+      const m = /\{"w":[^\n]*\}/.exec(String(r.text ?? ""));
+      return JSON.parse(m![0]) as { w: number; ua: string };
+    };
+    expect(await iso("clearActEmulation")).toEqual({ ok: true }); // no session yet
+    const opened = await iso("open", { url: `${site}/info?k=iso` });
+    expect(opened.error, JSON.stringify(opened)).toBeUndefined();
+    const base = await info();
+    const r = await iso("act", { action: "viewport", device: "iphone-15" });
+    expect(r.error, JSON.stringify(r)).toBeUndefined();
+    await iso("open", { url: `${site}/info?k=iso2` });
+    await expect.poll(async () => (await info()).w).toBe(393);
+    expect(await iso("clearActEmulation")).toEqual({ ok: true });
+    await iso("open", { url: `${site}/info?k=iso3` });
+    await expect.poll(async () => (await info()).ua).toBe(base.ua);
+    expect((await info()).w).toBe(base.w);
+    await env.editor.evaluate(() => (window as any).penDesktop.browser.closeSession("qa-act"));
   } finally {
     await env.app.close();
   }
