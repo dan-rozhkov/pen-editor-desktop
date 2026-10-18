@@ -297,3 +297,24 @@ test("reloading the owner editor tab closes its sessions (orphans)", async () =>
     await app.close();
   }
 });
+
+test("a denied navigation in the owner editor tab keeps its sessions", async () => {
+  const { app, editor } = await launch();
+  try {
+    await call(editor, "d1", "open", { url: `${site}/set?v=d1` });
+    expect(pagesAt(app, `${site}/set`).length).toBe(1);
+
+    // A file: target is denied by the navigation policy: nothing commits.
+    await editor.evaluate(() => {
+      location.href = "file:///etc/hosts";
+    });
+    await new Promise((r) => setTimeout(r, 800));
+    expect(editor.url()).toContain(editorBaseUrl);
+    await expect(editor.locator("#ready")).toHaveText("stub-editor");
+    expect(pagesAt(app, `${site}/set`).length).toBe(1);
+    expect((await call(editor, "d1", "snapshot")).error).toBeUndefined();
+    await closeSession(editor, "d1");
+  } finally {
+    await app.close();
+  }
+});

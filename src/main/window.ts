@@ -281,7 +281,7 @@ export function createMainWindow(
   const canvasLink = agentLayout
     ? new CanvasLinkRouter({
         isEditorTab: (id) => tabs.isEditorTab(id),
-        isPanel: (id) => agentPanelView !== null && agentPanelView.webContents.id === id,
+        isPanel: (id) => panelWc()?.id === id,
         sendFromTab: (msg) => {
           const wc = panelWc();
           wc?.send("canvas:from-tab", msg);
@@ -832,16 +832,16 @@ export function createMainWindow(
         };
         view.webContents.on("render-process-gone", () => {
           releaseOrphanedFixture();
-          canvasLink?.tabGone(viewId);
+          canvasLink?.rendererGone(viewId);
         });
-        view.webContents.on("did-start-navigation", (details) => {
-          if (details.isMainFrame && !details.isSameDocument) releaseOrphanedFixture();
-        });
-        // A registered canvas tab is gone for the panel once a reload COMMITS
-        // (not at did-start-navigation, which also fires for navigations that
-        // never commit: denied by the policy, 204, downloads).
-        view.webContents.on("did-navigate", () => {
-          if (isOrphaningEvent({ type: "did-navigate" })) canvasLink?.tabGone(viewId);
+        // Orphaned (and, for a registered canvas tab, gone for the panel) once a
+        // reload COMMITS, not at did-start-navigation, which also fires for
+        // navigations that never commit (denied by the policy, 204, downloads).
+        view.webContents.on("did-frame-navigate", (_e, _url, _code, _text, isMainFrame) => {
+          if (isOrphaningEvent({ type: "did-navigate", isMainFrame, isSameDocument: false })) {
+            releaseOrphanedFixture();
+            canvasLink?.tabGone(viewId);
+          }
         });
         attachNavigationPolicy(view.webContents, editorOrigin, (url) => void shell.openExternal(url));
         attachOfflineFallback(view.webContents, offlineFile);
@@ -1546,7 +1546,7 @@ export function createMainWindow(
   // released when it goes away: this window's editor tabs and its agent panel.
   const panelId = agentPanelView ? agentPanelView.webContents.id : null;
   const isBrowserOwner = (id: number): boolean =>
-    isBrowserOwnerId(id, (x) => tabs.isEditorTab(x), agentPanelView && !agentPanelView.webContents.isDestroyed() ? panelId : null);
+    isBrowserOwnerId(id, (x) => tabs.isEditorTab(x), panelWc()?.id ?? null);
   // The panel is never destroyed on its own but reloads and can crash: like an
   // editor tab, that skips its renderer cleanup, so main releases what it owned.
   const releasePanelOrphans = (gone = false) => {
@@ -1557,11 +1557,19 @@ export function createMainWindow(
   };
   if (agentPanelView) {
     agentPanelView.webContents.on("render-process-gone", () => {
-      if (isOrphaningEvent({ type: "render-process-gone" })) releasePanelOrphans();
+      if (isOrphaningEvent({ type: "render-process-gone" })) {
+        releasePanelOrphans();
+        canvasLink?.panelGone();
+      }
     });
-    agentPanelView.webContents.on("did-navigate", () => {
-      if (isOrphaningEvent({ type: "did-navigate" })) releasePanelOrphans();
+    agentPanelView.webContents.on("did-frame-navigate", (_e, _url, _code, _text, isMainFrame) => {
+      if (isOrphaningEvent({ type: "did-navigate", isMainFrame, isSameDocument: false })) {
+        releasePanelOrphans();
+        canvasLink?.panelGone();
+      }
     });
+    // The reloaded panel has no list: push it once the page is up.
+    agentPanelView.webContents.on("did-finish-load", () => canvasLink?.repush());
   }
 
   const onBrowserCommand = async (event: Electron.IpcMainInvokeEvent, payload: unknown) => {
@@ -1684,9 +1692,10 @@ export function createMainWindow(
           // The fixture's own page loads are part of the run: flush BEFORE it.
           clearScopeDiagnostics(sessionId);
           const shared = sessionId === undefined;
+          let ticket = 0;
           if (shared) {
             resetViewportRecords(agentEmulation.beginApply());
-            fixtureOwners.beginApply();
+            ticket = fixtureOwners.beginApply(sender);
           }
           let result: unknown;
           try {
@@ -1694,7 +1703,9 @@ export function createMainWindow(
           } finally {
             if (shared) {
               resetViewportRecords(agentEmulation.finishApply(result));
-              fixtureOwners.finishApply(sender, result);
+              // A sender that went away (or reloaded) mid-apply must not keep the fixture.
+              const orphaned = fixtureOwners.finishApply(ticket, sender, result, isBrowserOwner(sender));
+              if (orphaned) void releaseSharedFixture(orphaned.token);
             }
           }
           return result;

@@ -47,7 +47,7 @@ A `tab-gone` (it carries `registrationId`) for the bound registration clears the
 | `canvas:register` | tab → main | none; sender must be an editor tab of this window |
 | `canvas:unregister` | tab → main | none; sender must be a registered editor tab. Main treats it like `tab-gone` for the current registration (panel gets `tab-gone`, tab leaves the list) |
 | `canvas:to-panel` | tab → main | `env` (main adds the sender's `tabId`) |
-| `canvas:from-panel` | main → tab | `env` |
+| `canvas:from-panel` | main → tab | `env` (from the panel, or main's `{kind:"panel-gone"}`) |
 
 Sender checks: `canvas:*` from the panel only from that window's panel view;
 from tabs only from registered editor tabs (same pattern as `mcp:register`).
@@ -56,6 +56,8 @@ from tabs only from registered editor tabs (same pattern as `mcp:register`).
 destroyed, navigates (committed main-frame reload), calls `canvas:unregister` or whose renderer dies → main sends
 `tab-gone` for it and removes it from the list. Order per sender is kept; no
 batching.
+
+When the panel reloads (committed main-frame navigation) or its renderer dies, main sends every registered canvas tab a main-made `{kind:"panel-gone"}` envelope on `canvas:from-panel` (the panel itself cannot: it is gone). The tab must cancel all in-flight work and abandon open streams. A renderer cannot post `panel-gone` (nor `error` / `tab-gone`). The reloaded panel gets a fresh `canvas:tabs` push when its page finishes loading and on its next `canvas:list`.
 
 ## Messages
 

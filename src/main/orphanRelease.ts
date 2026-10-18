@@ -12,18 +12,19 @@ export function isBrowserOwner(id: number, isEditorTab: (id: number) => boolean,
 
 export type OrphanEvent =
   | { type: "render-process-gone" }
-  | { type: "did-navigate"; isMainFrame?: boolean; isSameDocument?: boolean };
+  | { type: "did-navigate"; isMainFrame: boolean; isSameDocument: boolean };
 
 /**
  * Whether an event on the agent panel orphans what it owned (its shared
  * fixture, journals, isolated sessions) and for a canvas tab means "gone". The
  * panel is never destroyed on its own; it reloads and can crash, and either
  * skips its renderer cleanup. Only a COMMITTED main-frame navigation counts
- * (`did-navigate`): `did-start-navigation` also fires for navigations that never
+ * (`did-frame-navigate`, which carries `isMainFrame`; it never fires for
+ * same-document navigations): `did-start-navigation` also fires for navigations that never
  * commit (denied by the navigation policy, 204, downloads), which must not close
  * anything. Renderer death always counts.
  */
 export function isOrphaningEvent(e: OrphanEvent): boolean {
   if (e.type === "render-process-gone") return true;
-  return e.isMainFrame !== false && e.isSameDocument !== true;
+  return e.isMainFrame && !e.isSameDocument;
 }

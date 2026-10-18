@@ -10,6 +10,8 @@
  * A tab is identified by its webContents id (`tabId` on the wire).
  */
 
+import { isRecord } from "./checkpointArgs";
+
 export interface LinkEnvelope {
   id: string;
   sentAt: number;
@@ -54,7 +56,7 @@ export interface CanvasLinkDeps {
 }
 
 /** Kinds only main may produce; a renderer posting them is dropped. */
-const MAIN_ONLY_KINDS = new Set(["error", "tab-gone"]);
+const MAIN_ONLY_KINDS = new Set(["error", "tab-gone", "panel-gone"]);
 
 /** `canvas:open` resolves when the new tab registers, else rejects after this. */
 export const OPEN_TIMEOUT_MS = 20_000;
@@ -64,11 +66,9 @@ export const ERR_OPEN_TIMEOUT = "The canvas tab did not register in time.";
 export const ERR_OPEN_CLOSED = "The canvas tab was closed before it registered.";
 
 function isEnvelope(value: unknown): value is LinkEnvelope {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Record<string, unknown>;
-  if (typeof v.id !== "string" || typeof v.sentAt !== "number" || !Number.isFinite(v.sentAt)) return false;
-  const msg = v.msg as Record<string, unknown> | null;
-  return typeof msg === "object" && msg !== null && typeof msg.kind === "string";
+  if (!isRecord(value)) return false;
+  if (typeof value.id !== "string" || typeof value.sentAt !== "number" || !Number.isFinite(value.sentAt)) return false;
+  return isRecord(value.msg) && typeof value.msg.kind === "string";
 }
 
 interface Registered {
@@ -93,7 +93,7 @@ export class CanvasLinkRouter {
   private activeWc: number | null = null;
   private seq = 0;
   private nextMainId = 1;
-  private lastPushed = "[]";
+  private lastPushed: string | null = "[]";
   private lastSyncKey = "";
   private readonly timers: TimerApi;
 
@@ -135,6 +135,10 @@ export class CanvasLinkRouter {
       this.activationSeq.set(activeWebContentsId, ++this.seq);
     }
     this.activeWc = activeWebContentsId;
+    // A registered id that is no longer an editor tab (a closing tab) is gone:
+    // it must never be listed as "Untitled".
+    const live = new Set(editorTabs.map((t) => t.webContentsId));
+    for (const id of [...this.registered.keys()]) if (!live.has(id)) this.tabGone(id);
     this.pushTabs();
   }
 
@@ -187,7 +191,10 @@ export class CanvasLinkRouter {
 
   /** `canvas:list` (invoke). */
   list(sender: number): CanvasTabInfo[] {
-    return this.deps.isPanel(sender) ? this.listTabs() : [];
+    if (!this.deps.isPanel(sender)) return [];
+    const tabs = this.listTabs();
+    this.lastPushed = JSON.stringify(tabs); // the panel now knows this list
+    return tabs;
   }
 
   /** `canvas:activate`. Only a registered canvas tab can be activated. */
@@ -212,22 +219,58 @@ export class CanvasLinkRouter {
   }
 
   /**
-   * The tab was reloaded, its renderer died, or (`destroyed`) it was closed.
-   * A registered tab leaves the list and the panel gets `tab-gone`.
+   * The tab was reloaded (a committed navigation) or (`destroyed`) closed. A
+   * registered tab leaves the list and the panel gets `tab-gone`. A pending
+   * `canvas:open` is rejected only on destroy: the tab's first navigation is
+   * part of opening it.
    */
   tabGone(webContentsId: number, destroyed = false): void {
+    this.drop(webContentsId, destroyed, destroyed);
+  }
+
+  /** The tab's renderer died: like `tabGone`, and a pending `canvas:open` for it can never register. */
+  rendererGone(webContentsId: number): void {
+    this.drop(webContentsId, true, false);
+  }
+
+  /**
+   * The agent panel reloaded or its renderer died: every registered canvas tab
+   * gets the main-made `panel-gone` (on `canvas:from-panel`) so it aborts
+   * in-flight work, and the next `canvas:tabs` push is not deduped away (the
+   * reloaded panel knows no list).
+   */
+  panelGone(): void {
+    for (const id of this.registered.keys()) {
+      this.deps.sendFromPanel(id, {
+        id: `main-${this.nextMainId++}`,
+        sentAt: this.deps.now(),
+        msg: { kind: "panel-gone" },
+      });
+    }
+    this.lastPushed = null;
+  }
+
+  /** Pushes the current list even if unchanged (the panel finished loading). */
+  repush(): void {
+    this.lastPushed = null;
+    this.pushTabs();
+  }
+
+  private drop(webContentsId: number, rejectPending: boolean, forget: boolean): void {
     const reg = this.registered.get(webContentsId);
     if (reg) {
       this.registered.delete(webContentsId);
       this.sendMainToPanel(webContentsId, { kind: "tab-gone", registrationId: reg.registrationId });
     }
-    if (destroyed) {
+    if (rejectPending) {
       const pending = this.pendingOpen.get(webContentsId);
       if (pending) {
         this.pendingOpen.delete(webContentsId);
         this.timers.clear(pending.timer);
         pending.reject(new Error(ERR_OPEN_CLOSED));
       }
+    }
+    if (forget) {
       this.registrationCounter.delete(webContentsId);
       this.activationSeq.delete(webContentsId);
     }

@@ -337,3 +337,77 @@ describe("CanvasLinkRouter unregister + sync", () => {
     expect(s.tabsPushes[s.tabsPushes.length - 1][0].title).toBe("New");
   });
 });
+
+describe("CanvasLinkRouter closing tabs, renderer death, panel reload", () => {
+  it("syncTabs drops a registered id that is no longer an editor tab", () => {
+    const s = setup();
+    s.router.register(A);
+    s.router.register(B);
+    s.fromTab.length = 0;
+    s.router.syncTabs([{ webContentsId: A, title: "A" }], A);
+    expect(s.router.listTabs().map((t) => t.tabId)).toEqual([A]);
+    expect(s.fromTab.map((m) => [m.tabId, m.env.msg.kind])).toEqual([[B, "tab-gone"]]);
+    expect(s.tabsPushes[s.tabsPushes.length - 1].map((t) => t.title)).toEqual(["A"]);
+  });
+
+  it("renderer death rejects a pending open; a plain tabGone (first navigation) does not", async () => {
+    const s = setup();
+    const p1 = s.router.open(PANEL, {});
+    s.router.tabGone(100);
+    let settled = false;
+    p1.catch(() => (settled = true));
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    s.router.rendererGone(100);
+    await expect(p1).rejects.toThrow(ERR_OPEN_CLOSED);
+  });
+
+  it("rendererGone on a registered tab sends tab-gone and keeps its counters", () => {
+    const s = setup();
+    s.router.register(A);
+    s.fromTab.length = 0;
+    s.router.rendererGone(A);
+    expect(s.fromTab.map((m) => m.env.msg.kind)).toEqual(["tab-gone"]);
+    s.router.register(A);
+    expect(s.router.listTabs()[0].registrationId).toBe(2);
+  });
+
+  it("panelGone tells every registered tab and the next list/push is not deduped", () => {
+    const s = setup();
+    s.router.register(A);
+    s.router.register(B);
+    s.router.register(99 as number); // not an editor tab: ignored
+    s.toTab.length = 0;
+    s.router.panelGone();
+    expect(s.toTab.map((m) => [m.id, m.env.msg.kind]).sort()).toEqual([
+      [A, "panel-gone"],
+      [B, "panel-gone"],
+    ]);
+    const before = s.tabsPushes.length;
+    s.router.repush();
+    expect(s.tabsPushes.length).toBe(before + 1);
+    s.router.repush();
+    expect(s.tabsPushes.length).toBe(before + 2);
+  });
+
+  it("after panelGone, an unchanged tab list is pushed again on the next change signal", () => {
+    const s = setup();
+    s.router.register(A);
+    s.syncAll(A);
+    const before = s.tabsPushes.length;
+    s.router.panelGone();
+    s.router.tabGone(B); // B never registered: no push
+    s.router.register(B);
+    s.router.tabGone(B);
+    expect(s.tabsPushes.length).toBeGreaterThan(before);
+  });
+
+  it("a renderer cannot forge panel-gone", () => {
+    const s = setup();
+    s.router.register(A);
+    s.router.toPanel(A, s.env("x", "panel-gone"));
+    s.router.toTab(PANEL, { tabId: A, env: s.env("y", "panel-gone") });
+    expect(s.toTab).toEqual([]);
+    expect(s.fromTab.filter((m) => m.env.msg.kind === "panel-gone")).toEqual([]);
+  });
+});

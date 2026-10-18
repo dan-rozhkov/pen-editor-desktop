@@ -4,38 +4,80 @@
 // and its token, the way journalOwners.ts does for the checkpoint journal, so a
 // reload, crash or close of one owner releases only a fixture that owner applied
 // and never another tab's (or the panel's) run. Electron-free so it is unit-tested.
+//
+// The owner is recorded when the apply STARTS (pending), not when it ends: an
+// owner that reloads, crashes or closes during the apply marks the in-flight
+// fixture for release, and `finishApply` hands back what to release.
+
+interface Current {
+  ticket: number;
+  owner: number;
+  token: string | undefined;
+  pending: boolean;
+  /** The owner went away while the apply was in flight. */
+  doomed: boolean;
+}
+
+export interface FixtureRelease {
+  token: string | undefined;
+}
 
 export class FixtureOwners {
-  private current: { owner: number; token: string | undefined } | null = null;
+  private current: Current | null = null;
+  private nextTicket = 1;
 
   /**
-   * An `applyFixture` starts. The controller releases the previous fixture
-   * first, so nobody owns one until this apply succeeds.
+   * An `applyFixture` by `sender` starts. The controller releases the previous
+   * fixture first. Returns the ticket to pass to `finishApply`.
    */
-  beginApply(): void {
-    this.current = null;
+  beginApply(sender: number): number {
+    const ticket = this.nextTicket++;
+    this.current = { ticket, owner: sender, token: undefined, pending: true, doomed: false };
+    return ticket;
   }
 
-  /** The apply ended with `result` (the controller's FixtureApplyResult). Only a success is owned. */
-  finishApply(sender: number, result: unknown): void {
+  /**
+   * The apply ended with `result` (the controller's FixtureApplyResult).
+   * `senderAlive` is whether the sender is still a live browser owner. Returns
+   * what the caller must release now (a success whose owner is gone or went away
+   * mid-apply), else `null`. Only a success is owned.
+   */
+  finishApply(ticket: number, sender: number, result: unknown, senderAlive = true): FixtureRelease | null {
+    const cur = this.current;
+    if (!cur || cur.ticket !== ticket) return null; // superseded by a later apply
     const r = (result ?? {}) as { ok?: unknown; fixtureToken?: unknown };
-    this.current =
-      r.ok === true ? { owner: sender, token: typeof r.fixtureToken === "string" ? r.fixtureToken : undefined } : null;
+    if (r.ok !== true) {
+      this.current = null;
+      return null;
+    }
+    const token = typeof r.fixtureToken === "string" ? r.fixtureToken : undefined;
+    if (cur.doomed || !senderAlive) {
+      this.current = null;
+      return { token };
+    }
+    this.current = { ticket, owner: sender, token, pending: false, doomed: false };
+    return null;
   }
 
   /** An explicit `releaseFixture` ran: no token releases whatever is active, a token only that fixture. */
   released(token?: string): void {
+    if (this.current?.pending) return;
     if (token === undefined || this.current?.token === token) this.current = null;
   }
 
   /**
    * The owner reloaded, crashed or closed. Returns what to release: `null` when
-   * it owns nothing, else `{ token }` (a token-less fixture is released by
-   * passing `undefined`). The ownership is dropped.
+   * it owns nothing (or its apply is still in flight: that one is marked and
+   * `finishApply` returns the release), else `{ token }` (a token-less fixture
+   * is released by passing `undefined`). The ownership is dropped.
    */
-  takeOwnedBy(sender: number): { token: string | undefined } | null {
+  takeOwnedBy(sender: number): FixtureRelease | null {
     const cur = this.current;
     if (!cur || cur.owner !== sender) return null;
+    if (cur.pending) {
+      cur.doomed = true;
+      return null;
+    }
     this.current = null;
     return { token: cur.token };
   }
