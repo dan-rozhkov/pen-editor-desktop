@@ -85,3 +85,36 @@ export function resolveUserDataDir(env: NodeJS.ProcessEnv): string | undefined {
   const raw = env.PEN_DESKTOP_USER_DATA_DIR;
   return isEnvValueSet(raw) ? (raw as string).trim() : undefined;
 }
+
+/** `PEN_DESKTOP_AGENT_LAYOUT=1` turns on the left agent chat panel (see
+ * layout.ts / window.ts). Off unless the value is exactly "1", "true" or "on"
+ * (trimmed, case-insensitive). */
+export function resolveAgentLayoutEnabled(env: NodeJS.ProcessEnv): boolean {
+  const raw = env.PEN_DESKTOP_AGENT_LAYOUT;
+  if (!isEnvValueSet(raw)) return false;
+  const normalized = (raw as string).trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "on";
+}
+
+/** The agent panel page, derived from the editor URL (same origin):
+ * - the LAST path segment `app` becomes `agent`, keeping any base path prefix
+ *   (`https://host/pen/app` -> `https://host/pen/agent`); a trailing slash is
+ *   ignored (`/app/` -> `/agent`);
+ * - a path that does not end in an `app` segment gets `agent` as a sibling of
+ *   its last segment, i.e. `agent` resolved relative to the URL (`/` and
+ *   `/other` -> `/agent`, `/pen/x` -> `/pen/agent`, `/pen/` -> `/pen/agent`);
+ * - the editor's query string and hash are dropped: they are editor-only
+ *   params and must not leak into the panel. */
+export function resolveAgentPanelUrl(editorUrl: string): string {
+  const url = new URL(editorUrl);
+  url.search = "";
+  url.hash = "";
+  const segments = url.pathname.split("/");
+  // Ignore one trailing slash only when it follows an `app` segment.
+  if (segments.length > 2 && segments[segments.length - 1] === "" && segments[segments.length - 2] === "app") {
+    segments.pop();
+  }
+  segments[segments.length - 1] = "agent";
+  url.pathname = segments.join("/");
+  return url.toString();
+}

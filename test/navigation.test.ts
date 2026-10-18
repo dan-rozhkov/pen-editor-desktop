@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   decideNavigation,
+  decidePanelNavigation,
+  attachPanelNavigationPolicy,
   attachNavigationPolicy,
   attachBrowserTabPolicy,
   attachOfflineFallback,
@@ -193,5 +195,61 @@ describe("attachOfflineFallback", () => {
       true,
     );
     expect(contents.loadFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("decidePanelNavigation", () => {
+  const PANEL = `${ORIGIN}/agent`;
+  it("allows the panel path and its subpaths, with query/hash", () => {
+    expect(decidePanelNavigation(`${ORIGIN}/agent`, PANEL)).toBe("allow");
+    expect(decidePanelNavigation(`${ORIGIN}/agent/`, PANEL)).toBe("allow");
+    expect(decidePanelNavigation(`${ORIGIN}/agent/chat/1?x=1#h`, PANEL)).toBe("allow");
+  });
+  it("sends other same-origin pages to an editor tab", () => {
+    expect(decidePanelNavigation(`${ORIGIN}/app`, PANEL)).toBe("editor-tab");
+    expect(decidePanelNavigation(`${ORIGIN}/`, PANEL)).toBe("editor-tab");
+    expect(decidePanelNavigation(`${ORIGIN}/agentx`, PANEL)).toBe("editor-tab");
+  });
+  it("sends foreign http(s) external and denies the rest", () => {
+    expect(decidePanelNavigation("https://example.com/agent", PANEL)).toBe("external");
+    expect(decidePanelNavigation("file:///etc/passwd", PANEL)).toBe("deny");
+    expect(decidePanelNavigation("%%%", PANEL)).toBe("deny");
+  });
+  it("honours a base path prefix", () => {
+    const panel = "https://host/pen/agent";
+    expect(decidePanelNavigation("https://host/pen/agent/x", panel)).toBe("allow");
+    expect(decidePanelNavigation("https://host/agent", panel)).toBe("editor-tab");
+  });
+});
+
+describe("attachPanelNavigationPolicy", () => {
+  it("blocks will-navigate away from the panel and routes it", () => {
+    const contents = fakeContents();
+    const openExternal = vi.fn();
+    const openEditorTab = vi.fn();
+    attachPanelNavigationPolicy(contents as never, `${ORIGIN}/agent`, openExternal, openEditorTab);
+    const ok = { preventDefault: vi.fn() };
+    contents.emit("will-navigate", ok, `${ORIGIN}/agent/x`);
+    expect(ok.preventDefault).not.toHaveBeenCalled();
+    const app = { preventDefault: vi.fn() };
+    contents.emit("will-navigate", app, `${ORIGIN}/app`);
+    expect(app.preventDefault).toHaveBeenCalled();
+    expect(openEditorTab).toHaveBeenCalledTimes(1);
+    const ext = { preventDefault: vi.fn() };
+    contents.emit("will-navigate", ext, "https://example.com/");
+    expect(ext.preventDefault).toHaveBeenCalled();
+    expect(openExternal).toHaveBeenCalledWith("https://example.com/");
+  });
+  it("denies popups and routes them the same way", () => {
+    const contents = fakeContents();
+    const openExternal = vi.fn();
+    const openEditorTab = vi.fn();
+    attachPanelNavigationPolicy(contents as never, `${ORIGIN}/agent`, openExternal, openEditorTab);
+    expect(contents.open(`${ORIGIN}/agent/x`)).toEqual({ action: "deny" });
+    expect(openEditorTab).not.toHaveBeenCalled();
+    expect(contents.open(`${ORIGIN}/`)).toEqual({ action: "deny" });
+    expect(openEditorTab).toHaveBeenCalledTimes(1);
+    expect(contents.open("https://example.com/")).toEqual({ action: "deny" });
+    expect(openExternal).toHaveBeenCalledWith("https://example.com/");
   });
 });

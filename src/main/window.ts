@@ -21,6 +21,7 @@ import { createAgentEmulationTracker } from "./agentEmulation";
 import { createRunBoundary } from "./runBoundary";
 import {
   attachNavigationPolicy,
+  attachPanelNavigationPolicy,
   attachOfflineFallback,
   attachLocalOnlyPolicy,
   attachBrowserTabPolicy,
@@ -34,6 +35,9 @@ import {
   type BrowserPageHandle,
   isFetchableStylesheetUrl,
 } from "@sideform/browser-agent/controller";
+import { resolveAgentPanelUrl } from "./config";
+import { secureWebPreferences } from "./webPreferences";
+import { AGENT_PANEL_DEFAULT_WIDTH, computeWindowLayout } from "./layout";
 import { isRecord, parseJournalOrigins, parseToken, rawToken } from "./checkpointArgs";
 import { JournalOwners } from "./journalOwners";
 import { FetchRouter } from "./fetchRouting";
@@ -153,7 +157,14 @@ function withFrameTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  * ipcMain listeners. This function only *reports* tab create/destroy/active
  * and the app-level MCP menu status into it.
  */
-export function createMainWindow(editorUrl: string, mcpService: McpService, loginServices: LoginServices): BaseWindow {
+export function createMainWindow(
+  editorUrl: string,
+  mcpService: McpService,
+  loginServices: LoginServices,
+  // Flag-gated left agent chat panel (PEN_DESKTOP_AGENT_LAYOUT); resolved once
+  // in index.ts, like editorUrl.
+  agentLayout: boolean,
+): BaseWindow {
   // Idempotent — see registerAppLevelIpc's own doc comment. Safe to call on
   // every window (re)creation, including the macOS dock "activate" reopen.
   mcpService.registerAppLevelIpc(createMcpIpcGateway());
@@ -195,12 +206,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
 
   // --- tab bar view ---
   const tabbarView = new WebContentsView({
-    webPreferences: {
-      preload: path.join(__dirname, "../preload/tabbar.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
+    webPreferences: secureWebPreferences(path.join(__dirname, "../preload/tabbar.js")),
   });
   // macOS window rim (see the BaseWindow options above): a light-grey 1px
   // line just inside the window edge. Around the content area it is this
@@ -212,6 +218,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
   if (windowRim) win.contentView.addChildView(windowRim);
   win.contentView.addChildView(tabbarView);
   attachLocalOnlyPolicy(tabbarView.webContents);
+
   if (process.platform === "darwin") {
     // Let the window's vibrancy material show through the tab bar's own
     // translucent CSS background (tabbar.css's `--bar-glass`/`--chrome-glass`
@@ -232,11 +239,40 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
   // reported theme, or the resolved theme once a browser tab is active —
   // see setBackgroundColor usages below).
   const backgroundColorForTheme = (theme: UITheme): string => (theme === "dark" ? "#1a1a1a" : "#ffffff");
+
+  // --- agent panel (flag) ---
+  // Not a tab: never given to TabManager or mcpService, and its preload
+  // exposes no IPC, so it has no browser:command / mcp access. It sits below
+  // the tab bar (see layout.ts); an opaque, theme-matched background like the
+  // tab content views, updated in pushState.
+  const panelUrl = resolveAgentPanelUrl(editorUrl);
+  const agentPanelView = agentLayout
+    ? new WebContentsView({
+        webPreferences: secureWebPreferences(path.join(__dirname, "../preload/agentPanel.js")),
+      })
+    : null;
+  if (agentPanelView) {
+    win.contentView.addChildView(agentPanelView);
+    agentPanelView.setBackgroundColor(backgroundColorForTheme(systemTheme()));
+    // Anything but the panel's own page is not for the panel: other editor
+    // origin pages open as a (default-URL) editor tab, foreign origins go to
+    // the system browser.
+    attachPanelNavigationPolicy(
+      agentPanelView.webContents,
+      panelUrl,
+      (url) => void shell.openExternal(url),
+      () => void tabs.newTab("editor"),
+    );
+    attachOfflineFallback(agentPanelView.webContents, offlineFile);
+    void agentPanelView.webContents.loadURL(panelUrl);
+  }
   // The last snapshot actually pushed — kept only so shouldFocusAddressBar
   // (tabManager.ts) has a "previous" to compare against. window.ts owns
   // this bit of bookkeeping so the pure predicate itself stays stateless;
   // it does not make the focus decision, only feeds and acts on it.
   let previousSnapshot: TabsSnapshot | null = null;
+  // Tab strip's left offset inside the tab bar (= panel's right edge); set by `layout`.
+  let tabStripLeft = 0;
   const pushState = (s: TabsSnapshot) => {
     // s.mcpActiveWebContentsId is computed by TabManager itself (see
     // TabsSnapshot's doc comment / finding 1) — window.ts just forwards it,
@@ -262,11 +298,12 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     // user is doing.
     const focusAddressBar = shouldFocusAddressBar(previousSnapshot, s);
     previousSnapshot = s;
-    tabbarView.webContents.send("tabbar:state", { ...s, focusAddressBar });
+    tabbarView.webContents.send("tabbar:state", { ...s, focusAddressBar, tabStripLeft });
     const resolvedTheme = s.activeTheme ?? systemTheme();
     // Keep in sync with tabbar.css's --window-rim.
     windowRim?.setBackgroundColor(resolvedTheme === "dark" ? "#4d4d4d" : "#ececec");
     tabbarView.webContents.send("tabbar:theme", resolvedTheme);
+    agentPanelView?.setBackgroundColor(backgroundColorForTheme(resolvedTheme));
     loginServices.passwordsWindow.setTheme(themeKey, resolvedTheme);
     if (focusAddressBar) tabbarView.webContents.focus();
     // Keep a visible browser tab's own blank-canvas background matching the
@@ -380,7 +417,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
       const view = new WebContentsView(
         kind === "browser"
           ? {
-              webPreferences: {
+              webPreferences: secureWebPreferences(undefined, {
                 // Dedicated session partition — the security boundary for
                 // the built-in browser (design doc §1): the editor's
                 // cookies are never in it, and whatever the user logs into
@@ -388,19 +425,9 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
                 // preload: a browser tab must never see `penDesktop`.
                 // An isolated session gets a pool slot `qa-0`..`qa-5` (no `persist:`): memory only.
                 partition: sessionId ? requireLiveSession(sessionId).partition : "persist:penbrowser",
-                contextIsolation: true,
-                nodeIntegration: false,
-                sandbox: true,
-              },
+              }),
             }
-          : {
-              webPreferences: {
-                preload: path.join(__dirname, "../preload/tab.js"),
-                contextIsolation: true,
-                nodeIntegration: false,
-                sandbox: true,
-              },
-            },
+          : { webPreferences: secureWebPreferences(path.join(__dirname, "../preload/tab.js")) },
       );
       win.contentView.addChildView(view);
       const viewId = view.webContents.id;
@@ -1632,9 +1659,18 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     const { width, height } = win.getContentBounds();
     const activeKind = tabs.getSnapshot().activeKind;
     const tabbarHeight = TABBAR_HEIGHT + (activeKind === "browser" ? CHROME_HEIGHT : 0);
-    tabbarView.setBounds({ x: 0, y: 0, width, height: tabbarHeight });
-    windowRim?.setBounds({ x: 0, y: tabbarHeight, width, height: Math.max(0, height - tabbarHeight) });
-    tabs.layout({ width, height }, tabbarHeight, WINDOW_EDGE);
+    const l = computeWindowLayout({
+      width,
+      height,
+      tabbarHeight,
+      edge: WINDOW_EDGE,
+      panelWidth: agentPanelView ? AGENT_PANEL_DEFAULT_WIDTH : null,
+    });
+    tabStripLeft = l.tabStripLeft;
+    if (agentPanelView && l.panel) agentPanelView.setBounds(l.panel);
+    tabbarView.setBounds(l.tabbar);
+    windowRim?.setBounds(l.rim);
+    tabs.layout(l.tabArea);
   };
   win.on("resize", layout);
   layout();
@@ -1794,6 +1830,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     agentActivity.dispose();
     tabs.destroyAll();
     tabbarView.webContents.close();
+    agentPanelView?.webContents.close();
   });
 
   // --- menu ---

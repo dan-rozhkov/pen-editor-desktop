@@ -125,7 +125,12 @@ body {
   app-region: drag;
   -webkit-app-region: drag;
 }
-:root[data-macos] .tab-row { padding-left: 88px; }
+/* Tab strip start: right of the agent panel (--tab-strip-left, set by
+   renderer.ts from the tabbar:state snapshot; 0 without a panel) and, on
+   macOS, never inside the 88px traffic-light zone. The row stays a window
+   drag region, so the part above the panel is an empty draggable title area. */
+.tab-row { padding-left: var(--tab-strip-left, 0px); }
+:root[data-macos] .tab-row { padding-left: max(88px, var(--tab-strip-left, 0px)); }
 /* Edge-to-edge tab strip: tabs fill the row's full 38px height (no 28px
    pill vertically centered by `margin: auto`), touch each other with no
    gap, and #tabs itself carries no left inset — on macOS the row's own
@@ -228,7 +233,7 @@ body {
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 0 6px;
+  padding: 0 6px 0 max(6px, var(--tab-strip-left, 0px));
   app-region: drag;
   -webkit-app-region: drag;
 }

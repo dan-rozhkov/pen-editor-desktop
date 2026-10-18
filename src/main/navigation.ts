@@ -36,6 +36,54 @@ export function attachNavigationPolicy(
   });
 }
 
+export type PanelNavigationDecision = "allow" | "editor-tab" | "external" | "deny";
+
+/**
+ * Pure policy for the agent panel: it may only stay on its own page. Same
+ * origin AND the panel path (`panelUrl`'s pathname) or a subpath -> allow;
+ * any other same-origin URL (the editor, the gallery) -> open it as an editor
+ * tab instead; other http(s) origins -> system browser; everything else deny.
+ */
+export function decidePanelNavigation(targetUrl: string, panelUrl: string): PanelNavigationDecision {
+  let url: URL;
+  let panel: URL;
+  try {
+    url = new URL(targetUrl);
+    panel = new URL(panelUrl);
+  } catch {
+    return "deny";
+  }
+  if (url.origin === panel.origin) {
+    const base = panel.pathname.replace(/\/+$/, "");
+    return url.pathname === base || url.pathname.startsWith(`${base}/`) ? "allow" : "editor-tab";
+  }
+  if (url.protocol === "http:" || url.protocol === "https:") return "external";
+  return "deny";
+}
+
+/** Wires will-navigate + setWindowOpenHandler on the agent panel per `decidePanelNavigation`. */
+export function attachPanelNavigationPolicy(
+  contents: WebContents,
+  panelUrl: string,
+  openExternal: (url: string) => void,
+  openEditorTab: () => void,
+): void {
+  const route = (decision: PanelNavigationDecision, url: string) => {
+    if (decision === "external") openExternal(url);
+    else if (decision === "editor-tab") openEditorTab();
+  };
+  contents.on("will-navigate", (event, url) => {
+    const decision = decidePanelNavigation(url, panelUrl);
+    if (decision === "allow") return;
+    event.preventDefault();
+    route(decision, url);
+  });
+  contents.setWindowOpenHandler(({ url }) => {
+    route(decidePanelNavigation(url, panelUrl), url);
+    return { action: "deny" };
+  });
+}
+
 /**
  * Wires a browser tab's WebContents per `decideBrowserNavigation`: in-place
  * http(s) navigation is left alone, everything else is blocked. Popups

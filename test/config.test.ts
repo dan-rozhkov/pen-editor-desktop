@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveBrowserCursorMotion, resetCursorMotionWarningForTests, resolveUserDataDir } from "../src/main/config";
+import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveBrowserCursorMotion, resetCursorMotionWarningForTests, resolveUserDataDir, resolveAgentLayoutEnabled, resolveAgentPanelUrl } from "../src/main/config";
 
 describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
@@ -74,5 +74,48 @@ describe("resolveUserDataDir", () => {
     expect(resolveUserDataDir({})).toBeUndefined();
     expect(resolveUserDataDir({ PEN_DESKTOP_USER_DATA_DIR: "  " })).toBeUndefined();
     expect(resolveUserDataDir({ PEN_DESKTOP_USER_DATA_DIR: " /tmp/x " })).toBe("/tmp/x");
+  });
+});
+
+describe("resolveAgentLayoutEnabled", () => {
+  it("is off by default and for empty/other values", () => {
+    expect(resolveAgentLayoutEnabled({})).toBe(false);
+    expect(resolveAgentLayoutEnabled({ PEN_DESKTOP_AGENT_LAYOUT: "" })).toBe(false);
+    expect(resolveAgentLayoutEnabled({ PEN_DESKTOP_AGENT_LAYOUT: "0" })).toBe(false);
+    expect(resolveAgentLayoutEnabled({ PEN_DESKTOP_AGENT_LAYOUT: "off" })).toBe(false);
+    expect(resolveAgentLayoutEnabled({ PEN_DESKTOP_AGENT_LAYOUT: "yes" })).toBe(false);
+  });
+  it("is on for 1/true/on, trimmed and case-insensitive", () => {
+    expect(resolveAgentLayoutEnabled({ PEN_DESKTOP_AGENT_LAYOUT: "1" })).toBe(true);
+    expect(resolveAgentLayoutEnabled({ PEN_DESKTOP_AGENT_LAYOUT: " TRUE " })).toBe(true);
+    expect(resolveAgentLayoutEnabled({ PEN_DESKTOP_AGENT_LAYOUT: "On" })).toBe(true);
+  });
+});
+
+describe("resolveAgentPanelUrl", () => {
+  it("replaces /app with /agent on the default URL", () => {
+    expect(resolveAgentPanelUrl(DEFAULT_EDITOR_URL)).toBe("https://pen-editor.onrender.com/agent");
+  });
+  it("keeps origin and port but drops the editor's query and hash", () => {
+    expect(resolveAgentPanelUrl("http://localhost:5173/app?x=1&y=2#h")).toBe("http://localhost:5173/agent");
+  });
+  it("replaces only the last segment and keeps a base path prefix", () => {
+    expect(resolveAgentPanelUrl("https://host/pen/app")).toBe("https://host/pen/agent");
+    expect(resolveAgentPanelUrl("https://host/app/app")).toBe("https://host/app/agent");
+  });
+  it("ignores a trailing slash after app", () => {
+    expect(resolveAgentPanelUrl("http://127.0.0.1:9000/app/")).toBe("http://127.0.0.1:9000/agent");
+    expect(resolveAgentPanelUrl("https://host/pen/app/?q=1")).toBe("https://host/pen/agent");
+  });
+  it("appends agent beside the last segment when the path does not end in app", () => {
+    expect(resolveAgentPanelUrl("http://127.0.0.1:9000")).toBe("http://127.0.0.1:9000/agent");
+    expect(resolveAgentPanelUrl("http://127.0.0.1:9000/other")).toBe("http://127.0.0.1:9000/agent");
+    expect(resolveAgentPanelUrl("https://host/pen/x")).toBe("https://host/pen/agent");
+    expect(resolveAgentPanelUrl("https://host/pen/")).toBe("https://host/pen/agent");
+    expect(resolveAgentPanelUrl("https://host/application")).toBe("https://host/agent");
+  });
+  it("follows a PEN_DESKTOP_URL override", () => {
+    const url = resolveEditorUrl({ PEN_DESKTOP_URL: "https://staging.example.com/app?flag=1" });
+    expect(resolveAgentPanelUrl(url)).toBe("https://staging.example.com/agent");
   });
 });

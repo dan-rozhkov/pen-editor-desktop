@@ -37,6 +37,52 @@ as CommonJS (sandboxed preloads can't be ESM) — no `.js` import-extension
 rule here. `src/tabbar/renderer.ts` must compile to a plain script (no
 `exports`/`require` in the output — it runs in a CSP'd `<script src>`).
 
+## Agent layout (flag)
+
+One step of the agent-layout feature (a chat agent docked beside the tabs).
+`PEN_DESKTOP_AGENT_LAYOUT=1` (`config.ts` `resolveAgentLayoutEnabled`; also
+`true`/`on`) adds a left panel to the main window. The flag is resolved once in
+`index.ts` (like `editorUrl`) and passed to `createMainWindow`; `window.ts`
+reads no env. The panel is a separate `WebContentsView` loading the frontend's
+`/agent` page (`resolveAgentPanelUrl`: the LAST path segment `app` becomes
+`agent`, base path prefix kept, `/app/` -> `/agent`; a path not ending in
+`app` gets `agent` beside its last segment; the editor's query and hash are
+dropped). Flag off: no panel and the geometry is byte-for-byte the old one.
+
+Geometry is the pure `src/main/layout.ts` (`computeWindowLayout`). The tab bar
+view and the macOS rim span the FULL window width as before, so the traffic
+lights stay where they are. The panel sits BELOW the tab bar on the left (top =
+tab-bar height incl. the browser address row, inset by the 1px rim left and
+bottom like tab views); tab views get `tabArea`, to the right of the panel
+(one rim-width gap between them). `TabManager.layout(rect)` just applies that
+rect; it computes nothing. Panel width is a parameter (`clampAgentPanelWidth`:
+min 300, max 50% of the window; default 380); drag-resize and collapse are not
+built yet.
+
+Inside the tab bar the strip starts at the panel's right edge: `window.ts`
+adds `tabStripLeft` to the existing `tabbar:state` snapshot (no new channel);
+`renderer.ts` writes it to the CSS var `--tab-strip-left`; the tab row's left
+padding is `max(88px traffic lights on mac, --tab-strip-left)` (the address
+row uses the same offset). The row stays a window drag region, so the part of
+the bar above the panel is an empty draggable title area. Popup anchors (new
+tab, browser tools) are tab-bar CSS px = window coords (tab bar at x=0): no
+offset.
+
+The panel is NOT a tab: not in `TabManager`, not in the tab bar, never passed
+to `mcpService.registerTab`, so it has no `browser:command` or MCP access. Its
+`webPreferences` come from `secureWebPreferences` (`webPreferences.ts`, shared
+with the tab bar and editor/browser views); its preload `src/preload/agentPanel.ts`
+exposes only `window.penAgentPanel = { version: 1 }`. Navigation
+(`decidePanelNavigation`, `attachPanelNavigationPolicy` in `navigation.ts`):
+same origin AND the panel path or a subpath stays; any other same-origin URL
+(`/app`, `/`) is denied in the panel and opens a new editor tab (with the
+default editor URL: `TabManager.newTab` takes no URL); other origins go to the
+system browser. The offline fallback applies. Its background is theme-matched
+like tab views (system theme at creation, tab-bar theme in `pushState`). It is
+closed in the window's `closed` handler next to the tab bar view. Test:
+`e2e/agent-layout.spec.ts` (set `AGENT_LAYOUT_SHOT=<png>` to save a composite
+screenshot of the views).
+
 ## The live gate (what the stub suites cannot see)
 
 Every other suite here runs against a local stub page, which is what makes

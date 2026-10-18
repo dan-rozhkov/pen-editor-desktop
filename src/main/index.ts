@@ -1,6 +1,6 @@
 import path from "node:path";
 import { app, BaseWindow, safeStorage, session } from "electron";
-import { resolveEditorUrl, resolveUserDataDir } from "./config";
+import { resolveAgentLayoutEnabled, resolveEditorUrl, resolveUserDataDir } from "./config";
 import { createMainWindow } from "./window";
 import { createMcpService } from "./mcp/service";
 import { denyAllPermissions } from "./browser/permissions";
@@ -11,6 +11,8 @@ import { createPasswordsWindow } from "./passwordsWindow";
 import { shouldReopenMainWindow } from "./closeTarget";
 
 const editorUrl = resolveEditorUrl(process.env);
+// PEN_DESKTOP_AGENT_LAYOUT: flag-gated left agent panel (see CLAUDE.md "Agent layout").
+const agentLayout = resolveAgentLayoutEnabled(process.env);
 
 // `electron .` otherwise appears as "Electron" in the macOS menu bar during
 // development. Packaged builds also use the same user-facing product name.
@@ -76,11 +78,11 @@ app.whenReady().then(async () => {
   // here rather than inside TabManager's per-tab createView.
   denyAllPermissions(session.fromPartition("persist:penbrowser"));
 
-  createMainWindow(editorUrl, mcpService, loginServices);
+  createMainWindow(editorUrl, mcpService, loginServices, agentLayout);
 
   app.on("activate", () => {
     // The Passwords window is not a main window: it must not count here.
-    if (shouldReopenMainWindow(BaseWindow.getAllWindows(), (w) => loginServices.passwordsWindow.owns(w))) createMainWindow(editorUrl, mcpService, loginServices);
+    if (shouldReopenMainWindow(BaseWindow.getAllWindows(), (w) => loginServices.passwordsWindow.owns(w))) createMainWindow(editorUrl, mcpService, loginServices, agentLayout);
   });
 
   try {

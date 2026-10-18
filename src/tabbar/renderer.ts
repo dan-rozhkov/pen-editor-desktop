@@ -22,6 +22,8 @@ type TabsSnapshot = {
   focusAddressBar?: boolean;
   /** The browser tabs the agent is driving right now (agent-cursor icon). */
   agentTabIds?: number[];
+  /** Window x where the tab strip starts (the agent panel's right edge); 0/absent without a panel. */
+  tabStripLeft?: number;
 };
 type UITheme = "light" | "dark";
 
@@ -146,6 +148,8 @@ function agentCursorIcon(): SVGSVGElement {
 }
 
 window.penTabbar.onState((state) => {
+  // The tab row's left padding is max(mac traffic-light padding, this) — see tabbar.css.
+  document.documentElement.style.setProperty("--tab-strip-left", `${state.tabStripLeft ?? 0}px`);
   tabsEl.textContent = "";
   for (const tab of state.tabs) {
     const el = document.createElement("div");

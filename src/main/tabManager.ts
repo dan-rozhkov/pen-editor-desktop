@@ -322,6 +322,12 @@ export interface TabsSnapshot {
    * channel instead of adding a new one.
    */
   focusAddressBar?: boolean;
+  /**
+   * Window x (CSS px) where the tab strip starts inside the tab bar: the agent
+   * panel's right edge, 0 without a panel. Like `focusAddressBar`, filled in by
+   * window.ts right before sending `tabbar:state` (the layout owns the number).
+   */
+  tabStripLeft?: number;
 }
 
 interface TabEntry {
@@ -359,8 +365,7 @@ export class TabManager {
   private lastEditorWebContentsId: number | null = null;
   /** Browser tabs the agent is working in (icon targets; see agentActivity.ts). */
   private readonly agentWorkingTabs = new Set<number>();
-  private lastLayout: { content: { width: number; height: number }; tabbarHeight: number; edge: number } | null =
-    null;
+  private lastLayout: { x: number; y: number; width: number; height: number } | null = null;
   /**
    * Full browser use (design doc `2026-09-23-full-browser-use-design.md`):
    * which browser tab (by TabManager's own sequential id, not a webContents
@@ -717,10 +722,10 @@ export class TabManager {
     this.emit();
   }
 
-  /** `edge` insets tab views from the window's left/right/bottom edges —
-   * window.ts uses it on macOS to leave room for its 1px window rim. */
-  layout(content: { width: number; height: number }, tabbarHeight: number, edge = 0): void {
-    this.lastLayout = { content, tabbarHeight, edge };
+  /** `area` is the rect for tab views, computed by layout.ts (which owns all
+   * window geometry: tab bar height, rim inset, agent panel offset). */
+  layout(area: { x: number; y: number; width: number; height: number }): void {
+    this.lastLayout = area;
     for (const tab of this.tabs) this.applyLayout(tab);
   }
 
@@ -748,13 +753,8 @@ export class TabManager {
 
   private applyLayout(tab: TabEntry): void {
     if (!this.lastLayout) return;
-    const { content, tabbarHeight, edge } = this.lastLayout;
-    tab.view.setBounds({
-      x: edge,
-      y: tabbarHeight,
-      width: Math.max(0, content.width - 2 * edge),
-      height: Math.max(0, content.height - tabbarHeight - edge),
-    });
+    const { x, y, width, height } = this.lastLayout;
+    tab.view.setBounds({ x, y, width, height });
   }
 
   /** Second-pass review finding 3: a user-driven tab cycle (Ctrl+Tab/
