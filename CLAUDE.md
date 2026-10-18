@@ -75,13 +75,30 @@ with the tab bar and editor/browser views); its preload `src/preload/agentPanel.
 exposes only `window.penAgentPanel = { version: 1 }`. Navigation
 (`decidePanelNavigation`, `attachPanelNavigationPolicy` in `navigation.ts`):
 same origin AND the panel path or a subpath stays; any other same-origin URL
-(`/app`, `/`) is denied in the panel and opens a new editor tab (with the
-default editor URL: `TabManager.newTab` takes no URL); other origins go to the
+(`/app`, `/`) is denied in the panel and opens a new editor tab (the canvas
+tab URL below; `TabManager.newTab` takes no URL); other origins go to the
 system browser. The offline fallback applies. Its background is theme-matched
 like tab views (system theme at creation, tab-bar theme in `pushState`). It is
 closed in the window's `closed` handler next to the tab bar view. Test:
 `e2e/agent-layout.spec.ts` (set `AGENT_LAYOUT_SHOT=<png>` to save a composite
 screenshot of the views).
+
+**Canvas tabs.** With the chat in the left panel, editor tabs load the editor
+chatless: `resolveCanvasTabUrl(editorUrl)` (`config.ts`) adds `chat=off` to the
+RAW query string (existing `chat` params removed, every other param kept
+byte-for-byte; path and hash kept), so the tab is `/app?chat=off`. The
+decision is `resolveTabEditorUrl(editorUrl, agentLayout)` (`config.ts`),
+called ONCE in `window.ts` (`tabEditorUrl`, handed to `TabManager`), so every path
+that creates an editor tab (initial, "+" menu, Cmd+T, the panel-navigation
+fallback, macOS reopen) gets it; flag off passes the plain editor URL. The
+panel URL is still derived from the plain `editorUrl`. The "+" menu item reads
+"New Canvas Tab" with the flag on ("New Editor Tab" off), and so does File
+"New Tab" (Cmd+T); no command id changes. The frontend router may drop
+`?chat=off` on a reload, so editor tabs also get `window.penDesktop.agentLayout
+= true` from `preload/tab.ts`: main passes `--pen-agent-layout`
+(`editorPreloadArguments`, `webPreferences.additionalArguments`, editor tabs
+only) and the sandboxed preload reads it from `process.argv`. Flag off: the
+property is absent. e2e: `agent-layout.spec.ts` / `smoke.spec.ts`. The canvas-link channels (`docs/canvas-link.md`) are a later step.
 
 ## The live gate (what the stub suites cannot see)
 
@@ -144,7 +161,7 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `tabbar:state` main→tabbar (`TabsSnapshot`, now including `mcpStatus`), re-sent on tabbar `did-finish-load`
 - `tabbar:theme` main→tabbar (`light` | `dark`, active editor theme or system fallback)
 - `tabbar:new` / `tabbar:activate` / `tabbar:close` tabbar→main (sender-checked)
-- `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Editor Tab / New Browser Tab), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` has no UI caller any more; e2e drives it through `penTabbar.newTab()`, which a native menu can't be clicked through
+- `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Editor Tab / New Browser Tab; "New Canvas Tab" instead of "New Editor Tab" with the agent-layout flag), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` has no UI caller any more; e2e drives it through `penTabbar.newTab()`, which a native menu can't be clicked through
 - `tabbar:tools-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the browser chrome row's gear button: native menu (Viewport emulation via CDP, Open/Close Developer Tools, Zoom) for the active browser tab; builder in `src/main/browserToolsMenu.ts`
 - `tabbar:navigate` tabbar→main (sender-checked; `{action: "url" | "back" | "forward" | "reload", url?}`) — the address row driving the active browser tab, see "Built-in browser tab" below
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below

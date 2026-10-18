@@ -7,7 +7,7 @@ import type { WebPreferences } from "electron";
  */
 export function secureWebPreferences(
   preload?: string,
-  extra: Pick<WebPreferences, "partition"> = {},
+  extra: Pick<WebPreferences, "partition" | "additionalArguments"> = {},
 ): WebPreferences {
   return {
     ...(preload ? { preload } : {}),

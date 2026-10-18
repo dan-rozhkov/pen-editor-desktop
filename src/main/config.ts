@@ -118,3 +118,43 @@ export function resolveAgentPanelUrl(editorUrl: string): string {
   url.pathname = segments.join("/");
   return url.toString();
 }
+
+/** The URL editor tabs load in the agent layout: the chat lives in the left
+ * panel, so tabs are canvas tabs, i.e. the editor in chatless mode
+ * (`chat=off`). Other query params, the path and the hash are kept; an
+ * existing `chat` param (any number of them) is replaced, never duplicated. */
+export function resolveCanvasTabUrl(editorUrl: string): string {
+  const url = new URL(editorUrl);
+  // Edit the RAW query string: URLSearchParams would re-serialize every other
+  // param (`%20` -> `+`, `~` -> `%7E`, `flag` -> `flag=`).
+  const kept = url.search
+    .replace(/^\?/, "")
+    .split("&")
+    .filter((pair) => pair !== "" && decodeURIComponent_safe(pair.split("=")[0]) !== "chat");
+  kept.push("chat=off");
+  url.search = kept.join("&");
+  return url.toString();
+}
+
+function decodeURIComponent_safe(s: string): string {
+  try {
+    return decodeURIComponent(s.replace(/\+/g, " "));
+  } catch {
+    return s;
+  }
+}
+
+/** THE URL every new editor tab loads: the canvas-tab URL in the agent layout
+ * (the chat is in the left panel), the plain editor URL otherwise. */
+export function resolveTabEditorUrl(editorUrl: string, agentLayout: boolean): string {
+  return agentLayout ? resolveCanvasTabUrl(editorUrl) : editorUrl;
+}
+
+/** Marker passed to editor-tab preloads (`webPreferences.additionalArguments`,
+ * read from `process.argv` in `preload/tab.ts`, which repeats the literal: a
+ * sandboxed preload cannot require local modules). Only the agent layout adds it. */
+export const AGENT_LAYOUT_ARG = "--pen-agent-layout";
+
+export function editorPreloadArguments(agentLayout: boolean): string[] {
+  return agentLayout ? [AGENT_LAYOUT_ARG] : [];
+}

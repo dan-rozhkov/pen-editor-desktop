@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveBrowserCursorMotion, resetCursorMotionWarningForTests, resolveUserDataDir, resolveAgentLayoutEnabled, resolveAgentPanelUrl } from "../src/main/config";
+import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveBrowserCursorMotion, resetCursorMotionWarningForTests, resolveUserDataDir, resolveAgentLayoutEnabled, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveTabEditorUrl, editorPreloadArguments, AGENT_LAYOUT_ARG } from "../src/main/config";
 
 describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
@@ -117,5 +117,52 @@ describe("resolveAgentPanelUrl", () => {
   it("follows a PEN_DESKTOP_URL override", () => {
     const url = resolveEditorUrl({ PEN_DESKTOP_URL: "https://staging.example.com/app?flag=1" });
     expect(resolveAgentPanelUrl(url)).toBe("https://staging.example.com/agent");
+  });
+});
+
+describe("resolveCanvasTabUrl", () => {
+  it("adds chat=off to the default editor URL", () => {
+    expect(resolveCanvasTabUrl(DEFAULT_EDITOR_URL)).toBe("https://pen-editor.onrender.com/app?chat=off");
+  });
+  it("keeps other params and merges chat=off", () => {
+    const u = new URL(resolveCanvasTabUrl("http://localhost:5173/app?q=1&x=a%20b"));
+    expect(u.searchParams.get("q")).toBe("1");
+    expect(u.searchParams.get("x")).toBe("a b");
+    expect(u.searchParams.get("chat")).toBe("off");
+  });
+  it("replaces an existing chat value without duplicating it", () => {
+    const u = new URL(resolveCanvasTabUrl("http://h/app?chat=on&q=1&chat=x"));
+    expect(u.searchParams.getAll("chat")).toEqual(["off"]);
+    expect(u.searchParams.get("q")).toBe("1");
+  });
+  it("keeps the base path and the hash", () => {
+    expect(resolveCanvasTabUrl("https://h/pen/app#frame-1")).toBe("https://h/pen/app?chat=off#frame-1");
+  });
+  it("keeps other params byte-for-byte (no re-serialization)", () => {
+    expect(resolveCanvasTabUrl("http://h/app?x=a%20b&flag&t=~v")).toBe("http://h/app?x=a%20b&flag&t=~v&chat=off");
+  });
+  it("drops every chat param from the raw string and keeps the order of the rest", () => {
+    expect(resolveCanvasTabUrl("http://h/app?chat=on&q=1+2&chat=x&z")).toBe("http://h/app?q=1+2&z&chat=off");
+    expect(resolveCanvasTabUrl("http://h/app?chat")).toBe("http://h/app?chat=off");
+  });
+  it("does not drop params that merely start with chat", () => {
+    expect(resolveCanvasTabUrl("http://h/app?chatty=1")).toBe("http://h/app?chatty=1&chat=off");
+  });
+});
+
+describe("resolveTabEditorUrl", () => {
+  it("flag on: the canvas-tab URL", () => {
+    expect(resolveTabEditorUrl("http://h/app?q=1", true)).toBe("http://h/app?q=1&chat=off");
+  });
+  it("flag off: the editor URL verbatim", () => {
+    expect(resolveTabEditorUrl("http://h/app?q=1&chat=on", false)).toBe("http://h/app?q=1&chat=on");
+  });
+});
+
+describe("editorPreloadArguments", () => {
+  it("passes the marker only with the flag on", () => {
+    expect(editorPreloadArguments(true)).toEqual([AGENT_LAYOUT_ARG]);
+    expect(editorPreloadArguments(false)).toEqual([]);
+    expect(AGENT_LAYOUT_ARG).toBe("--pen-agent-layout");
   });
 });

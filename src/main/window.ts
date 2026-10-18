@@ -35,7 +35,7 @@ import {
   type BrowserPageHandle,
   isFetchableStylesheetUrl,
 } from "@sideform/browser-agent/controller";
-import { resolveAgentPanelUrl } from "./config";
+import { resolveAgentPanelUrl, resolveTabEditorUrl, editorPreloadArguments } from "./config";
 import { secureWebPreferences } from "./webPreferences";
 import { AGENT_PANEL_DEFAULT_WIDTH, computeWindowLayout } from "./layout";
 import { isRecord, parseJournalOrigins, parseToken, rawToken } from "./checkpointArgs";
@@ -169,6 +169,10 @@ export function createMainWindow(
   // every window (re)creation, including the macOS dock "activate" reopen.
   mcpService.registerAppLevelIpc(createMcpIpcGateway());
   const editorOrigin = new URL(editorUrl).origin;
+  // THE one place the URL of a new editor tab is decided: in the agent layout
+  // the chat is in the left panel, so tabs are canvas tabs (`?chat=off`).
+  // Every editor-tab creation path goes through TabManager, which gets only this.
+  const tabEditorUrl = resolveTabEditorUrl(editorUrl, agentLayout);
   const offlineFile = path.join(__dirname, "../assets/offline.html");
 
   const win = new BaseWindow({
@@ -255,7 +259,7 @@ export function createMainWindow(
     win.contentView.addChildView(agentPanelView);
     agentPanelView.setBackgroundColor(backgroundColorForTheme(systemTheme()));
     // Anything but the panel's own page is not for the panel: other editor
-    // origin pages open as a (default-URL) editor tab, foreign origins go to
+    // origin pages open as an editor tab (the canvas-tab URL), foreign origins go to
     // the system browser.
     attachPanelNavigationPolicy(
       agentPanelView.webContents,
@@ -409,7 +413,7 @@ export function createMainWindow(
   // Assigned once the session helpers exist; createView's handlers call it.
   let closeSessionsOwnedBy: (owner: number, gone?: boolean) => void = () => {};
   const tabs = new TabManager({
-    editorUrl,
+    editorUrl: tabEditorUrl,
     onStateChanged: pushState,
     createView: (kind: TabKind, sessionId?: string): TabViewHandle => {
       // An isolated session's tab: its own in-memory partition, its own router.
@@ -427,7 +431,11 @@ export function createMainWindow(
                 partition: sessionId ? requireLiveSession(sessionId).partition : "persist:penbrowser",
               }),
             }
-          : { webPreferences: secureWebPreferences(path.join(__dirname, "../preload/tab.js")) },
+          : {
+              webPreferences: secureWebPreferences(path.join(__dirname, "../preload/tab.js"), {
+                additionalArguments: editorPreloadArguments(agentLayout),
+              }),
+            },
       );
       win.contentView.addChildView(view);
       const viewId = view.webContents.id;
@@ -1695,7 +1703,7 @@ export function createMainWindow(
       ? { x: Math.round(anchor.x), y: Math.round(anchor.y) }
       : {};
     Menu.buildFromTemplate(
-      buildNewTabMenuTemplate({ newTab: () => tabs.newTab("editor"), newBrowserTab: newUserBrowserTab }),
+      buildNewTabMenuTemplate({ newTab: () => tabs.newTab("editor"), newBrowserTab: newUserBrowserTab }, { canvasTabs: agentLayout }),
     ).popup({ window: win, ...at });
   };
   // The chrome row's "Browser tools" popup. Viewport choice is kept per tab
@@ -1870,7 +1878,7 @@ export function createMainWindow(
           () => loginServices.passwordsWindow.isFocused(),
           () => loginServices.passwordsWindow.close(),
         ),
-        { isMac: process.platform === "darwin" },
+        { isMac: process.platform === "darwin", canvasTabs: agentLayout },
         mcpService.getStatus(),
         effectiveCursor(),
       ),

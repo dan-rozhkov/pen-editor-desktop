@@ -202,6 +202,10 @@ const api = {
   },
   registerMcpBridge,
   browser,
+  // Agent layout (main adds this argv marker to editor tabs only; the literal
+  // repeats config.ts AGENT_LAYOUT_ARG, a sandboxed preload cannot import it).
+  // Absent otherwise: the page cannot set argv, so this survives URL changes.
+  ...(process.argv.includes("--pen-agent-layout") ? { agentLayout: true as const } : {}),
 };
 
 contextBridge.exposeInMainWorld("penDesktop", api);

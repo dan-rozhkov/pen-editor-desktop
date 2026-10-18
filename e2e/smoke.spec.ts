@@ -41,6 +41,11 @@ test("launches, opens a tab with the editor, exposes the menu bridge", async () 
       predicate: (page) => page.url().endsWith("/tabbar/tabbar.html"),
     }));
   await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+  // Flag off: the plain editor URL (no canvas-tab chat=off).
+  expect(new URL(editorPage.url()).searchParams.has("chat")).toBe(false);
+
+  // Flag off: no agentLayout marker.
+  expect(await editorPage.evaluate(() => (window as never as { penDesktop?: { agentLayout?: boolean } }).penDesktop?.agentLayout)).toBeUndefined();
 
   // The preload bridge is present in the editor page.
   expect(await editorPage.evaluate(() => typeof (window as never as { penDesktop?: unknown }).penDesktop)).toBe(

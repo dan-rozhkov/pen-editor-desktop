@@ -45,6 +45,15 @@ describe("buildMenuTemplate", () => {
     expect(actions.newTab).toHaveBeenCalled();
   });
 
+  it("reads New Canvas Tab with canvasTabs, same action and accelerator", () => {
+    const t = buildMenuTemplate(actions, { isMac: false, canvasTabs: true });
+    const i = flatten(t).find((x) => x.label === "New Canvas Tab")!;
+    expect(i.accelerator).toBe("CmdOrCtrl+T");
+    (i.click as () => void)();
+    expect(actions.newTab).toHaveBeenCalled();
+    expect(flatten(t).some((x) => x.label === "New Tab")).toBe(false);
+  });
+
   it("New Browser Tab triggers newBrowserTab", () => {
     const i = item("New Browser Tab");
     (i.click as () => void)();
@@ -228,5 +237,15 @@ describe("buildNewTabMenuTemplate", () => {
     expect(browser.label).toBe("New Browser Tab");
     (browser.click as () => void)();
     expect(actions.newBrowserTab).toHaveBeenCalledOnce();
+  });
+
+  it("labels the editor item as a canvas tab in the agent layout, same action", () => {
+    const actions = { newTab: vi.fn(), newBrowserTab: vi.fn() };
+    const [editor, browser] = buildNewTabMenuTemplate(actions, { canvasTabs: true });
+    expect(editor.label).toBe("New Canvas Tab");
+    expect(browser.label).toBe("New Browser Tab");
+    (editor.click as () => void)();
+    expect(actions.newTab).toHaveBeenCalledOnce();
+    expect(buildNewTabMenuTemplate(actions, { canvasTabs: false })[0].label).toBe("New Editor Tab");
   });
 });

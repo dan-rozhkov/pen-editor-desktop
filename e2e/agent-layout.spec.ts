@@ -41,6 +41,11 @@ test("agent layout flag adds a left /agent panel; tabs still work", async () => 
     app.windows().find((p) => p.url().startsWith(`${baseUrl}/app`)) ??
     (await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(`${baseUrl}/app`) }));
   await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
+  // Canvas tab: chatless editor, other params kept.
+  expect(new URL(editorPage.url()).searchParams.get("chat")).toBe("off");
+  expect(new URL(editorPage.url()).searchParams.get("q")).toBe("1");
+  // Reload-proof chatless marker, set by main through the preload argv.
+  expect(await editorPage.evaluate(() => (window as never as { penDesktop?: { agentLayout?: boolean } }).penDesktop?.agentLayout)).toBe(true);
 
   const bounds = await app.evaluate(({ BaseWindow }, base) => {
     const win = BaseWindow.getAllWindows()[0];
@@ -108,6 +113,10 @@ test("agent layout flag adds a left /agent panel; tabs still work", async () => 
   // Tabs still work: open a second editor tab.
   await tabbarPage.evaluate(() => (window as unknown as { penTabbar: { newTab(): void } }).penTabbar.newTab());
   await expect(tabbarPage.locator(".tab")).toHaveCount(2);
+  // The new tab is a canvas tab too.
+  await expect
+    .poll(() => app.windows().filter((p) => p.url().startsWith(`${baseUrl}/app`)).map((p) => new URL(p.url()).searchParams.get("chat")))
+    .toEqual(["off", "off"]);
 
   await app.close();
 });
