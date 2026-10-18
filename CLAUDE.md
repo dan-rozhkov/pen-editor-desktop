@@ -99,11 +99,12 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `tabbar:theme` main→tabbar (`light` | `dark`, active editor theme or system fallback)
 - `tabbar:new` / `tabbar:activate` / `tabbar:close` tabbar→main (sender-checked)
 - `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Editor Tab / New Browser Tab), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` has no UI caller any more; e2e drives it through `penTabbar.newTab()`, which a native menu can't be clicked through
+- `tabbar:tools-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the browser chrome row's sliders button: native menu (Viewport emulation via CDP, Open/Close Developer Tools, Zoom) for the active browser tab; builder in `src/main/browserToolsMenu.ts`
 - `tabbar:navigate` tabbar→main (sender-checked; `{action: "url" | "back" | "forward" | "reload", url?}`) — the address row driving the active browser tab, see "Built-in browser tab" below
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below
 - `mcp:call` main→tab only (`{callId, tool, args}`)
 - `mcp:result` tab→main (`{callId, type: "tool_result" | "tool_error", result?, error?}`)
-- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture" | "applyFixture" | "releaseFixture" | "fillLogin" | "startJournal" | "stopJournal" | "captureCheckpoint" | "closeSession", args, session?}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; `session` (optional) routes to an isolated session, `closeSession` ends one (no new channel); see "Built-in browser tab" and "Isolated sessions" below
+- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture" | "applyFixture" | "releaseFixture" | "fillLogin" | "startJournal" | "stopJournal" | "captureCheckpoint" | "assert" | "closeSession", args, session?}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; `session` (optional) routes to an isolated session, `closeSession` ends one (no new channel); see "Built-in browser tab" and "Isolated sessions" below
 - `passwords:list` / `passwords:add` / `passwords:update` / `passwords:remove` / `passwords:never-remove` Passwords window→main, **invoke/handle**, each sender-checked against that window's own webContents; handlers are registered when the window opens and removed when it closes. No reply ever holds a password — see "Saved logins" below
 - `passwords:theme` main→Passwords window, payload `{ theme: "light" | "dark", vibrancyMatches: boolean }`. `theme` is the tab-bar theme (`tabbar:theme`) of the main window the user focused last (BaseWindow `focus`; each window's push is kept under its own key in `themeSource.ts`). If that window is closed or none was focused yet, the latest push of any open main window applies; with none left it follows `nativeTheme` again. `vibrancyMatches` is false when `theme` differs from the OS appearance: macOS sidebar vibrancy follows the OS, so the renderer then paints the sidebar opaque (`data-opaque-sidebar`). Pushed on window load and whenever the effective `{theme, vibrancyMatches}` changes (an unchanged value is not re-sent)
 - `passwords:changed` main→Passwords window, no payload. Sent when a site icon was stored (favicon fetched). The renderer re-reads `passwords:list` and refreshes the sidebar, rows and, in view mode only, the detail pane; an open Add/Edit form is never rebuilt
@@ -539,6 +540,30 @@ without `domain`, and `__Host-` cookies are set without `domain`.
   port (a browser limitation).
   No origins means only tabs are reset. Never call `clearStorageData` /
   `clearCache` without an origin.
+
+## QA diagnostics (`assert`, failed requests, emulation bookkeeping)
+
+- `browser:command` `assert` calls `BrowserController.assert(args)` (read-only
+  checks; `@sideform/browser-agent` v0.2.22). It is page-driving, so isolated
+  sessions get it through `BROWSER_COMMANDS`.
+- Failed requests: `src/main/failedRequests.ts` (pure) records
+  `Network.responseReceived` status >= 400 and `Network.loadingFailed` (not
+  canceled) from the tab's debugger messages as `<METHOD> <status|error>
+  <origin><pathname>` (no query/hash, ring of 50). The handle's
+  `drainFailedRequests` is a getter that is `undefined` while the debugger is
+  detached, so a check never passes on a tab that cannot see the network.
+- `clearDiagnostics()` empties the console-error and failed-request buffers at
+  `applyFixture` and at a run boundary (`src/main/runBoundary.ts`: the first
+  command of a scope, or the first after 5 minutes idle), so failures from
+  before a run do not count in it.
+- `src/main/agentEmulation.ts` (pure) tracks which tabs an agent fixture
+  emulated (device metrics or UA, seen through the agent's `sendCdp` during
+  apply) per `fixtureToken`. A matching release resets the Browser tools
+  Viewport radio of those tabs only. The menu itself sends through
+  `sendCdpDirect`, so the user's own viewport is never taken for a fixture's.
+- DevTools opened from the Browser tools menu coexist with the automation
+  debugger on Electron 43 (verified by `e2e/browser-qa-tools.spec.ts`): the
+  debugger stays attached and `press`/`hover`/`screenshot`/`assert` keep working.
 
 ## Saved logins (Passwords window, save prompt, `fillLogin`)
 

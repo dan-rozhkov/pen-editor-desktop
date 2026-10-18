@@ -142,6 +142,20 @@ export interface TabViewHandle {
    */
   drainConsoleErrors?(): string[];
   /**
+   * Optional: QA diagnostics. Structurally identical to
+   * `BrowserPageHandle.drainFailedRequests`: drains the failed requests
+   * ("<METHOD> <status|errorText> <origin><pathname>") seen since the last
+   * drain. Wired only while the CDP debugger is attached.
+   */
+  drainFailedRequests?(): string[];
+  /** Empties the console-error and failed-request buffers (an agent run starts). */
+  clearDiagnostics?(): void;
+  /**
+   * Browser tools menu: `sendCdp` without the agent-emulation bookkeeping, so a
+   * user's Viewport choice is never mistaken for a fixture's emulation.
+   */
+  sendCdpDirect?(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /**
    * Second-pass review finding 1: applies the dialog policy to whatever JS
    * dialog is *currently open* on this tab, if any — a no-op when nothing is
    * open. window.ts's `onBrowserCommand` calls this for every browser tab
@@ -177,6 +191,23 @@ export interface TabViewHandle {
    * `BrowserPageHandle.executeJavaScriptInFrame` — see its doc comment.
    */
   executeJavaScriptInFrame?(frameId: number, code: string, timeoutMs: number): Promise<unknown>;
+  /** Browser tools menu: whether the CDP debugger is attached RIGHT NOW (evaluated per call; detach can happen later). */
+  hasDebugger?(): boolean;
+  /** Browser tools menu: size of the tab's view, in DIPs. */
+  getViewSize?(): { width: number; height: number };
+  /** Browser tools menu: the page's real navigator.userAgentData.brands, or null. */
+  getUaBrands?(): Promise<{ brand: string; version: string }[] | null>;
+  /** Browser tools menu: Chromium version of this runtime. */
+  getChromeVersion?(): string;
+  /** Browser tools menu: whether the tab's own DevTools window is open. */
+  isDevToolsOpened?(): boolean;
+  /** Browser tools menu: opens a detached DevTools window, or closes it if open. */
+  toggleDevTools?(): void;
+  /** Browser tools menu: page zoom (1 = 100%). */
+  getZoomFactor?(): number;
+  setZoomFactor?(factor: number): void;
+  getZoomLevel?(): number;
+  setZoomLevel?(level: number): void;
 }
 
 /** What TabManager.browserHandle() hands to the browser controller (see window.ts). */

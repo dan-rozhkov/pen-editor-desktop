@@ -241,13 +241,15 @@ body {
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
+.browser-tools-btn { margin-left: auto; }
 .nav-btn svg { width: 16px; height: 16px; }
 .nav-btn:hover:not(:disabled) { color: var(--text-active); background: var(--control-hover-bg); }
 .nav-btn:disabled { opacity: 0.35; cursor: default; }
 .nav-btn:focus-visible { outline: 1px solid currentColor; outline-offset: -2px; }
 /* Centered on the whole row, not on the space left of the nav buttons —
    capped at 80% and kept clear of the buttons (6px pad + 3×28px + 2×2px
-   gaps ≈ 94px, mirrored on the right) in narrow windows. */
+   gaps ≈ 94px, mirrored on the right) in narrow windows. The 100px right
+   reserve also covers the Browser tools button (28px, margin-left: auto). */
 .url-form {
   position: absolute;
   left: 50%;

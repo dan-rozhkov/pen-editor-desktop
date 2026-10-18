@@ -129,6 +129,11 @@ const makeBrowser = (scope?: { session: unknown }) => {
     snapshot: (): Promise<unknown> => call({ command: "snapshot" }),
     perform: (args: Record<string, unknown>): Promise<unknown> =>
       call({ command: "perform", args }),
+    // QA assertions (browser-agent docs/specs/2026-10-18-qa-diagnostics-design.md
+    // section 2): { checks, snapshotId? }. Read-only; same "no validation
+    // here, main is the trust boundary" shape.
+    assert: (args: Record<string, unknown>): Promise<unknown> =>
+      call({ command: "assert", args }),
     // jev-loop design doc "Addendum 2, 2026-09-19" §2 — a readable digest of
     // the current page. Same "no validation here" shape as every other
     // command; main is the trust boundary.

@@ -7,6 +7,8 @@ const api = {
   newTab: () => ipcRenderer.send("tabbar:new"),
   /** Opens the native "+" popup (editor vs browser tab) anchored at window coordinates. */
   openNewTabMenu: (anchor: { x: number; y: number }) => ipcRenderer.send("tabbar:new-menu", anchor),
+  /** Opens the native "Browser tools" popup (viewport / DevTools / zoom) anchored at window coordinates. */
+  openToolsMenu: (anchor: { x: number; y: number }) => ipcRenderer.send("tabbar:tools-menu", anchor),
   activateTab: (id: number) => ipcRenderer.send("tabbar:activate", id),
   closeTab: (id: number) => ipcRenderer.send("tabbar:close", id),
   navigate: (action: "url" | "back" | "forward" | "reload", url?: string) =>

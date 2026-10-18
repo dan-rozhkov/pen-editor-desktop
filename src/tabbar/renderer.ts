@@ -29,6 +29,7 @@ interface PenTabbarApi {
   isMac: boolean;
   newTab(): void;
   openNewTabMenu(anchor: { x: number; y: number }): void;
+  openToolsMenu(anchor: { x: number; y: number }): void;
   activateTab(id: number): void;
   closeTab(id: number): void;
   navigate(action: "url" | "back" | "forward" | "reload", url?: string): void;
@@ -53,6 +54,13 @@ const newTabEl = document.getElementById("new-tab")!;
 newTabEl.addEventListener("click", () => {
   const rect = newTabEl.getBoundingClientRect();
   window.penTabbar.openNewTabMenu({ x: rect.left, y: rect.bottom + 4 });
+});
+
+const toolsBtnEl = document.getElementById("browser-tools")!;
+toolsBtnEl.addEventListener("click", () => {
+  const rect = toolsBtnEl.getBoundingClientRect();
+  // Right-aligned would clip off-window; anchor at the button's left edge.
+  window.penTabbar.openToolsMenu({ x: rect.left, y: rect.bottom + 4 });
 });
 
 // Typed input is normalized by `normalizeTypedUrl`/`isNavigableUrl` —

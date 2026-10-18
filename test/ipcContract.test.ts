@@ -24,6 +24,7 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "tabbar:theme", direction: "main->renderer" },
   { name: "tabbar:new", direction: "renderer->main" },
   { name: "tabbar:new-menu", direction: "renderer->main" },
+  { name: "tabbar:tools-menu", direction: "renderer->main" },
   { name: "tabbar:activate", direction: "renderer->main" },
   { name: "tabbar:close", direction: "renderer->main" },
   { name: "tabbar:navigate", direction: "renderer->main" },
@@ -131,6 +132,13 @@ describe("browser:command commands", () => {
 
   it("the preload sends exactly the list plus closeSession", () => {
     expect([...sentByPreload].sort()).toEqual([...list, "closeSession"].sort());
+  });
+
+  it("assert (QA checks) is wired end to end: list, page-driving, dispatch, preload, shared and isolated", () => {
+    expect(list).toContain("assert");
+    expect(PAGE_DRIVING_COMMANDS.has("assert")).toBe(true);
+    expect(windowSource).toMatch(/case "assert":\s+return await controller\.assert\(payload\.args\)/);
+    expect(sentByPreload.has("assert")).toBe(true);
   });
 
   it("closeSession is handled in window.ts and the payload carries `session`", () => {

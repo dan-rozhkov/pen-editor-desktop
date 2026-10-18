@@ -10,6 +10,16 @@ import {
 } from "./tabManager";
 import { buildMenuTemplate, buildNewTabMenuTemplate } from "./menu";
 import {
+  buildBrowserToolsMenuTemplate,
+  planClearCommands,
+  planViewportCommands,
+  viewportNeedsReload,
+  type ViewportPresetId,
+} from "./browserToolsMenu";
+import { createFailedRequestRecorder } from "./failedRequests";
+import { createAgentEmulationTracker } from "./agentEmulation";
+import { createRunBoundary } from "./runBoundary";
+import {
   attachNavigationPolicy,
   attachOfflineFallback,
   attachLocalOnlyPolicy,
@@ -491,6 +501,10 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         consoleErrorBuffer.push(message.slice(0, 200));
         if (consoleErrorBuffer.length > CONSOLE_ERROR_BUFFER_CAP) consoleErrorBuffer.shift();
       };
+      // QA diagnostics: failed requests (HTTP >= 400, network errors) fed from
+      // the same debugger `message` listener as the settle bookkeeping below.
+      // See failedRequests.ts; only drained when the debugger is attached.
+      const failedRequests = createFailedRequestRecorder();
       const applyDialogPolicy = () => {
         if (!openDialog) return;
         const { type, message } = openDialog;
@@ -580,6 +594,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
               if (commandsInFlight.active(sessionId)) applyDialogPolicy();
               return;
             }
+            if (method.startsWith("Network.")) failedRequests.onEvent(method, params);
             // Wave 1 speed: network-quiet settle bookkeeping — see
             // pendingNetworkRequests's doc comment above.
             if (method === "Network.requestWillBeSent") {
@@ -647,7 +662,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         // Mocks are owned by main; the editor tab that drives the agent releases
         // them in its renderer `finally`, which never runs on reload/crash/close.
         const releaseOrphanedFixture = () => {
-          browserController.releaseFixture().catch((err) => console.error("editor tab: releaseFixture failed", err));
+          releaseSharedFixture();
           journalOwners.stopOwnedBy(viewId);
           closeSessionsOwnedBy(viewId);
         };
@@ -807,12 +822,13 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         destroy: () => {
           themeCallbacks.delete(viewId);
           titleCallbacks.delete(viewId);
+          viewportByTab.forget(viewId);
           navEventListeners.clear();
           unregisterFromFetchRouter?.();
           cdpEventListeners.clear();
           if (kind === "editor") {
             mcpService.unregisterTab(viewId);
-            browserController.releaseFixture().catch((err) => console.error("editor tab: releaseFixture failed", err));
+            releaseSharedFixture();
             journalOwners.stopOwnedBy(viewId);
             closeSessionsOwnedBy(viewId, true);
           }
@@ -975,10 +991,52 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         // false for kind "editor", since the attach attempt above is
         // itself gated on kind === "browser") — see this method's own doc
         // comment above for the attach-failure degrade path.
+        // The agent's path. In the shared scope it reports the viewport-owning
+        // Emulation.* calls to the tracker (agentEmulation.ts); the Browser tools
+        // menu uses `sendCdpDirect` so a user's own viewport is never mistaken
+        // for a fixture's.
         sendCdp: debuggerAttached
+          ? (method, params) => {
+              if (!sessionId) agentEmulation.note(viewId, method);
+              return view.webContents.debugger.sendCommand(method, params);
+            }
+          : undefined,
+        sendCdpDirect: debuggerAttached
           ? (method, params) => view.webContents.debugger.sendCommand(method, params)
           : undefined,
         drainDialogs: () => dialogQueue.splice(0, dialogQueue.length),
+        // Browser tools menu. DevTools vs the automation debugger: Electron
+        // lets DevTools open next to an attached debugger session. If a given
+        // Electron build evicts the session instead, the "detach" listener
+        // above fires and the tab degrades exactly like a failed attach
+        // (mocks unregistered, viewport emulation no-ops) — nothing throws.
+        // hasDebugger is evaluated per call: `debuggerAttached` flips to false
+        // on a later detach, while `sendCdp` above is fixed at creation.
+        hasDebugger: () => debuggerAttached,
+        getViewSize: () => {
+          const b = view.getBounds();
+          return { width: b.width, height: b.height };
+        },
+        getUaBrands: async () => {
+          try {
+            const r: unknown = await view.webContents.executeJavaScript(
+              "navigator.userAgentData ? navigator.userAgentData.brands.map(b => ({ brand: b.brand, version: b.version })) : null",
+            );
+            return Array.isArray(r) ? (r as { brand: string; version: string }[]) : null;
+          } catch {
+            return null;
+          }
+        },
+        getChromeVersion: () => process.versions.chrome,
+        isDevToolsOpened: () => view.webContents.isDevToolsOpened(),
+        toggleDevTools: () => {
+          if (view.webContents.isDevToolsOpened()) view.webContents.closeDevTools();
+          else view.webContents.openDevTools({ mode: "detach" });
+        },
+        getZoomFactor: () => view.webContents.getZoomFactor(),
+        setZoomFactor: (f) => view.webContents.setZoomFactor(f),
+        getZoomLevel: () => view.webContents.getZoomLevel(),
+        setZoomLevel: (l) => view.webContents.setZoomLevel(l),
         // Code review finding 3: console-error capture is wired off the
         // `console-message` webContents event (see consoleErrorBuffer's doc
         // comment above), not the CDP debugger session — so this is gated on
@@ -987,6 +1045,20 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
         // failed (e.g. real DevTools already attached).
         drainConsoleErrors:
           kind === "browser" ? () => consoleErrorBuffer.splice(0, consoleErrorBuffer.length) : undefined,
+        // QA diagnostics: only available while the debugger is attached (the
+        // events come from it). A getter, because the controller reads
+        // `page.drainFailedRequests` on every drain (`drainDiagnostics`) and
+        // skips the list when it is absent: after a detach the method
+        // disappears, so the controller reports nothing instead of a false
+        // "no failed requests" (which would make a no_failed_requests assert pass).
+        get drainFailedRequests() {
+          return debuggerAttached ? () => failedRequests.drain() : undefined;
+        },
+        // Forgets what happened before an agent run starts (see runBoundary.ts).
+        clearDiagnostics: () => {
+          consoleErrorBuffer.length = 0;
+          failedRequests.drain();
+        },
         // Second-pass review finding 1: only meaningful for kind "browser"
         // (openDialog can only ever be set there) — harmless no-op call for
         // kind "editor" either way (`applyDialogPolicy` itself is a no-op
@@ -1154,6 +1226,32 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
 
   const journalOwners = new JournalOwners(browserController);
 
+  // Browser tools menu honesty. A fixture's `emulate` and the user's Viewport
+  // menu both drive Emulation.* on the same tab; releasing the fixture clears
+  // those overrides, including a viewport the user picked, so the menu forgets
+  // its record for exactly the tabs the agent's fixture overrode (metrics / UA
+  // only), and only when that very fixture was released. See agentEmulation.ts.
+  // The SHARED controller only: isolated sessions drive their own partition's
+  // tabs, which are closed on teardown.
+  const agentEmulation = createAgentEmulationTracker();
+  const resetViewportRecords = (tabIds: number[]) => {
+    for (const id of tabIds) viewportByTab.forget(id);
+  };
+  // Releases the shared controller's fixture (token = that fixture only; none =
+  // whatever is active), then forgets the menu records of the tabs it overrode.
+  const releaseSharedFixture = (token?: string): Promise<void> =>
+    browserController
+      .releaseFixture(token)
+      .catch((err) => console.error("shared browser: releaseFixture failed", err))
+      .then(() => resetViewportRecords(agentEmulation.release(token)));
+
+  // Agent run start (runBoundary.ts): empties every tab's diagnostics buffers in
+  // the scope so earlier failures are not reported inside the new run.
+  const runBoundary = createRunBoundary();
+  const clearScopeDiagnostics = (scope: string | undefined) => {
+    for (const t of tabs.listBrowserTabs(scope)) tabs.browserTabHandleById(t.tabId, scope)?.clearDiagnostics?.();
+  };
+
   // --- isolated sessions (browserSessions.ts holds the decisions) ---
   const createSessionCtx = (id: string, partition: string): SessionCtx => {
     const ses = session.fromPartition(partition);
@@ -1195,6 +1293,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     const { controller, journal, ses } = s.ctx;
     await controller.releaseFixture().catch((err) => console.error("browser session: releaseFixture failed", err));
     journal.stopOwnedBy(s.owner);
+    runBoundary.forget(id);
     let clean = await (s.ctx.tabsClosed ?? closeTabsAndWait(id));
     if (!clean) console.error("browser session: tabs were not destroyed in time");
     const steps: [string, () => Promise<unknown>][] = [
@@ -1306,6 +1405,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     // — decremented in `finally` so a rejected/throwing command never leaves
     // this counter stuck above zero.
     commandsInFlight.inc(sessionId);
+    const runScope = sessionId ?? "";
+    if (runBoundary.commandStart(runScope)) clearScopeDiagnostics(sessionId);
     const drivesPage = isAgentPageCommand(payload.command, payload.args);
     // The tab this command starts on (null for a session that has no tab yet).
     const startTab = drivesPage ? tabs.currentBrowserTabId(sessionId) : null;
@@ -1328,6 +1429,8 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
           return await controller.snapshot();
         case "perform":
           return await controller.perform(payload.args);
+        case "assert":
+          return await controller.assert(payload.args);
         case "read":
           return await controller.read(payload.args);
         case "screenshot":
@@ -1349,10 +1452,21 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
           // The page's AbortSignal cannot cross IPC, so `opts` is dropped.
           // A non-object fixture is rejected by the controller (stage "validate").
           const fixture = isRecord(payload.args) ? payload.args.fixture : undefined;
-          return await controller.applyFixture(fixture as Parameters<BrowserController["applyFixture"]>[0], { allowNetworkMocks: true });
+          // The fixture's own page loads are part of the run: flush BEFORE it.
+          clearScopeDiagnostics(sessionId);
+          const shared = sessionId === undefined;
+          if (shared) resetViewportRecords(agentEmulation.beginApply());
+          let result: unknown;
+          try {
+            result = await controller.applyFixture(fixture as Parameters<BrowserController["applyFixture"]>[0], { allowNetworkMocks: true });
+          } finally {
+            if (shared) resetViewportRecords(agentEmulation.finishApply(result));
+          }
+          return result;
         }
         case "releaseFixture": {
-          await controller.releaseFixture(rawToken(payload.args));
+          if (sessionId === undefined) await releaseSharedFixture(rawToken(payload.args));
+          else await controller.releaseFixture(rawToken(payload.args));
           return { ok: true };
         }
         // Checkpoint journal. Args are untrusted: malformed ones are ignored.
@@ -1374,6 +1488,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
       }
     } finally {
       commandsInFlight.dec(sessionId);
+      runBoundary.commandEnd(runScope);
       // A command can settle after the window closed: never push state then.
       if (!win.isDestroyed()) {
         if (startTab !== null) agentActivity.end(startTab);
@@ -1421,6 +1536,72 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
       buildNewTabMenuTemplate({ newTab: () => tabs.newTab("editor"), newBrowserTab: newUserBrowserTab }),
     ).popup({ window: win, ...at });
   };
+  // The chrome row's "Browser tools" popup. Viewport choice is kept per tab
+  // handle (weakly, so it is forgotten when the tab closes); CDP overrides
+  // persist across navigations, so it is deliberately NOT reset on navigate.
+  // Keyed by webContents id (the agent emulation tracker names tabs that way);
+  // a closing tab removes its entry in its handle's destroy().
+  const viewportRecordByTab = new Map<number, ViewportPresetId>();
+  const viewportByTab = {
+    get: (h: { getWebContentsId(): number }): ViewportPresetId | undefined => viewportRecordByTab.get(h.getWebContentsId()),
+    set: (h: { getWebContentsId(): number }, id: ViewportPresetId) => void viewportRecordByTab.set(h.getWebContentsId(), id),
+    forget: (viewId: number) => void viewportRecordByTab.delete(viewId),
+  };
+  // Viewport changes are serialized per tab (one CDP sequence at a time).
+  const viewportQueueByTab = new WeakMap<object, Promise<void>>();
+  const onTabbarToolsMenu = (e: Electron.IpcMainEvent, anchor: unknown) => {
+    if (!fromOurTabbar(e)) return;
+    const handle = tabs.activeBrowserHandle();
+    if (!handle) return;
+    const at = isRecord(anchor) && typeof anchor.x === "number" && typeof anchor.y === "number"
+      ? { x: Math.round(anchor.x), y: Math.round(anchor.y) }
+      : {};
+    Menu.buildFromTemplate(
+      buildBrowserToolsMenuTemplate(
+        {
+          hasDebugger: handle.hasDebugger?.() ?? false,
+          viewport: viewportByTab.get(handle) ?? "responsive",
+          devToolsOpen: handle.isDevToolsOpened?.() ?? false,
+          zoomFactor: handle.getZoomFactor?.() ?? 1,
+          zoomLevel: handle.getZoomLevel?.() ?? 0,
+        },
+        {
+          setViewport: (id) => {
+            const run = async () => {
+              const send = handle.sendCdpDirect;
+              if (!send || !handle.hasDebugger?.()) return;
+              const prev = viewportByTab.get(handle) ?? "responsive";
+              const commands = planViewportCommands(id, {
+                view: handle.getViewSize?.() ?? { width: 1e6, height: 1e6 },
+                brands: (await handle.getUaBrands?.()) ?? null,
+                chromeVersion: handle.getChromeVersion?.(),
+              });
+              try {
+                for (const c of commands) await send(c.method, c.params);
+              } catch (err) {
+                console.error("browser tools: viewport emulation failed", err);
+                // Roll back to a known state: no overrides, recorded as responsive.
+                for (const c of planClearCommands()) await send(c.method, c.params).catch(() => {});
+                viewportByTab.set(handle, "responsive");
+                return;
+              }
+              viewportByTab.set(handle, id);
+              // UA/platform are read by servers and first-load scripts, so a
+              // changed identity only takes effect after a fresh load.
+              if (viewportNeedsReload(prev, id)) handle.reload();
+            };
+            const next = (viewportQueueByTab.get(handle) ?? Promise.resolve())
+              .then(run)
+              .catch((err) => console.error("browser tools: viewport change failed", err));
+            viewportQueueByTab.set(handle, next);
+          },
+          toggleDevTools: () => handle.toggleDevTools?.(),
+          setZoomFactor: (f) => handle.setZoomFactor?.(f),
+          setZoomLevel: (l) => handle.setZoomLevel?.(l),
+        },
+      ),
+    ).popup({ window: win, ...at });
+  };
   const onTabbarActivate = (e: Electron.IpcMainEvent, id: number) =>
     fromOurTabbar(e) && tabs.activate(id);
   const onTabbarClose = (e: Electron.IpcMainEvent, id: number) =>
@@ -1441,6 +1622,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
   };
   ipcMain.on("tabbar:new", onTabbarNew);
   ipcMain.on("tabbar:new-menu", onTabbarNewMenu);
+  ipcMain.on("tabbar:tools-menu", onTabbarToolsMenu);
   ipcMain.on("tabbar:activate", onTabbarActivate);
   ipcMain.on("tabbar:close", onTabbarClose);
   ipcMain.on("tabbar:navigate", onTabbarNavigate);
@@ -1463,6 +1645,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
   win.on("closed", () => {
     ipcMain.removeListener("tabbar:new", onTabbarNew);
     ipcMain.removeListener("tabbar:new-menu", onTabbarNewMenu);
+    ipcMain.removeListener("tabbar:tools-menu", onTabbarToolsMenu);
     ipcMain.removeListener("tabbar:activate", onTabbarActivate);
     ipcMain.removeListener("tabbar:close", onTabbarClose);
     ipcMain.removeListener("tabbar:navigate", onTabbarNavigate);
