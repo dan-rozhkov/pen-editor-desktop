@@ -138,7 +138,7 @@ or a launch never auto-expands a collapsed panel: only the user's toggle changes
 Tests: `layout.test.ts`, `agentPanelSettings.test.ts`, `menu.test.ts`, `e2e/agent-panel-toggle.spec.ts`.
 
 **Tab icons.** Every tab has a leading glyph keyed by `TabState.kind` in
-`tabbar/renderer.ts` (one mapping): editor (canvas) tabs a Phosphor "PaintBrush", browser tabs a
+`tabbar/renderer.ts` (one mapping): editor (canvas) tabs a Phosphor "PaintBrush" (light weight), browser tabs a
 Phosphor "Globe" ALWAYS, never the site favicon. Phosphor is MIT: the notice lives in
 `THIRD_PARTY_NOTICES.md` (shipped via the electron-builder `files` list; keep it there). Just the glyph,
 monochrome `currentColor` (tab text color), no background square. The tab bar CSP has no `img-src`:
