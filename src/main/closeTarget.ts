@@ -5,21 +5,18 @@ import type { MenuActions } from "./menu";
  * app-wide, so it fires whichever window has focus; the Passwords window must
  * close itself, never a tab of the main window behind it.
  */
-export type CloseTarget = { kind: "passwords" } | { kind: "tab"; id: number } | { kind: "window" } | { kind: "none" };
+export type CloseTarget = { kind: "passwords" } | { kind: "tab"; id: number } | { kind: "none" };
 
 export function decideCloseTarget(input: {
   passwordsFocused: boolean;
   activeTabId: number | null;
-  /** Tabs of the main window (any kind, active or not). */
-  tabCount: number;
 }): CloseTarget {
   if (input.passwordsFocused) return { kind: "passwords" };
   if (input.activeTabId !== null) return { kind: "tab", id: input.activeTabId };
-  // Like a browser: with the window empty Cmd/Ctrl+W closes the window.
-  // With only background isolated-session tabs left (tabCount > 0, nothing
-  // active) it is a deliberate no-op: closing the window would kill the
-  // running QA sessions, and those tabs are closed by their own run or by a click.
-  return input.tabCount === 0 ? { kind: "window" } : { kind: "none" };
+  // Nothing to close (zero tabs, or only background isolated-session tabs): a deliberate
+  // no-op. Cmd/Ctrl+W never closes the window (macOS convention: that is "Close Window",
+  // Cmd/Ctrl+Shift+W), so a stray extra press cannot lose the window or kill running QA sessions.
+  return { kind: "none" };
 }
 
 /**
@@ -40,6 +37,7 @@ export const MENU_ACTION_SCOPE: Record<keyof MenuActions, "main" | "close" | "ap
   newBrowserTab: "main",
   openPasswords: "app",
   closeTab: "close",
+  closeWindow: "close",
   nextTab: "main",
   prevTab: "main",
   forwardToActiveTab: "main",

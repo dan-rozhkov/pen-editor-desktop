@@ -64,7 +64,7 @@ test("saved logins: fillLogin error path and the save prompt via the isolated-wo
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     // Record (and answer "Not Now" to) every native dialog.

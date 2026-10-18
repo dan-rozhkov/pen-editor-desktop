@@ -27,7 +27,10 @@ export interface MenuActions {
   newBrowserTab(): void;
   /** Opens (or focuses) the Passwords window. A local action: it forwards no `menu:command` id. */
   openPasswords(): void;
+  /** Closes the active tab; does nothing with no tab (never the window). */
   closeTab(): void;
+  /** Closes the focused window (File > Close Window, Cmd/Ctrl+Shift+W). */
+  closeWindow(): void;
   nextTab(): void;
   prevTab(): void;
   forwardToActiveTab(commandId: string): void;
@@ -37,7 +40,7 @@ export interface MenuActions {
   setCursorMotion(style: CursorMotionStyle): void;
   /** Saves + applies the agent cursor's on/off switch (View menu). */
   setCursorEnabled(enabled: boolean): void;
-  /** Agent layout: show/hide the agent chat panel (View menu, same as the tab bar's sidebar button). A local action: no `menu:command` id. */
+  /** Show/hide the agent chat panel (View menu, same as the tab bar's sidebar button). A local action: no `menu:command` id. */
   toggleAgentPanel(): void;
 }
 
@@ -119,6 +122,7 @@ export function buildMenuTemplate(
       { label: "Import Design Tokens…", click: () => actions.forwardToActiveTab("file-import-tokens") },
       { type: "separator" },
       { label: "Close Tab", accelerator: "CmdOrCtrl+W", click: () => actions.closeTab() },
+      { label: "Close Window", accelerator: "CmdOrCtrl+Shift+W", click: () => actions.closeWindow() },
       { type: "separator" },
       { label: mcpStatusLabel(mcpStatus), enabled: false },
       { label: "Use this app for MCP", click: () => actions.useThisAppForMcp() },
@@ -150,7 +154,7 @@ export function buildMenuTemplate(
       { role: "togglefullscreen" },
       { role: "toggleDevTools" },
       { type: "separator" },
-      // Agent layout only. Cmd/Ctrl+Alt+B: free in the editor (Cmd+\ is "hide UI", Cmd+Alt+S is boolean subtract).
+      // Cmd/Ctrl+Alt+B: free in the editor (Cmd+\ is "hide UI", Cmd+Alt+S is boolean subtract).
       ...(opts.agentPanel
         ? [
             { label: agentPanelMenuLabel(opts.agentPanel.collapsed), accelerator: "CmdOrCtrl+Alt+B", click: () => actions.toggleAgentPanel() },

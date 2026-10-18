@@ -1915,7 +1915,7 @@ test("built-in browser tab: open, findImages, act (click/type/scroll/back/forwar
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery") });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
     const tabbarPage =
       app.windows().find((page) => page.url().endsWith("/tabbar/tabbar.html")) ??
@@ -2098,7 +2098,7 @@ test("human cursor overlay: real, non-blocking, and follows the acted-on element
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery") });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
     const tabbarPage =
       app.windows().find((page) => page.url().endsWith("/tabbar/tabbar.html")) ??
@@ -2328,9 +2328,7 @@ test("File ▸ New Browser Tab focuses the address bar, and typing+submitting na
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
     const tabbarPage =
       app.windows().find((page) => page.url().endsWith("/tabbar/tabbar.html")) ??
@@ -2382,7 +2380,7 @@ test("built-in browser tab: browse_act back errors cleanly when there is no hist
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery") });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     await callBrowser(editorPage, "open", { url: galleryUrl });
@@ -2402,7 +2400,7 @@ test("built-in browser tab: browse_act reports an error when no browser tab has 
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery") });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const result = (await callBrowser(editorPage, "findImages", {})) as { error?: string };
@@ -2421,9 +2419,7 @@ test("browser snapshot: visibility filtering, labels, ops, and password values a
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [snapshotPage] = await Promise.all([
@@ -2590,9 +2586,7 @@ test("browser act click: a bare word matching both a real element tag and a butt
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [clickPage] = await Promise.all([
@@ -2627,9 +2621,7 @@ async function openReachFixture(url: string, readyText: string) {
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
   });
-  const editorPage = await app.waitForEvent("window", {
-    predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-  });
+  const editorPage = app.canvasPage;
   await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
   const [page] = await Promise.all([
     app.waitForEvent("window", { predicate: (p) => p.url() === url }),
@@ -2882,9 +2874,7 @@ test("browser snapshot: hard-caps at 120 elements even when more are visible", a
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     await Promise.all([
@@ -2910,9 +2900,7 @@ test("code review finding 7: scroll containers never push the top document's ele
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -2953,9 +2941,7 @@ test("browser perform: acts by index, and rejects a snapshotId superseded by a n
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [snapshotPage] = await Promise.all([
@@ -3032,9 +3018,7 @@ test("second-pass review: a scroll container that is ALSO an interactive element
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [snapshotPage] = await Promise.all([
@@ -3091,9 +3075,7 @@ test("evidence of effect ('Addendum 2, 2026-09-19' §1): a no-op click reports c
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [evidencePage] = await Promise.all([
@@ -3140,9 +3122,7 @@ test("browse-speed contract (2026-09-24): a click that updates a separate status
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [sideEffectPage] = await Promise.all([
@@ -3178,9 +3158,7 @@ test("browse-speed contract fix (2026-09-24): a no-op click on a page with a liv
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [tickerPage] = await Promise.all([
@@ -3214,9 +3192,7 @@ test("browse-speed contract fix (2026-09-24): removing an element reports pageCh
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [removalPage] = await Promise.all([
@@ -3248,9 +3224,7 @@ test("evidence of effect: perform CLICK by index also carries changed evidence",
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     await Promise.all([
@@ -3284,9 +3258,7 @@ test("browse_read: headings/text/links against a real DOM, with caps applied and
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [readPage] = await Promise.all([
@@ -3390,9 +3362,7 @@ test("browse_capture: the read fixture comes back as one self-contained HTML doc
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [readPage] = await Promise.all([
@@ -3441,9 +3411,7 @@ test("browse_capture v2: a linked stylesheet is fetched, its @import inlined, ht
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const cssUrl = `${baseUrl}/capture-css`;
@@ -3481,9 +3449,7 @@ test("BROWSE-01: an <img srcset> yields the largest declared candidate, and natu
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [metaPage] = await Promise.all([
@@ -3541,9 +3507,7 @@ test("BROWSE-02: labels resolve through a descendant's aria-label and through an
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [snapshotPage] = await Promise.all([
@@ -3619,9 +3583,7 @@ test("browse_open: DOM-ready fix — returns well within the command timeout wit
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const start = Date.now();
@@ -3679,9 +3641,7 @@ test("addendum 3 §2 (upstream PR #58): a click on a control that disables itsel
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -3729,9 +3689,7 @@ test("browse_screenshot hides the agent cursor overlay during capture and restor
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
     const [fixturePage] = await Promise.all([
       app.waitForEvent("window", { predicate: (p) => p.url() === snapshotUrl }),
@@ -3771,9 +3729,7 @@ test("browse_screenshot: returns a non-empty image, and annotate marks never lea
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     // The /snapshot fixture (not /gallery — its interactive elements are
@@ -3855,9 +3811,7 @@ test("browse_screenshot: annotate with the loop's snapshotId reuses it, keeps pe
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
     const [fixturePage] = await Promise.all([
       app.waitForEvent("window", { predicate: (p) => p.url() === snapshotUrl }),
@@ -3985,9 +3939,7 @@ test("browse_act: press Enter submits a form, hover triggers :hover/mouseover, a
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4059,9 +4011,7 @@ test("browse_tabs: list/switch/close, and a target=_blank popup reports openedTa
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4123,9 +4073,7 @@ test("dialogs: alert() is auto-accepted and reported, without hanging the next c
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4184,9 +4132,7 @@ test("dialogs (finding 3): an alert() the page raises on its own, outside any ag
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4248,9 +4194,7 @@ test("browse_act: press Ctrl+A selects a field's whole contents via CDP's native
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4310,9 +4254,7 @@ test("dialogs (finding 1): a dialog raised between commands is resolved and repo
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4370,9 +4312,7 @@ test("browse_act hover: on a smooth-scroll page, the reported coordinates land o
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4414,9 +4354,7 @@ test("Wave 2 reliability: trusted click fires event.isTrusted and a pointerdown-
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4460,9 +4398,7 @@ test("Wave 2 reliability: trusted typing selects existing content, fires beforei
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4505,9 +4441,7 @@ test("Wave 2 reliability: act scroll / perform SCROLL scroll an inner container 
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4569,9 +4503,7 @@ test("code review finding 5: a hidden text match no longer short-circuits the se
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4622,9 +4554,7 @@ test("Wave 3 reliability: open shadow root — click a shadow button by index an
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4662,9 +4592,7 @@ test("Wave 3 reliability: same-origin iframe — click a frame button by index",
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4701,9 +4629,7 @@ test("Wave 3 reliability: cross-origin (OOPIF) iframe — click a frame button b
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4743,9 +4669,7 @@ test("Wave 3 reliability: a console error from a throwing click handler is surfa
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage] = await Promise.all([
@@ -4796,9 +4720,7 @@ test("Wave 3 reliability: botCheck is true on a page that looks like a challenge
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && !p.url().includes("/gallery"),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const [fixturePage, openResult] = await Promise.all([

@@ -306,15 +306,12 @@ class LatencyTracker {
 }
 
 async function openChatPanel(page: Page): Promise<void> {
-  // TODO(unverified): written for the agent panel without a live run (needs network and tokens).
-  // The panel shows the chat directly; the old editor-side rail button no longer applies.
-  const rail = page.locator('[data-testid="rail-agents"]');
-  if (await rail.isVisible().catch(() => false)) await rail.click();
-  const createChatButton = page.locator('[data-testid="create-chat-button"]');
-  if (await createChatButton.isVisible().catch(() => false)) {
-    await createChatButton.click();
-  }
-  await expect(page.getByPlaceholder("Ask the design agent...")).toBeVisible({ timeout: 30_000 });
+  // The agent panel opens on its chat list or on a chat. TODO(unverified): written without a live run
+  // (needs network and tokens); same flow as bench-agent-layout-screens.spec.ts (waitPanel/newChat).
+  const input = page.getByPlaceholder("Ask the design agent...");
+  await input.or(page.getByTestId("chat-list-new")).first().waitFor({ state: "visible", timeout: 90_000 });
+  if (!(await input.isVisible().catch(() => false))) await page.getByTestId("chat-list-new").click();
+  await expect(input).toBeVisible({ timeout: 30_000 });
 }
 
 async function sendMessage(page: Page, text: string): Promise<void> {

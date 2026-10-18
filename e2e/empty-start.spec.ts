@@ -132,18 +132,23 @@ test("agent layout opens with the panel only; the placeholder opens and returns 
     await tabbar.locator(".tab .close").evaluate((el) => (el as HTMLElement).click());
     await expect.poll(emptyVisible).toBe(true);
 
-    // Close Tab (Cmd/Ctrl+W) with zero tabs closes the window.
-    await app.evaluate(({ Menu }) => {
-      const find = (items: Electron.MenuItem[]): Electron.MenuItem | undefined => {
-        for (const it of items) {
-          if (it.label === "Close Tab") return it;
-          const hit = it.submenu ? find(it.submenu.items) : undefined;
-          if (hit) return hit;
-        }
-        return undefined;
-      };
-      find(Menu.getApplicationMenu()!.items)!.click();
-    });
+    // Close Tab (Cmd/Ctrl+W) with zero tabs does nothing; Close Window (Cmd/Ctrl+Shift+W) closes the window.
+    const clickMenu = (label: string) =>
+      app.evaluate(({ Menu }, wanted) => {
+        const find = (items: Electron.MenuItem[]): Electron.MenuItem | undefined => {
+          for (const it of items) {
+            if (it.label === wanted) return it;
+            const hit = it.submenu ? find(it.submenu.items) : undefined;
+            if (hit) return hit;
+          }
+          return undefined;
+        };
+        find(Menu.getApplicationMenu()!.items)!.click();
+      }, label);
+    await clickMenu("Close Tab");
+    await tabbar.waitForTimeout(500);
+    expect(await app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().length)).toBe(1);
+    await clickMenu("Close Window");
     await expect.poll(() => app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().length)).toBe(0);
   } finally {
     await app.close();

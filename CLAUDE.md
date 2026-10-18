@@ -58,8 +58,8 @@ is not built; collapse is the sidebar toggle below.
 Inside the tab bar the strip starts at the panel's right edge: `window.ts`
 adds `tabStripLeft` to the existing `tabbar:state` snapshot (no new channel);
 `renderer.ts` writes it to the CSS var `--tab-strip-left`; the tab row's left
-padding is `max(88px traffic lights on mac, --tab-strip-left)` (the address
-row uses the same offset). The row stays a window drag region, so the part of
+padding is `max(--controls-end, --tab-strip-left)`, where `--controls-end` is the sidebar toggle's right edge (after the macOS traffic lights); the address
+row margin uses `--tab-strip-left`. The row stays a window drag region, so the part of
 the bar above the panel is an empty draggable title area. Popup anchors (new
 tab, browser tools) are tab-bar CSS px = window coords (tab bar at x=0): no
 offset.
@@ -84,7 +84,7 @@ transparent. Non-macOS: no vibrancy, `win.setBackgroundColor(GLASS_SOLID[theme])
 *Colours: one place each.* TS: `windowTheme.ts` (`ISLAND_BG` light `#ffffff` / dark
 `#2a2a2a` = the frontend's `--color-surface-panel`, `GLASS_SOLID`, `contentBackground`,
 `FALLBACK_THEME`, `glassTint`). CSS: `tokens.css` (`--island-bg`, same values, pinned equal by
-`test/windowTheme.test.ts`; `--tab-active-bg` is an alias of it). Islands (panel, tab views,
+`test/windowTheme.test.ts`). Islands (panel, tab views,
 empty view, address row) use the island colour, so in dark the chat and the tab island match.
 The active
 tab pill keeps its own translucent `--glass-tab-active` (unchanged).
@@ -191,7 +191,7 @@ existing "No editor tab is open."), `editorTabsInfo()` empty (the router's
 commands that target the active editor tab (`forwardToActiveTab`: File Open,
 Export..., Import/Export Design Tokens) are a **no-op** with no tab (they do NOT
 open a canvas tab: the editor must be loaded before it can handle a command);
-Close Tab is `decideCloseTarget` "window" with zero tabs (closes the window, like a browser; "none" when only background session tabs remain). A new non-session tab becomes active when none is active, even if requested in the background (`activate:false`). macOS dock `activate` reopens a window
+Close Tab (Cmd/Ctrl+W, `decideCloseTarget`) closes the active tab and does NOTHING with no active tab (zero tabs, or only background session tabs): it never closes the window (macOS convention). File > "Close Window" (Cmd/Ctrl+Shift+W, local action `closeWindow`, no `menu:command` id) closes the focused window; with the Passwords window focused it closes that window like Close Tab does. A new non-session tab becomes active when none is active, even if requested in the background (`activate:false`). macOS dock `activate` reopens a window
 the same way (panel only). **Placeholder:** while `activeId === null`, a local view (`src/tabbar/empty.html` + `empty.css` + `emptyRenderer.ts`,
 same CSP as the tab bar, light/dark tokens shared via `tokens.css`, no remote content) covers the tab
 area with "Canvas and browser tabs open here." and two buttons, "New Canvas Tab"
@@ -264,7 +264,7 @@ type-only), clicks every item with recording actions, and asserts the
 forwarded ids both match its pinned list and resolve through `getCommands()`.
 pen-editor's `contract` CI job checks out this repo's `main` at run time, so a
 menu id typed only here is caught there, not in this repo — this repo has no
-CI of its own. Adding or renaming a forwarded id means touching four places:
+CI of its own. `Close Window` is a local action like Passwords (no forwarded id); pen-editor's contract test must tolerate a click on it (its recording actions need a `closeWindow` entry if they are an explicit list). Adding or renaming a forwarded id means touching four places:
 `menu.ts`, that test's pinned list, and both CLAUDE.md files.
 
 ## IPC channels
@@ -936,7 +936,7 @@ changes; merge order there: backend, frontend, then this repo).
   application menu is
   app-global, so while this window is focused EVERY main-window menu action
   (new tab, open, export, tab switching...) is ignored and File ▸ Close Tab
-  (Cmd/Ctrl+W) closes this window (`closeTarget.ts`: `MENU_ACTION_SCOPE`,
+  (Cmd/Ctrl+W) and Close Window (Cmd/Ctrl+Shift+W) close this window (`closeTarget.ts`: `MENU_ACTION_SCOPE`,
   `decideMenuAction`, `guardMenuActions`, pure; a new `MenuActions` key will not
   compile until it has a scope). The guard is wired in `window.ts`; `menu.ts`
   still forwards every click untouched, which pen-editor's

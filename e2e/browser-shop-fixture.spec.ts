@@ -67,9 +67,7 @@ test("bench-shop fixture: consent gate, search, hover menu, filters, checkout va
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(editorBaseUrl) && !p.url().startsWith(`${editorBaseUrl}/agent`),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     // --- open: lands on the home page with the consent banner still up ---

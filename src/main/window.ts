@@ -201,8 +201,7 @@ export function createMainWindow(
           // window loses focus — the default ("followWindow") would grey it
           // out, which is not what Codex does. A vibrant window is
           // non-opaque, so macOS edges it with a dark 1px line (it comes
-          // with the shadow, which we keep); `windowRim` below paints a
-          // light-grey rim just inside it, as Codex has. The tab
+          // with the shadow, which we keep); the tab
           // CONTENT views (editor/browser) are kept opaque so no glass ever
           // bleeds through page content.
           vibrancy: "under-window" as const,
@@ -214,7 +213,6 @@ export function createMainWindow(
   const themeKey = Symbol("main-window-theme");
   // The OS appearance (vibrancy) is never changed; the glass is tinted
   // instead (`glassTintView`, windowTheme.ts `glassTint`). Fallback theme and colours: windowTheme.ts.
-  const systemTheme = (): UITheme => FALLBACK_THEME;
 
   // --- tab bar view ---
   const tabbarView = new WebContentsView({
@@ -228,17 +226,11 @@ export function createMainWindow(
   win.contentView.addChildView(tabbarView);
   attachLocalOnlyPolicy(tabbarView.webContents);
 
-  if (process.platform === "darwin") {
-    // Let the window's vibrancy material show through the tab bar's own
-    // translucent CSS background (tabbar.css's `--bar-glass`/`--chrome-glass`
-    // tokens) instead of painting over it with an opaque view background.
-    tabbarView.setBackgroundColor("#00000000");
-  }
   // Tab bar sits directly on the glass.
   tabbarView.setBackgroundColor("#00000000");
   // Not macOS: no vibrancy, so a solid neutral reads as the "glass" colour
   // (updated per theme in pushState).
-  if (process.platform !== "darwin") win.setBackgroundColor(GLASS_SOLID[systemTheme()]);
+  if (process.platform !== "darwin") win.setBackgroundColor(GLASS_SOLID[FALLBACK_THEME]);
   void tabbarView.webContents.loadFile(path.join(__dirname, "../tabbar/tabbar.html"));
 
   // Tab CONTENT views (editor/browser) must stay opaque no matter what the
@@ -262,31 +254,29 @@ export function createMainWindow(
   const agentPanelView = new WebContentsView({
     webPreferences: secureWebPreferences(path.join(__dirname, "../preload/agentPanel.js")),
   });
-  {
-    win.contentView.addChildView(agentPanelView);
-    agentPanelView.setBackgroundColor(backgroundColorForTheme(systemTheme()));
-    agentPanelView.setBorderRadius(ISLAND_RADIUS);
-    // Anything but the panel's own page is not for the panel: other editor
-    // origin pages open as an editor tab (the canvas-tab URL), foreign origins go to
-    // the system browser.
-    attachPanelNavigationPolicy(
-      agentPanelView.webContents,
-      panelUrl,
-      (url) => void shell.openExternal(url),
-      () => void tabs.newTab("editor"),
-    );
-    attachOfflineFallback(agentPanelView.webContents, offlineFile);
-    void agentPanelView.webContents.loadURL(panelUrl);
-    // The panel page paints the stored editor theme (`ui-theme`, `.dark` on <html>); its preload
-    // observes that class and sends `panel:theme` (handler `onPanelTheme`, below). adoptPanelTheme
-    // (windowTheme.ts) decides whether main follows it.
-  }
+  win.contentView.addChildView(agentPanelView);
+  agentPanelView.setBackgroundColor(backgroundColorForTheme(FALLBACK_THEME));
+  agentPanelView.setBorderRadius(ISLAND_RADIUS);
+  // Anything but the panel's own page is not for the panel: other editor
+  // origin pages open as an editor tab (the canvas-tab URL), foreign origins go to
+  // the system browser.
+  attachPanelNavigationPolicy(
+    agentPanelView.webContents,
+    panelUrl,
+    (url) => void shell.openExternal(url),
+    () => void tabs.newTab("editor"),
+  );
+  attachOfflineFallback(agentPanelView.webContents, offlineFile);
+  void agentPanelView.webContents.loadURL(panelUrl);
+  // The panel page paints the stored editor theme (`ui-theme`, `.dark` on <html>); its preload
+  // observes that class and sends `panel:theme` (handler `onPanelTheme`, below). adoptPanelTheme
+  // (windowTheme.ts) decides whether main follows it.
   // --- empty state: shown in the tab area while the window has no tab ---
   // The window starts with zero tabs (config.ts INITIAL_TABS) and returns to
   // zero when the last tab closes. A local page (no remote content) with its
   // OWN minimal preload (preload/empty.ts): its two buttons send the same events
   // as the "+" menu. Added after the panel, hidden until pushState sees no active tab.
-  let emptyState: EmptyViewState = { visible: false, theme: systemTheme(), sessionTabs: 0 };
+  let emptyState: EmptyViewState = { visible: false, theme: FALLBACK_THEME, sessionTabs: 0 };
   // The placeholder's one state message: it carries the theme and the count of
   // background session tabs (the page shows a note when the count is above 0).
   const sendEmptyState = (wc: Electron.WebContents) =>
@@ -307,24 +297,22 @@ export function createMainWindow(
   // True while `rememberedEditorTheme` came from the agent panel page, not from an editor tab (an editor's own report always wins).
   let rememberedFromPanel = false;
   const editorTabCount = (s: TabsSnapshot) => s.tabs.filter((t) => t.kind === "editor").length;
-  let lastResolvedForTint: UITheme = systemTheme();
+  let lastResolvedForTint: UITheme = FALLBACK_THEME;
   const emptyView = new WebContentsView({
     webPreferences: secureWebPreferences(path.join(__dirname, "../preload/empty.js")),
   });
-  {
-    win.contentView.addChildView(emptyView);
-    attachLocalOnlyPolicy(emptyView.webContents);
-    emptyView.setBackgroundColor(backgroundColorForTheme(systemTheme()));
-    emptyView.setBorderRadius(ISLAND_RADIUS);
-    emptyView.setVisible(false);
-    void emptyView.webContents.loadFile(path.join(__dirname, "../tabbar/empty.html"));
-    // The page may finish loading after the first pushState: hand it the latest theme.
-    emptyView.webContents.on("did-finish-load", () => sendEmptyState(emptyView.webContents));
-    // A crashed placeholder renderer would leave the tab area blank: reload the local page.
-    emptyView.webContents.on("render-process-gone", () => {
-      if (!emptyView.webContents.isDestroyed()) void emptyView.webContents.loadFile(path.join(__dirname, "../tabbar/empty.html"));
-    });
-  }
+  win.contentView.addChildView(emptyView);
+  attachLocalOnlyPolicy(emptyView.webContents);
+  emptyView.setBackgroundColor(backgroundColorForTheme(FALLBACK_THEME));
+  emptyView.setBorderRadius(ISLAND_RADIUS);
+  emptyView.setVisible(false);
+  void emptyView.webContents.loadFile(path.join(__dirname, "../tabbar/empty.html"));
+  // The page may finish loading after the first pushState: hand it the latest theme.
+  emptyView.webContents.on("did-finish-load", () => sendEmptyState(emptyView.webContents));
+  // A crashed placeholder renderer would leave the tab area blank: reload the local page.
+  emptyView.webContents.on("render-process-gone", () => {
+    if (!emptyView.webContents.isDestroyed()) void emptyView.webContents.loadFile(path.join(__dirname, "../tabbar/empty.html"));
+  });
   // --- canvas link: panel <-> canvas tabs, see canvasLink.ts ---
   // Pure router; this adapts Electron (sender checks, sends, tab actions). The
   // sends sit here, with literal channel names, for test/ipcContract.test.ts.
@@ -382,10 +370,8 @@ export function createMainWindow(
     // sees a tab's destruction in time to repoint away from a dying editor
     // tab before this snapshot goes out.
     mcpService.setActiveTab(s.mcpActiveWebContentsId);
-    {
-      const info = tabs.editorTabsInfo();
-      canvasLink.syncTabs(info.tabs, info.activeWebContentsId);
-    }
+    const info = tabs.editorTabsInfo();
+    canvasLink.syncTabs(info.tabs, info.activeWebContentsId);
     // A fresh, empty-URL browser tab (File ▸ New Browser Tab, or switching
     // to one that was never navigated) becoming active must put the caret
     // in the address bar, the way every real browser does on a new tab —
@@ -415,7 +401,7 @@ export function createMainWindow(
       islandGap: geometry.gap,
       islandRadius: geometry.radius,
     });
-    const themed = resolveWindowTheme({ activeTheme: s.activeTheme, remembered: rememberedEditorTheme, system: systemTheme() });
+    const themed = resolveWindowTheme({ activeTheme: s.activeTheme, remembered: rememberedEditorTheme, system: FALLBACK_THEME });
     rememberedEditorTheme = themed.remembered;
     if (s.activeTheme !== null) rememberedFromPanel = false;
     const resolvedTheme = themed.theme;
@@ -576,7 +562,7 @@ export function createMainWindow(
       // accurate is known: an editor tab corrects this itself the moment it
       // reports its own theme (onThemeChanged wiring below); a blank browser
       // tab is corrected by pushState once the resolved theme is known.
-      view.setBackgroundColor(backgroundColorForTheme(systemTheme()));
+      view.setBackgroundColor(backgroundColorForTheme(FALLBACK_THEME));
       // A view's background colour is the base behind every page it shows,
       // not just a pre-paint placeholder — a site that sets no background of
       // its own relies on Chromium's default white, and would render its
@@ -927,7 +913,7 @@ export function createMainWindow(
         };
         view.webContents.on("render-process-gone", () => {
           releaseOrphanedFixture();
-          canvasLink?.rendererGone(viewId);
+          canvasLink.rendererGone(viewId);
         });
         // Orphaned (and, for a registered canvas tab, gone for the panel) once a
         // reload COMMITS, not at did-start-navigation, which also fires for
@@ -935,7 +921,7 @@ export function createMainWindow(
         view.webContents.on("did-frame-navigate", (_e, _url, _code, _text, isMainFrame) => {
           if (isOrphaningEvent({ type: "did-navigate", isMainFrame, isSameDocument: false })) {
             releaseOrphanedFixture();
-            canvasLink?.tabGone(viewId);
+            canvasLink.tabGone(viewId);
           }
         });
         attachNavigationPolicy(view.webContents, editorOrigin, (url) => void shell.openExternal(url));
@@ -1112,7 +1098,7 @@ export function createMainWindow(
             releaseOwnedFixture(viewId);
             journalOwners.stopOwnedBy(viewId);
             closeSessionsOwnedBy(viewId, true);
-            canvasLink?.tabGone(viewId, true);
+            canvasLink.tabGone(viewId, true);
           }
           if (debuggerAttached) {
             try {
@@ -1650,22 +1636,20 @@ export function createMainWindow(
     journalOwners.stopOwnedBy(panelId);
     closeSessionsOwnedBy(panelId, gone);
   };
-  {
-    agentPanelView.webContents.on("render-process-gone", () => {
-      if (isOrphaningEvent({ type: "render-process-gone" })) {
-        releasePanelOrphans();
-        canvasLink?.panelGone();
-      }
-    });
-    agentPanelView.webContents.on("did-frame-navigate", (_e, _url, _code, _text, isMainFrame) => {
-      if (isOrphaningEvent({ type: "did-navigate", isMainFrame, isSameDocument: false })) {
-        releasePanelOrphans();
-        canvasLink?.panelGone();
-      }
-    });
-    // The reloaded panel has no list: push it once the page is up.
-    agentPanelView.webContents.on("did-finish-load", () => canvasLink?.repush());
-  }
+  agentPanelView.webContents.on("render-process-gone", () => {
+    if (isOrphaningEvent({ type: "render-process-gone" })) {
+      releasePanelOrphans();
+      canvasLink.panelGone();
+    }
+  });
+  agentPanelView.webContents.on("did-frame-navigate", (_e, _url, _code, _text, isMainFrame) => {
+    if (isOrphaningEvent({ type: "did-navigate", isMainFrame, isSameDocument: false })) {
+      releasePanelOrphans();
+      canvasLink.panelGone();
+    }
+  });
+  // The reloaded panel has no list: push it once the page is up.
+  agentPanelView.webContents.on("did-finish-load", () => canvasLink.repush());
 
   const onBrowserCommand = async (event: Electron.IpcMainInvokeEvent, payload: unknown) => {
     // Single source of truth for "which webContents id is an editor tab" —
@@ -1854,20 +1838,18 @@ export function createMainWindow(
   ipcMain.handle("browser:command", onBrowserCommand);
 
   // --- canvas link IPC ---
-  const onCanvasRegister = (event: Electron.IpcMainEvent) => canvasLink?.register(event.sender.id);
-  const onCanvasUnregister = (event: Electron.IpcMainEvent) => canvasLink?.unregister(event.sender.id);
-  const onCanvasToPanel = (event: Electron.IpcMainEvent, env: unknown) => canvasLink?.toPanel(event.sender.id, env);
-  const onCanvasToTab = (event: Electron.IpcMainEvent, payload: unknown) => canvasLink?.toTab(event.sender.id, payload);
-  const onCanvasActivate = (event: Electron.IpcMainEvent, tabId: unknown) => canvasLink?.activate(event.sender.id, tabId);
-  {
-    ipcMain.on("canvas:register", onCanvasRegister);
-    ipcMain.on("canvas:unregister", onCanvasUnregister);
-    ipcMain.on("canvas:to-panel", onCanvasToPanel);
-    ipcMain.on("canvas:to-tab", onCanvasToTab);
-    ipcMain.on("canvas:activate", onCanvasActivate);
-    ipcMain.handle("canvas:list", (event) => canvasLink.list(event.sender.id));
-    ipcMain.handle("canvas:open", (event, opts: unknown) => canvasLink.open(event.sender.id, opts));
-  }
+  const onCanvasRegister = (event: Electron.IpcMainEvent) => canvasLink.register(event.sender.id);
+  const onCanvasUnregister = (event: Electron.IpcMainEvent) => canvasLink.unregister(event.sender.id);
+  const onCanvasToPanel = (event: Electron.IpcMainEvent, env: unknown) => canvasLink.toPanel(event.sender.id, env);
+  const onCanvasToTab = (event: Electron.IpcMainEvent, payload: unknown) => canvasLink.toTab(event.sender.id, payload);
+  const onCanvasActivate = (event: Electron.IpcMainEvent, tabId: unknown) => canvasLink.activate(event.sender.id, tabId);
+  ipcMain.on("canvas:register", onCanvasRegister);
+  ipcMain.on("canvas:unregister", onCanvasUnregister);
+  ipcMain.on("canvas:to-panel", onCanvasToPanel);
+  ipcMain.on("canvas:to-tab", onCanvasToTab);
+  ipcMain.on("canvas:activate", onCanvasActivate);
+  ipcMain.handle("canvas:list", (event) => canvasLink.list(event.sender.id));
+  ipcMain.handle("canvas:open", (event, opts: unknown) => canvasLink.open(event.sender.id, opts));
 
   // --- layout ---
   // computeLayout is pure geometry (layout.ts); pushState calls it BEFORE it builds the tab bar
@@ -1887,11 +1869,9 @@ export function createMainWindow(
   };
   const applyLayout = (l: ReturnType<typeof computeLayout>) => {
     const { width, height } = win.getContentBounds();
-    if (l.panel) {
-      agentPanelView.setBounds(l.panel);
-      // Collapsed: hidden, not destroyed (the chat keeps running and its state survives).
-      agentPanelView.setVisible(l.panelVisible);
-    }
+    agentPanelView.setBounds(l.panel);
+    // Collapsed: hidden, not destroyed (the chat keeps running and its state survives).
+    agentPanelView.setVisible(l.panelVisible);
     tabbarView.setBounds(l.tabbar);
     glassTintView?.setBounds({ x: 0, y: 0, width, height });
     emptyView.setBounds(l.tabArea);
@@ -2055,9 +2035,8 @@ export function createMainWindow(
   // snapshots emitted before its DOM was ready.
   tabbarView.webContents.on("did-finish-load", () => pushState(tabs.getSnapshot()));
   const onSystemThemeChanged = () => {
-    // The OS appearance also decides how strong the agent layout's glass tint is.
-    if (glassTintView) glassTintView.setBackgroundColor(glassTint(lastResolvedForTint, nativeTheme.shouldUseDarkColors).color);
-    if (tabs.getSnapshot().activeTheme === null && rememberedEditorTheme === null) pushState(tabs.getSnapshot());
+    // The OS appearance only decides how strong the glass tint is (the frontend ignores the OS).
+    glassTintView?.setBackgroundColor(glassTint(lastResolvedForTint, nativeTheme.shouldUseDarkColors).color);
   };
   nativeTheme.on("updated", onSystemThemeChanged);
 
@@ -2091,7 +2070,7 @@ export function createMainWindow(
     ipcMain.removeListener("canvas:activate", onCanvasActivate);
     ipcMain.removeHandler("canvas:list");
     ipcMain.removeHandler("canvas:open");
-    canvasLink?.dispose();
+    canvasLink.dispose();
     // The panel's fixture, checkpoint journals and browser sessions die with the window.
     releasePanelOrphans(true);
     nativeTheme.removeListener("updated", onSystemThemeChanged);
@@ -2126,11 +2105,10 @@ export function createMainWindow(
               const target = decideCloseTarget({
                 passwordsFocused: false,
                 activeTabId: tabs.getSnapshot().activeId,
-                tabCount: tabs.count(),
               });
               if (target.kind === "tab") closeTabByUser(target.id);
-              else if (target.kind === "window") win.close();
             },
+            closeWindow: () => win.close(),
             nextTab: () => tabs.nextTab(),
             prevTab: () => tabs.prevTab(),
             forwardToActiveTab: (commandId) => tabs.activeHandle()?.sendMenuCommand(commandId),

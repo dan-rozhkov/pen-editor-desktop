@@ -33,9 +33,7 @@ test("launches, opens a canvas tab with the editor, exposes the menu bridge", as
   expect(await app.evaluate(({ app: electronApp }) => electronApp.getName())).toBe("Sideform Desktop");
 
   // Windows: the tab bar view and the first tab view each surface as a page.
-  const editorPage = await app.waitForEvent("window", {
-    predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`),
-  });
+  const editorPage = app.canvasPage;
   const tabbarPage =
     app.windows().find((page) => page.url().endsWith("/tabbar/tabbar.html")) ??
     (await app.waitForEvent("window", {

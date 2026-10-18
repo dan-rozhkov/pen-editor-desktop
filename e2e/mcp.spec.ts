@@ -12,7 +12,7 @@
 // to this machine's real home directory.
 
 import { test, expect } from "@playwright/test";
-import { launchShell } from "./launch";
+import { isCanvasPage, launchShell } from "./launch";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
@@ -95,9 +95,7 @@ test("desktop MCP bridge: install-the-.app-and-the-plugin claim, end to end", as
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const handshakePath = path.join(home, ".pen-editor", "mcp.json");
@@ -214,9 +212,7 @@ test("desktop MCP bridge: the real pen-editor-plugin proxy discovers the endpoin
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const handshakePath = path.join(home, ".pen-editor", "mcp.json");
@@ -336,9 +332,7 @@ test("desktop MCP bridge: same-document (SPA) navigation keeps the bridge alive;
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     const handshakePath = path.join(home, ".pen-editor", "mcp.json");
@@ -397,9 +391,7 @@ test("desktop MCP bridge: list_editor_tabs discovers ids that explicit tabId rou
   });
 
   try {
-    const editorPage1 = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`),
-    });
+    const editorPage1 = app.canvasPage;
     await expect(editorPage1.locator("#ready")).toHaveText("stub-editor");
 
     const handshakePath = path.join(home, ".pen-editor", "mcp.json");
@@ -436,11 +428,10 @@ test("desktop MCP bridge: list_editor_tabs discovers ids that explicit tabId rou
       app.windows().find((page) => page.url().endsWith("/tabbar/tabbar.html")) ??
       (await app.waitForEvent("window", { predicate: (page) => page.url().endsWith("/tabbar/tabbar.html") }));
     // The "+" button pops a native menu Playwright can't click through; this
-    // is the same `tabbar:new` IPC its "New Editor Tab" item ends up in.
+    // is the same `tabbar:new` IPC its "New Canvas Tab" item ends up in.
+    const secondCanvas = app.waitForEvent("window", { predicate: (p) => isCanvasPage(p.url(), baseUrl) && p !== editorPage1 });
     await tabbarPage.evaluate(() => (window as unknown as { penTabbar: { newTab(): void } }).penTabbar.newTab());
-    const editorPage2 = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && p !== editorPage1,
-    });
+    const editorPage2 = await secondCanvas;
     await expect(editorPage2.locator("#ready")).toHaveText("stub-editor");
 
     interface TabEntry {

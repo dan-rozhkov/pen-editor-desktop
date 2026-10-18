@@ -18,7 +18,7 @@
 // real ~/.pen-editor/mcp.json (same rule as mcp.spec.ts).
 
 import { test, expect, type Page } from "@playwright/test";
-import { launchShell } from "./launch";
+import { isCanvasPage, launchShell } from "./launch";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
@@ -63,11 +63,11 @@ test("live: the deployed bundle answers the shell's menu, MCP and backend contra
   };
   app.windows().forEach(attach);
   app.on("window", attach);
-  // A window can surface before its URL is set (about:blank), so classify by
+  // Canvas pages only (never the /agent panel, which shares the origin). A window can surface before its URL is set (about:blank), so classify by
   // the URL each page reports *now*, never by the one it had at creation.
   // `app.windows()` can only be read after the first await; a window created
   // in between is picked up by the listener above, never missed.
-  const editorPages = () => allPages.filter((p) => p.url().startsWith(editorOrigin));
+  const editorPages = () => allPages.filter((p) => isCanvasPage(p.url(), PROD_EDITOR));
   const nextEditorPage = async (seen: number) => {
     await expect.poll(() => editorPages().length, { timeout: 60_000 }).toBeGreaterThan(seen);
     return editorPages()[seen];

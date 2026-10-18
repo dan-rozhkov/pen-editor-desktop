@@ -112,9 +112,10 @@ test("live: QA mode diagnostics against a failing signup form", async ({}, testI
   const t0 = Date.now();
   let usedAttempt = 0;
   try {
-    await expect.poll(() => allPages.filter((p) => p.url().startsWith(editorOrigin)).length, { timeout: 60_000 }).toBeGreaterThan(0);
-    const editor = allPages.filter((p) => p.url().startsWith(editorOrigin))[0];
-    await editor.waitForSelector("canvas", { timeout: 60_000 });
+    // The chat lives in the agent panel (the /agent view); the canvas tab (app.canvasPage) is chatless.
+    const panelPages = () => allPages.filter((p) => p.url().startsWith(`${editorOrigin}/agent`));
+    await expect.poll(() => panelPages().length, { timeout: 60_000 }).toBeGreaterThan(0);
+    const editor = panelPages()[0];
     editor.on("console", (m) => { if (m.text().startsWith("SSE ")) console.log(m.text().slice(0, 1500)); });
     await editor.evaluate(() => {
       const orig = window.fetch;
@@ -130,10 +131,12 @@ test("live: QA mode diagnostics against a failing signup form", async ({}, testI
       };
     });
     if (process.env.QA_PRIME) {
-      const r = await editor.evaluate(async (u) => (window as any).penDesktop.browser.open({ url: u }), base + "/form");
+      const r = await editor.evaluate(async (u) => (window as any).penAgentPanel.browser.open({ url: u }), base + "/form");
       console.log("PRIMED " + JSON.stringify(r).slice(0, 200));
     }
-    await editor.getByTestId("rail-agents").click();
+    // Panel state: chat list or an open chat (see bench-agent-layout-screens.spec.ts).
+    await editor.getByPlaceholder("Ask the design agent...").or(editor.getByTestId("chat-list-new")).first().waitFor({ state: "visible", timeout: 90_000 });
+    if (!(await editor.getByPlaceholder("Ask the design agent...").isVisible().catch(() => false))) await editor.getByTestId("chat-list-new").click();
 
     for (let a = 0; a < attempts.length && !found; a++) {
       usedAttempt = a + 1;

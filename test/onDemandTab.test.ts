@@ -6,7 +6,7 @@ describe("needsOnDemandTab", () => {
   it("is true with no active tab", () => {
     expect(needsOnDemandTab(base)).toBe(true);
   });
-  it("is false without the agent-layout opener (flag off: unchanged)", () => {
+  it("is false without an opener set", () => {
     expect(needsOnDemandTab({ ...base, enabled: false })).toBe(false);
   });
   it("is false for an explicit tabId and when a tab is already active", () => {

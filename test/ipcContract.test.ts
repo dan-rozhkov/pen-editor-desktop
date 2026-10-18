@@ -44,7 +44,7 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "passwords:changed", direction: "main->renderer" },
   { name: "passwords:remove", direction: "renderer->main" },
   { name: "passwords:never-remove", direction: "renderer->main" },
-  // Canvas link (agent layout flag only): panel <-> canvas tabs, see CLAUDE.md "Canvas link".
+  // Canvas link : panel <-> canvas tabs, see CLAUDE.md "Canvas link".
   { name: "canvas:list", direction: "renderer->main" },
   { name: "canvas:open", direction: "renderer->main" },
   { name: "canvas:activate", direction: "renderer->main" },

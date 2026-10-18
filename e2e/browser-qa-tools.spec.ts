@@ -94,7 +94,7 @@ interface Env { app: ElectronApplication; editor: Page; tabbar: Page; site: Page
 
 async function launch(): Promise<Env> {
   const app = await launchShell({ args: ["."], env: { ...process.env, PEN_DESKTOP_URL: editorBaseUrl } });
-  const editor = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(editorBaseUrl) && !p.url().startsWith(`${editorBaseUrl}/agent`) });
+  const editor = app.canvasPage;
   await expect(editor.locator("#ready")).toHaveText("stub-editor");
   const tabbar =
     app.windows().find((p) => p.url().endsWith("/tabbar/tabbar.html")) ??

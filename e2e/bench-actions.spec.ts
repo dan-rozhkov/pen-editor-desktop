@@ -458,9 +458,7 @@ test("bench-actions: bridge speed and reliability", async () => {
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(editorBaseUrl) && !p.url().startsWith(`${editorBaseUrl}/agent`),
-    });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     // --- Part A: speed ---

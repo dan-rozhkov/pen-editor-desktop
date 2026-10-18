@@ -80,7 +80,7 @@ test("passwords window: add, list, detail, search, edit, delete; light and dark"
   });
   const pageErrors: string[] = [];
   try {
-    const editorPage = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) });
+    const editorPage = app.canvasPage;
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     await app.evaluate(({ safeStorage }) => {

@@ -10,18 +10,14 @@ import type { MenuActions } from "../src/main/menu";
 
 describe("decideCloseTarget (global Close Tab)", () => {
   it("closes the Passwords window when it is focused, never a main tab", () => {
-    expect(decideCloseTarget({ passwordsFocused: true, activeTabId: 3, tabCount: 1 })).toEqual({ kind: "passwords" });
-    expect(decideCloseTarget({ passwordsFocused: true, activeTabId: null, tabCount: 0 })).toEqual({ kind: "passwords" });
+    expect(decideCloseTarget({ passwordsFocused: true, activeTabId: 3 })).toEqual({ kind: "passwords" });
+    expect(decideCloseTarget({ passwordsFocused: true, activeTabId: null })).toEqual({ kind: "passwords" });
   });
   it("closes the active tab otherwise", () => {
-    expect(decideCloseTarget({ passwordsFocused: false, activeTabId: 3, tabCount: 1 })).toEqual({ kind: "tab", id: 3 });
+    expect(decideCloseTarget({ passwordsFocused: false, activeTabId: 3 })).toEqual({ kind: "tab", id: 3 });
   });
-  it("does nothing with no active tab but only background tabs", () => {
-    // Background isolated-session tabs only: closing the window would kill running QA sessions.
-    expect(decideCloseTarget({ passwordsFocused: false, activeTabId: null, tabCount: 2 })).toEqual({ kind: "none" });
-  });
-  it("closes the window when the window has zero tabs (like a browser)", () => {
-    expect(decideCloseTarget({ passwordsFocused: false, activeTabId: null, tabCount: 0 })).toEqual({ kind: "window" });
+  it("does nothing with no active tab: never closes the window (zero tabs or only background tabs)", () => {
+    expect(decideCloseTarget({ passwordsFocused: false, activeTabId: null })).toEqual({ kind: "none" });
   });
 });
 

@@ -14,7 +14,7 @@ describe("buildMenuTemplate", () => {
       newTab: vi.fn(),
       newBrowserTab: vi.fn(),
       openPasswords: vi.fn(),
-      closeTab: vi.fn(),
+      closeTab: vi.fn(), closeWindow: vi.fn(),
       nextTab: vi.fn(),
       prevTab: vi.fn(),
       forwardToActiveTab: vi.fn(),
@@ -59,6 +59,13 @@ describe("buildMenuTemplate", () => {
     (i.click as () => void)();
     expect(actions.openPasswords).toHaveBeenCalledTimes(1);
     expect(actions.forwardToActiveTab).not.toHaveBeenCalled();
+  });
+
+  it("Close Window triggers closeWindow with CmdOrCtrl+Shift+W", () => {
+    const i = item("Close Window");
+    expect(i.accelerator).toBe("CmdOrCtrl+Shift+W");
+    (i.click as () => void)();
+    expect(actions.closeWindow).toHaveBeenCalled();
   });
 
   it("Close Tab triggers closeTab with CmdOrCtrl+W", () => {
@@ -236,7 +243,7 @@ describe("buildNewTabMenuTemplate", () => {
 
 describe("View > Agent Panel", () => {
   const actions = {
-    newTab: vi.fn(), newBrowserTab: vi.fn(), openPasswords: vi.fn(), closeTab: vi.fn(), nextTab: vi.fn(), prevTab: vi.fn(),
+    newTab: vi.fn(), newBrowserTab: vi.fn(), openPasswords: vi.fn(), closeTab: vi.fn(), closeWindow: vi.fn(), nextTab: vi.fn(), prevTab: vi.fn(),
     forwardToActiveTab: vi.fn(), useThisAppForMcp: vi.fn(), setCursorMotion: vi.fn(), setCursorEnabled: vi.fn(), toggleAgentPanel: vi.fn(),
   } as MenuActions;
   it("View menu has a Show/Hide Agent Panel item (Cmd/Ctrl+Alt+B) only with the agent layout", () => {

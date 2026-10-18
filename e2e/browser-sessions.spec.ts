@@ -4,7 +4,7 @@
 // only, no backend, no LLM.
 
 import { test, expect, type ElectronApplication, type Page } from "@playwright/test";
-import { launchShell } from "./launch";
+import { isCanvasPage, launchShell } from "./launch";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -78,7 +78,7 @@ const pagesAt = (app: ElectronApplication, prefix: string) => livePages(app).fil
 
 async function launch(env: Record<string, string> = {}): Promise<{ app: ElectronApplication; editor: Page }> {
   const app = await launchShell({ args: ["."], env: { ...process.env, PEN_DESKTOP_URL: editorBaseUrl, ...env } });
-  const editor = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(editorBaseUrl) && !p.url().startsWith(`${editorBaseUrl}/agent`) });
+  const editor = app.canvasPage;
   await expect(editor.locator("#ready")).toHaveText("stub-editor");
   return { app, editor };
 }
@@ -94,14 +94,14 @@ test("two parallel isolated sessions keep separate cookies, network mocks and ta
     expect(setA.error).toBeUndefined();
     expect(setB.error).toBeUndefined();
 
-    // --- session tabs open in the background: the editor stays the visible view ---
+    // --- session tabs open in the background: the canvas tab stays the visible view ---
     const views = await app.evaluate(({ BaseWindow }) =>
       BaseWindow.getAllWindows()
         .flatMap((w) => w.contentView.children)
         .flatMap((v) => ("webContents" in v ? [{ url: (v as unknown as { webContents: { getURL(): string } }).webContents.getURL(), visible: v.getVisible() }] : [])),
     );
     expect(views.filter((v) => v.url.startsWith(`${site}/set`)).map((v) => v.visible)).toEqual([false, false]);
-    expect(views.find((v) => v.url.startsWith(editorBaseUrl))?.visible).toBe(true);
+    expect(views.find((v) => isCanvasPage(v.url, editorBaseUrl))?.visible).toBe(true);
 
     const [meA, meB] = await Promise.all([
       call(editor, "A", "open", { url: `${site}/me` }),
@@ -215,7 +215,7 @@ test("a popup of a session tab stays in that session", async () => {
     expect(((await call(editor, null, "tabs", { action: "list" })).tabs ?? []).length).toBe(1);
     // The popup LOADED in its own tab: the editor and the shared tab are untouched.
     await expect.poll(() => pagesAt(app, `${site}/me`).length).toBe(1);
-    expect(editor.url().startsWith(editorBaseUrl)).toBe(true);
+    expect(isCanvasPage(editor.url(), editorBaseUrl)).toBe(true);
     expect(pagesAt(app, `${site}/pop`).length).toBe(2);
     const sharedUrls = ((await call(editor, null, "tabs", { action: "list" })).tabs ?? []).map((t) => t.url);
     expect(sharedUrls).toEqual([`${site}/pop`]);

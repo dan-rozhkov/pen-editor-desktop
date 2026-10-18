@@ -30,13 +30,8 @@ body {
    above the panel is an empty draggable title area. */
 :root { --toggle-left: 8px; --controls-end: calc(var(--toggle-left) + 28px + 6px); }
 :root[data-macos] { --toggle-left: 80px; } /* right after the traffic lights */
-/* Edge-to-edge tab strip: tabs fill the row's full 38px height (no 28px
-   pill vertically centered by `margin: auto`), touch each other with no
-   gap, and #tabs itself carries no left inset — on macOS the row's own
-   88px traffic-light padding above is what pushes tabs clear of the
-   traffic lights, so #tabs needn't add its own. `align-items: stretch`
-   (rather than `.tab-row`'s inherited default) is what makes each `.tab`
-   fill the row's height without an explicit height on `.tab` itself. */
+/* The tab strip: rounded 28px tabs, 2px apart, vertically centred in the 38px row. The row's own left
+   padding (above) pushes them clear of the traffic lights and the sidebar toggle. */
 #tabs { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; flex: 1; }
 .tab {
   position: relative;
@@ -180,7 +175,6 @@ body {
   border: 0; border-radius: 8px; padding: 0; background: none; color: var(--glass-text); cursor: pointer;
   app-region: no-drag; -webkit-app-region: no-drag;
 }
-.sidebar-toggle[hidden] { display: none; }
 .sidebar-toggle:hover { background: var(--glass-tab-hover); color: var(--text-active); }
 .sidebar-toggle[aria-pressed="true"] { color: var(--text-active); }
 .sidebar-toggle:focus-visible { outline: 1px solid currentColor; outline-offset: -2px; }

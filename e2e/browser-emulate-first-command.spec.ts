@@ -62,7 +62,7 @@ async function launch(): Promise<Env> {
   const app = await launchShell({ args: ["."], env: { ...process.env, PEN_DESKTOP_URL: editorBaseUrl } });
   const exits: string[] = [];
   app.process().on("exit", (code, signal) => exits.push(`${code} ${signal}`));
-  const editor = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(editorBaseUrl) && !p.url().startsWith(`${editorBaseUrl}/agent`) });
+  const editor = app.canvasPage;
   await expect(editor.locator("#ready")).toHaveText("stub-editor");
   return { app, editor, exits };
 }
