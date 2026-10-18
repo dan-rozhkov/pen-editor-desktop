@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.8.1] - 2026-10-19
+
+### Changed
+- **Browser address row matches the chat header.** Same height, padding, text and bottom border, so both headers form one line across the window.
+- **Thinner icons.** The sidebar toggle and the tab icons (paintbrush, globe) use a lighter stroke that matches the "+" button.
+
+### Fixed
+- **The chat panel follows the editor theme.** Switching light/dark in a canvas tab now switches the agent panel too (needs the current deployed editor).
+- The agent is called **Sideform Agent** everywhere (deployed editor).
+
 ## [0.8.0] - 2026-10-18
 
 The app is now **Sideform Desktop**, and it has one layout: the agent chat on the left, canvas and browser tabs on the right.
