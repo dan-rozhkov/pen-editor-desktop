@@ -144,17 +144,12 @@ placeholder or the active tab, and collapsing while the panel has focus hands it
 or a launch never auto-expands a collapsed panel: only the user's toggle changes it.
 Tests: `layout.test.ts`, `agentPanelSettings.test.ts`, `menu.test.ts`, `e2e/agent-panel-toggle.spec.ts`.
 
-**Tab icons (agent layout).** Every tab has a leading icon (`tabIcons.ts`, pure, tested):
-canvas (editor) tabs a canvas glyph in a tinted rounded square, browser tabs the page favicon,
-globe until one arrives. The favicon comes from `page-favicon-updated`: a valid `data:` icon is used
-as is, the first http(s) URL is fetched through THAT tab's own session (`createIconFetcher` +
-`toIconDataUrl`, 64 KB cap, image types only), memoized by favicon URL (`createFaviconMemo`), and
-aborted when the tab is destroyed. Only the shared browser's tabs and only with the agent layout
-(flag off and isolated QA-session tabs make no extra request). A per-tab navigation generation
-(`createGeneration`) drops a fetch that finishes after a new document began; the icon is cleared
-only when the origin changes (`shouldClearFavicon`). It is validated ONCE when stored on the tab
-(`acceptFavicon`, the single icon validator `isIconDataUrl` of `passwords/helpers.ts`) and travels
-as a data URL in `TabState.icon` (the tab bar CSP allows `img-src data:` only). The agent's
+**Tab icons (agent layout).** Every tab has a leading glyph keyed by `TabState.kind` in
+`tabbar/renderer.ts` (one mapping): editor (canvas) tabs a Phosphor "PaintBrush", browser tabs a
+Phosphor "Globe" ALWAYS, never the site favicon. Phosphor is MIT: the notice lives in
+`THIRD_PARTY_NOTICES.md` (shipped via the electron-builder `files` list; keep it there). Just the glyph,
+monochrome `currentColor` (tab text color), no background square. The tab bar CSP has no `img-src`:
+the tab bar draws no images. The agent's
 cursor arrow replaces the icon while the agent drives a browser tab. Compact paddings, no
 separators, the close "x" only on the active tab and on hover.
 

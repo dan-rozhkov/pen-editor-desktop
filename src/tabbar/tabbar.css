@@ -266,10 +266,7 @@ body {
 .tab-icon { display: none; }
 :root[data-layout="agent"] .tab-icon {
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 18px; width: 18px; height: 18px;
-  border-radius: 5px; color: var(--glass-text);
+  color: var(--glass-text);
 }
-:root[data-layout="agent"] .tab-icon[data-icon="canvas"] { background: color-mix(in srgb, currentColor 12%, transparent); }
 :root[data-layout="agent"] .tab.active .tab-icon { color: var(--text-active); }
-:root[data-layout="agent"] .tab-icon .glyph { width: 12px; height: 12px; }
-:root[data-layout="agent"] .tab-icon[data-icon="globe"] .glyph { width: 15px; height: 15px; }
-:root[data-layout="agent"] .tab-icon img { width: 16px; height: 16px; border-radius: 3px; object-fit: contain; }
+:root[data-layout="agent"] .tab-icon .glyph { width: 16px; height: 16px; }

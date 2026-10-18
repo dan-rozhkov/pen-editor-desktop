@@ -752,7 +752,7 @@ describe("mcpActiveWebContentsId (finding 1)", () => {
 // comment on the function and window.ts's pushState).
 describe("shouldFocusAddressBar", () => {
   const editorSnapshot: TabsSnapshot = {
-    tabs: [{ id: 1, title: "Untitled", kind: "editor", icon: { kind: "canvas" } }],
+    tabs: [{ id: 1, title: "Untitled", kind: "editor" }],
     activeId: 1,
     activeKind: "editor",
     activeTheme: null,
@@ -763,8 +763,8 @@ describe("shouldFocusAddressBar", () => {
 
   const emptyBrowserSnapshot: TabsSnapshot = {
     tabs: [
-      { id: 1, title: "Untitled", kind: "editor", icon: { kind: "canvas" } },
-      { id: 2, title: "New Tab", kind: "browser", url: "", canGoBack: false, canGoForward: false, icon: { kind: "globe" } },
+      { id: 1, title: "Untitled", kind: "editor" },
+      { id: 2, title: "New Tab", kind: "browser", url: "", canGoBack: false, canGoForward: false },
     ],
     activeId: 2,
     activeKind: "browser",

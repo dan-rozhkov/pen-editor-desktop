@@ -1,6 +1,5 @@
 import type { BrowserTabInfo } from "@sideform/browser-agent/controller";
 import type { LastTabPolicy } from "./config";
-import { acceptFavicon, tabIcon, type TabIcon } from "./tabIcons";
 export type UITheme = "light" | "dark";
 
 /** How a tab becomes the active one. `focus: false` shows it without moving keyboard focus into it. */
@@ -89,8 +88,6 @@ export interface TabViewHandle {
 
   /** Browser tabs only — wired by TabManager only for kind "browser". */
   onNavigationStateChanged(cb: (s: BrowserNavState) => void): void;
-  /** Browser tabs: the page's favicon as a data URL, or null when the page changed and none arrived yet. Optional (tests, older handles). */
-  onFaviconChanged?(cb: (dataUrl: string | null) => void): void;
   getURL(): string;
   getTitle(): string;
   goBack(): void;
@@ -301,8 +298,6 @@ export interface TabState {
   url?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
-  /** Leading icon in the agent layout's strip (canvas glyph / favicon / globe). */
-  icon: TabIcon;
 }
 
 export interface TabsSnapshot {
@@ -364,7 +359,6 @@ interface TabEntry {
   url?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
-  favicon?: string;
   /** Isolated browser session this tab belongs to (browser tabs only); undefined = the shared browser. */
   session?: string;
 }
@@ -475,12 +469,6 @@ export class TabManager {
       // document-title/theme IPC callbacks, since there is no preload to
       // send them. A fresh browser tab loads nothing until
       // BrowserController navigates it (browse_open).
-      view.onFaviconChanged?.((dataUrl) => {
-        const next = acceptFavicon(dataUrl); // validated once, when stored
-        if (entry.favicon === next) return;
-        entry.favicon = next;
-        this.emit();
-      });
       view.onNavigationStateChanged((s) => {
         entry.title = s.title.trim() || "New Tab";
         entry.url = s.url;
@@ -738,14 +726,13 @@ export class TabManager {
     const active = this.tabs.find((t) => t.id === this.activeId);
     const activeWebContentsId = active?.view.getWebContentsId() ?? null;
     return {
-      tabs: this.tabs.map(({ id, title, kind, url, canGoBack, canGoForward, favicon }) => ({
+      tabs: this.tabs.map(({ id, title, kind, url, canGoBack, canGoForward }) => ({
         id,
         title,
         kind,
         url,
         canGoBack,
         canGoForward,
-        icon: tabIcon(kind, favicon),
       })),
       activeId: this.activeId,
       activeKind: active?.kind ?? null,

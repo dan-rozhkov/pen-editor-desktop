@@ -52,8 +52,7 @@ import type { McpService, IpcListenerGateway } from "./mcp/service";
 import { fillLogin } from "./browser/fillLogin";
 import { isLoginBindingCall, promptChoiceFromButton, savePromptCopy, type LoginCapture } from "./browser/loginCapture";
 import { normalizeOrigin, type CredentialStore } from "./browser/credentialStore";
-import { createIconFetcher, toIconDataUrl, type FaviconCache } from "./browser/faviconCache";
-import { createFaviconMemo, createGeneration, pickFavicon, shouldClearFavicon } from "./tabIcons";
+import type { FaviconCache } from "./browser/faviconCache";
 import type { PasswordsWindow } from "./passwordsWindow";
 import { createTabAgentActivity, isAgentPageCommand } from "./agentActivity";
 import { decideCloseTarget, guardMenuActions } from "./closeTarget";
@@ -325,7 +324,6 @@ export function createMainWindow(
   let rememberedFromPanel = false;
   const editorTabCount = (s: TabsSnapshot) => s.tabs.filter((t) => t.kind === "editor").length;
   let lastResolvedForTint: UITheme = systemTheme();
-  const faviconMemo = createFaviconMemo();
   const emptyView = agentLayout
     ? new WebContentsView({
         webPreferences: secureWebPreferences(path.join(__dirname, "../preload/empty.js")),
@@ -807,53 +805,7 @@ export function createMainWindow(
       };
       // Per-tab save-password state (isolated-world context id, held capture).
       const tabLoginCapture = loginServices.loginCapture.forTab();
-      let faviconListener: ((dataUrl: string | null) => void) | null = null;
-      let teardownFavicon: (() => void) | null = null;
       if (kind === "browser") {
-        // Tab strip icon (agent layout only, shared browser only: no extra request with the flag off,
-        // none from isolated QA-session tabs, matching the Passwords favicon cache below). A data: icon is
-        // used as is; an http(s) one is fetched through THIS tab's session (memoized by URL, aborted when
-        // the tab is destroyed). A per-tab generation drops a fetch that finishes after a new document
-        // began. The icon is cleared only when the origin changes (Chromium does not re-announce an
-        // unchanged icon on a same-site navigation). The fetch uses the session's own UA, not a CDP
-        // emulated one: a known, harmless limit.
-        if (agentLayout && !sessionId) {
-          const faviconGen = createGeneration();
-          const faviconAbort = new AbortController();
-          let iconPageUrl: string | null = null;
-          teardownFavicon = () => {
-            faviconGen.bump();
-            faviconAbort.abort();
-          };
-          view.webContents.on("did-navigate", (_e, url) => {
-            faviconGen.bump();
-            if (shouldClearFavicon(iconPageUrl, url)) {
-              iconPageUrl = null;
-              faviconListener?.(null);
-            }
-          });
-          view.webContents.on("page-favicon-updated", (_e, favicons) => {
-            const choice = pickFavicon(favicons);
-            if (!choice) return;
-            const pageUrl = view.webContents.getURL();
-            const apply = (dataUrl: string) => {
-              iconPageUrl = pageUrl;
-              faviconListener?.(dataUrl);
-            };
-            if (choice.type === "data") return apply(choice.dataUrl);
-            const memo = faviconMemo.get(choice.url);
-            if (memo) return apply(memo);
-            const started = faviconGen.get();
-            void createIconFetcher((u, init) => view.webContents.session.fetch(u, { ...init, signal: AbortSignal.any([init.signal, faviconAbort.signal]) }))(choice.url)
-              .then((icon) => {
-                const data = icon ? toIconDataUrl(icon.contentType, icon.bytes) : null;
-                if (!data) return;
-                faviconMemo.set(choice.url, data);
-                if (faviconGen.isCurrent(started) && !view.webContents.isDestroyed()) apply(data);
-              })
-              .catch(() => undefined);
-          });
-        }
         if (!sessionId) view.webContents.on("page-favicon-updated", (_e, favicons) => {
           const origin = normalizeOrigin(view.webContents.getURL());
           if (origin) void loginServices.faviconCache.seen(origin, favicons).catch(() => undefined);
@@ -1175,7 +1127,6 @@ export function createMainWindow(
         setBounds: (b) => view.setBounds(b),
         setVisible: (v) => view.setVisible(v),
         destroy: () => {
-          teardownFavicon?.();
           themeCallbacks.delete(viewId);
           titleCallbacks.delete(viewId);
           viewportByTab.forget(viewId);
@@ -1220,9 +1171,6 @@ export function createMainWindow(
         getWebContentsId: () => viewId,
         onNavigationStateChanged: (cb) => {
           navListener = cb;
-        },
-        onFaviconChanged: (cb) => {
-          faviconListener = cb;
         },
         // The placeholder document is not something the user or agent navigated to: it reads as empty.
         getURL: () => (isPlaceholderShown() ? "" : view.webContents.getURL()),
