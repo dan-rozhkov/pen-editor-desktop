@@ -852,9 +852,12 @@ without sharing cookies, tabs, fixtures or mocks. The shared browser
 - **Background tabs.** A session tab never becomes active and gets no address-bar
   focus (`setVisible(false)`); the editor keeps focus. The user clicks it to
   watch. A hidden session tab still screenshots. Shared tabs behave as before.
-  Limit: on Linux a never-shown view does not paint, so `screenshot` of a
-  session tab answers `Screenshot capture failed (empty image).` (`capturePage`
-  `stayHidden` does not help; e2e asserts the error there). macOS captures it.
+  Limit: on Linux a never-shown view MAY not paint, so `screenshot` of a
+  session tab may answer `Screenshot capture failed (empty image).` (`capturePage`
+  `stayHidden` does not help). It depends on the Chromium build / compositor, so
+  e2e accepts either that exact error or a JPEG on Linux (it flipped on CI on
+  2026-10-18 with no change in the screenshot path). macOS always captures it
+  and e2e requires the image there.
 - **Saved logins work (fill only):** `fillLogin` runs in a session against that
   session's agent tab (`tabs.browserHandle(sessionId)`), so parallel runs can sign
   in under different saved accounts of one site: `label` picks the account by

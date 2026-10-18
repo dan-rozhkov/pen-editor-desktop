@@ -159,12 +159,19 @@ test("two parallel isolated sessions keep separate cookies, network mocks and ta
 
     // --- a screenshot of a session tab works while another tab is the visible one ---
     const shotA = await call(editor, "A", "screenshot");
+    const EMPTY_IMAGE_ERROR = "Screenshot capture failed (empty image).";
     if (process.platform === "linux") {
-      // Linux (xvfb CI) does not paint a never-shown view: the screenshot
-      // degrades to the controller's error instead of an image. The app
-      // ships for macOS, where the capture works (asserted below).
-      expect(shotA.error).toBe("Screenshot capture failed (empty image).");
+      // Whether a never-shown view paints on Linux (xvfb) is a Chromium /
+      // compositor detail, not part of the contract: CI answered the
+      // controller's empty-image error until 2026-10-17 and a real image
+      // after it, with no change in the screenshot path (the same commit
+      // also returns an image in a local Linux container). Both outcomes are
+      // valid; any other error or a malformed image is not. macOS ships the
+      // app, and there the capture must work.
+      if (shotA.error !== undefined) expect(shotA.error).toBe(EMPTY_IMAGE_ERROR);
+      else expect(String(shotA.imageData)).toMatch(/^data:image\/jpeg;base64,/);
     } else {
+      expect(shotA.error).toBeUndefined();
       expect(String(shotA.imageData)).toMatch(/^data:image\/jpeg;base64,/);
     }
 
