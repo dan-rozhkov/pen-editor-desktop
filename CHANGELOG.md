@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.8.0] - 2026-10-18
+
+The app is now **Sideform Desktop**, and it has one layout: the agent chat on the left, canvas and browser tabs on the right.
+
+### Changed
+- **Agent layout is the only layout.** The chat lives in a panel on the left (the `/agent` page). Canvas and browser tabs open on the right. A canvas tab is the full editor without its own chat (`/app?chat=off`). The classic layout and the `PEN_DESKTOP_AGENT_LAYOUT` flag are removed.
+- **Empty start.** A new window opens with only the chat. A canvas tab opens when the agent needs one, or with New Canvas Tab. Closing the last tab keeps the window open and shows a placeholder.
+- **Glass and islands.** The window background is macOS glass. Tabs sit on the glass. The chat and the tab area are rounded islands with an 8 px gap. The browser address row is the top of the tab island. Light and dark follow the editor theme.
+- **Tabs.** A paintbrush icon for canvas tabs, a globe for browser tabs, compact spacing. The close button shows on the active tab and on hover. The "+" button is at the right edge.
+- **Renamed to Sideform Desktop.** Existing installs keep their data folder and Keychain key, so sessions, cookies and saved logins carry over. Only one copy of the app runs at a time.
+- **Close shortcuts.** Cmd/Ctrl+W closes the active tab and never the window. File > Close Window is Cmd/Ctrl+Shift+W.
+
+### Added
+- **Chat controls the canvas.** The agent in the panel edits the bound canvas tab over a link through the main process: tool calls, streaming edits and the canvas context. Browser tools run in the panel and do not need a canvas tab.
+- **Sidebar toggle.** A button right of the window buttons (or Cmd/Ctrl+Alt+B) hides and shows the chat. The choice is kept between launches.
+- **Agent buttons on the canvas** (frame, embed, element, comment "Send to agent") send the request to the chat panel.
+- **MCP with no open tab.** A desktop MCP call with no canvas tab opens one in the background.
+
+## [0.7.0] - 2026-10-18
+
+### Added
+- **Browser tools menu.** A gear button right of the address field: viewport presets (Responsive, iPhone 15, Pixel 8, iPad, Desktop 1440, Desktop 1920), Developer Tools and zoom for the current site.
+- **QA checks.** `qa_assert` checks text, elements, field values, counts and the URL. The result lists console errors and failed requests seen during the run.
+- **Device emulation for the agent.** A run can start on a phone, tablet or desktop size with its own locale, time zone and color scheme, and switch the viewport during the run.
+- **File upload.** The agent can attach files to file inputs and drop zones.
+
+### Fixed
+- Emulating a device on a brand-new browser tab no longer crashes the app.
+
 ## [0.6.0] - 2026-10-17
 
 ### Added
