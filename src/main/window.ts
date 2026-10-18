@@ -1,4 +1,5 @@
 import path from "node:path";
+import { SurfaceSpikeRouter } from "./surfaceSpike";
 import { app, BaseWindow, View, WebContentsView, Menu, dialog, ipcMain, nativeTheme, session, shell, webContents } from "electron";
 import {
   TabManager,
@@ -358,6 +359,23 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     mcpService.setTabTitle(event.sender.id, normalized);
   };
   ipcMain.on("editor:document-title", onEditorDocumentTitle);
+
+  // SPIKE (branch spike/ipc-streaming only): chat tab <-> canvas tab relay.
+  // Decisions live in surfaceSpike.ts; the sender check is the same
+  // TabManager.isEditorTab used by browser:command (`tabs` is assigned below,
+  // before any IPC can arrive).
+  const spikeRouter = new SurfaceSpikeRouter({
+    isEditorTab: (id) => tabs.isEditorTab(id),
+    deliver: (id, delivered) => {
+      const wc = webContents.fromId(id);
+      if (wc && !wc.isDestroyed()) wc.send("spike:deliver", delivered);
+    },
+    now: () => performance.timeOrigin + performance.now(),
+  });
+  const onSpikeRole = (event: Electron.IpcMainEvent, role: unknown) => spikeRouter.setRole(event.sender.id, role);
+  const onSpikePost = (event: Electron.IpcMainEvent, env: unknown) => spikeRouter.post(event.sender.id, env);
+  ipcMain.on("spike:role", onSpikeRole);
+  ipcMain.on("spike:post", onSpikePost);
 
   // --- tabs ---
   const fetchRouter = new FetchRouter();
@@ -758,6 +776,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
           releaseSharedFixture();
           journalOwners.stopOwnedBy(viewId);
           closeSessionsOwnedBy(viewId);
+          spikeRouter.tabGone(viewId);
         };
         view.webContents.on("render-process-gone", releaseOrphanedFixture);
         view.webContents.on("did-start-navigation", (details) => {
@@ -937,6 +956,7 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
             releaseSharedFixture();
             journalOwners.stopOwnedBy(viewId);
             closeSessionsOwnedBy(viewId, true);
+            spikeRouter.tabGone(viewId);
           }
           if (debuggerAttached) {
             try {
@@ -1787,6 +1807,9 @@ export function createMainWindow(editorUrl: string, mcpService: McpService, logi
     ipcMain.removeListener("tabbar:navigate", onTabbarNavigate);
     ipcMain.removeListener("editor:theme", onEditorTheme);
     ipcMain.removeListener("editor:document-title", onEditorDocumentTitle);
+    ipcMain.removeListener("spike:role", onSpikeRole);
+    ipcMain.removeListener("spike:post", onSpikePost);
+    spikeRouter.dispose();
     ipcMain.removeHandler("browser:command");
     nativeTheme.removeListener("updated", onSystemThemeChanged);
     loginServices.passwordsWindow.setTheme(themeKey, null);

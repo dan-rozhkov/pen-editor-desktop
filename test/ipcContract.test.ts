@@ -32,6 +32,10 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "mcp:register", direction: "renderer->main" },
   { name: "mcp:call", direction: "main->renderer" },
   { name: "mcp:result", direction: "renderer->main" },
+  // SPIKE (branch spike/ipc-streaming only): chat tab <-> canvas tab relay.
+  { name: "spike:role", direction: "renderer->main" },
+  { name: "spike:post", direction: "renderer->main" },
+  { name: "spike:deliver", direction: "main->renderer" },
   // Passwords window (invoke/handle, sender-checked): saved logins, see CLAUDE.md.
   { name: "passwords:list", direction: "renderer->main" },
   { name: "passwords:add", direction: "renderer->main" },

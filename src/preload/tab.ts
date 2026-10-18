@@ -191,6 +191,31 @@ const browser = {
     ipcRenderer.invoke("browser:command", { command: "closeSession", session: sessionId }),
 };
 
+// SPIKE (branch spike/ipc-streaming only): relay between a chat tab and a
+// canvas tab of one window via main. Contract: docs/spike-ipc-streaming-contract.md.
+// No validation here: main (src/main/surfaceSpike.ts) is the trust boundary.
+type SpikeRole = "chat" | "canvas";
+interface SpikeEnvelope {
+  id: string;
+  sentAt: number;
+  msg: { kind: string; [key: string]: unknown };
+}
+type SpikeDelivered = SpikeEnvelope & { relayedAt: number };
+
+const surfaceSpike = {
+  setRole(role: SpikeRole | null): void {
+    ipcRenderer.send("spike:role", role);
+  },
+  post(env: SpikeEnvelope): void {
+    ipcRenderer.send("spike:post", env);
+  },
+  onMessage(cb: (env: SpikeDelivered) => void): () => void {
+    const listener = (_e: IpcRendererEvent, env: SpikeDelivered) => cb(env);
+    ipcRenderer.on("spike:deliver", listener);
+    return () => ipcRenderer.removeListener("spike:deliver", listener);
+  },
+};
+
 const api = {
   setDocumentTitle(title: string | null): void {
     ipcRenderer.send("editor:document-title", title);
@@ -202,6 +227,7 @@ const api = {
   },
   registerMcpBridge,
   browser,
+  surfaceSpike,
 };
 
 contextBridge.exposeInMainWorld("penDesktop", api);
