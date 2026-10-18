@@ -9,6 +9,8 @@ const api = {
   openNewTabMenu: (anchor: { x: number; y: number }) => ipcRenderer.send("tabbar:new-menu", anchor),
   /** Opens the native "Browser tools" popup (viewport / DevTools / zoom) anchored at window coordinates. */
   openToolsMenu: (anchor: { x: number; y: number }) => ipcRenderer.send("tabbar:tools-menu", anchor),
+  /** Agent layout: show/hide the agent panel (the sidebar button). */
+  togglePanel: () => ipcRenderer.send("tabbar:toggle-panel"),
   activateTab: (id: number) => ipcRenderer.send("tabbar:activate", id),
   closeTab: (id: number) => ipcRenderer.send("tabbar:close", id),
   navigate: (action: "url" | "back" | "forward" | "reload", url?: string) =>

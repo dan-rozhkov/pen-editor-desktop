@@ -6,6 +6,8 @@ type TabRow = {
   url?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
+  /** Leading icon (agent layout): decided by main (tabIcons.ts). */
+  icon?: { kind: "canvas" } | { kind: "favicon"; src: string } | { kind: "globe" };
 };
 type TabsSnapshot = {
   tabs: TabRow[];
@@ -26,12 +28,15 @@ type TabsSnapshot = {
   tabStripLeft?: number;
   /** "agent" in the agent layout (glass + islands); absent otherwise. */
   layout?: "agent";
+  /** Agent layout: the agent panel is collapsed (sidebar toggle state). */
+  panelCollapsed?: boolean;
 };
 type UITheme = "light" | "dark";
 
 interface PenTabbarApi {
   isMac: boolean;
   newTab(): void;
+  togglePanel(): void;
   openNewTabMenu(anchor: { x: number; y: number }): void;
   openToolsMenu(anchor: { x: number; y: number }): void;
   activateTab(id: number): void;
@@ -47,6 +52,8 @@ interface Window {
 
 const tabsEl = document.getElementById("tabs")!;
 const chromeRowEl = document.getElementById("chrome-row")!;
+const togglePanelEl = document.getElementById("toggle-panel") as HTMLButtonElement;
+togglePanelEl.addEventListener("click", () => window.penTabbar.togglePanel());
 const navBackEl = document.getElementById("nav-back") as HTMLButtonElement;
 const navForwardEl = document.getElementById("nav-forward") as HTMLButtonElement;
 const navReloadEl = document.getElementById("nav-reload") as HTMLButtonElement;
@@ -128,6 +135,55 @@ urlInputEl.addEventListener("blur", () => {
   if (latestActiveUrl !== undefined) urlInputEl.value = latestActiveUrl;
 });
 
+// Leading tab icons (agent layout). Built with createElementNS: the CSP forbids inline markup.
+function svgIcon(cls: string, viewBox: string, draw: (svg: SVGSVGElement, ns: string) => void): SVGSVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("class", cls);
+  svg.setAttribute("viewBox", viewBox);
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.4");
+  svg.setAttribute("stroke-linecap", "round");
+  draw(svg, ns);
+  return svg;
+}
+function addPath(svg: SVGSVGElement, ns: string, d: string): void {
+  const p = document.createElementNS(ns, "path");
+  p.setAttribute("d", d);
+  svg.appendChild(p);
+}
+function tabIconEl(tab: TabRow): HTMLElement {
+  const box = document.createElement("span");
+  box.className = "tab-icon";
+  const icon = tab.icon ?? { kind: tab.kind === "editor" ? "canvas" : "globe" };
+  box.dataset.icon = icon.kind;
+  if (icon.kind === "favicon") {
+    const img = document.createElement("img");
+    img.src = icon.src;
+    img.alt = "";
+    img.draggable = false;
+    box.appendChild(img);
+  } else if (icon.kind === "canvas") {
+    // A frame with a cross-hair grid: the canvas.
+    box.appendChild(svgIcon("glyph", "0 0 16 16", (svg, ns) => {
+      const r = document.createElementNS(ns, "rect");
+      r.setAttribute("x", "2.5"); r.setAttribute("y", "2.5"); r.setAttribute("width", "11"); r.setAttribute("height", "11"); r.setAttribute("rx", "2");
+      svg.appendChild(r);
+      addPath(svg, ns, "M6.2 2.8v10.4M9.8 2.8v10.4M2.8 6.2h10.4M2.8 9.8h10.4");
+    }));
+  } else {
+    box.appendChild(svgIcon("glyph", "0 0 16 16", (svg, ns) => {
+      const c = document.createElementNS(ns, "circle");
+      c.setAttribute("cx", "8"); c.setAttribute("cy", "8"); c.setAttribute("r", "5.8");
+      svg.appendChild(c);
+      addPath(svg, ns, "M2.2 8h11.6M8 2.2c2 1.7 2.9 3.6 2.9 5.8S10 12.1 8 13.8M8 2.2C6 3.9 5.1 5.8 5.1 8S6 12.1 8 13.8");
+    }));
+  }
+  return box;
+}
+
 // Same arrow geometry as the in-page agent cursor (browser-agent pageScripts
 // ARROW_POINTS). Built with createElementNS: the CSP forbids inline markup
 // tricks and colours come from classes.
@@ -151,6 +207,11 @@ function agentCursorIcon(): SVGSVGElement {
 
 window.penTabbar.onState((state) => {
   // The tab row's left padding is max(mac traffic-light padding, this) — see tabbar.css.
+  togglePanelEl.hidden = state.layout !== "agent";
+  const collapsed = state.panelCollapsed === true;
+  togglePanelEl.setAttribute("aria-pressed", String(!collapsed));
+  togglePanelEl.setAttribute("aria-label", collapsed ? "Show agent panel" : "Hide agent panel");
+  togglePanelEl.title = collapsed ? "Show agent panel (Cmd/Ctrl+Alt+B)" : "Hide agent panel (Cmd/Ctrl+Alt+B)";
   if (state.layout) document.documentElement.dataset.layout = state.layout;
   else delete document.documentElement.dataset.layout;
   document.documentElement.style.setProperty("--tab-strip-left", `${state.tabStripLeft ?? 0}px`);
@@ -160,7 +221,10 @@ window.penTabbar.onState((state) => {
     el.className = tab.id === state.activeId ? "tab active" : "tab";
     el.addEventListener("mousedown", () => window.penTabbar.activateTab(tab.id));
 
-    if (tab.kind === "browser" && state.agentTabIds?.includes(tab.id)) {
+    const agentWorking = tab.kind === "browser" && state.agentTabIds?.includes(tab.id);
+    // Agent layout: every tab has a leading icon; the agent's cursor takes its slot while it drives the tab.
+    if (state.layout === "agent" && !agentWorking) el.appendChild(tabIconEl(tab));
+    if (agentWorking) {
       el.appendChild(agentCursorIcon());
       const hint = document.createElement("span");
       hint.className = "sr-only";

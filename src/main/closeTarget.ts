@@ -47,6 +47,7 @@ export const MENU_ACTION_SCOPE: Record<keyof MenuActions, "main" | "close" | "ap
   useThisAppForMcp: "app",
   setCursorMotion: "app",
   setCursorEnabled: "app",
+  toggleAgentPanel: "main",
 };
 
 export type MenuDecision = "run" | "ignore" | "close-passwords";

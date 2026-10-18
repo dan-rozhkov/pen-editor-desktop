@@ -228,19 +228,43 @@ body {
 :root[data-layout="agent"] #new-tab:hover { background: var(--glass-tab-hover); color: var(--text-active); }
 :root[data-layout="agent"] #new-tab::before,
 :root[data-layout="agent"] #new-tab::after { left: 8px; top: 13.5px; }
-/* The address row is the top of the tab island: island colour, rounded top corners,
-   and a `tail` (the tab bar view is 12px taller than the row) that fills the area under
-   the tab view's rounded top corners so there is no glass notch. */
+/* The address row is the top of the tab island: island colour and rounded top
+   corners. The tab view (rounded too) starts under it and this row, in the view above
+   it, hides its corners (window.ts stacking + layout.ts `tabView`). */
 :root[data-layout="agent"] .tab-row { padding-right: 8px; }
 :root[data-layout="agent"] .chrome-row {
   background: var(--island-bg); border-bottom: 0;
   margin: 0 8px 0 var(--tab-strip-left, 0px); padding: 0 6px;
   border-radius: 12px 12px 0 0;
 }
-:root[data-layout="agent"] .chrome-row::after {
-  content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 12px; background: var(--island-bg);
-}
 :root[data-layout="agent"] .nav-btn { color: var(--glass-text); }
 :root[data-layout="agent"] .nav-btn:hover:not(:disabled) { background: var(--glass-tab-hover); color: var(--text-active); }
 :root[data-layout="agent"] .url-input:hover,
 :root[data-layout="agent"] .url-input:focus { background: var(--glass-tab-active); }
+
+/* --- agent layout: sidebar toggle, leading tab icons, compact tabs --- */
+:root[data-layout="agent"] { --toggle-left: 8px; --controls-end: calc(var(--toggle-left) + 28px + 6px); }
+:root[data-layout="agent"][data-macos] { --toggle-left: 80px; } /* right after the traffic lights */
+:root[data-layout="agent"] .tab-row { position: relative; padding-left: max(var(--controls-end), var(--tab-strip-left, 0px)); }
+.sidebar-toggle { display: none; }
+:root[data-layout="agent"] .sidebar-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  position: absolute; left: var(--toggle-left); top: 5px; width: 28px; height: 28px;
+  border: 0; border-radius: 8px; padding: 0; background: none; color: var(--glass-text); cursor: pointer;
+  app-region: no-drag; -webkit-app-region: no-drag;
+}
+:root[data-layout="agent"] .sidebar-toggle[hidden] { display: none; }
+:root[data-layout="agent"] .sidebar-toggle:hover { background: var(--glass-tab-hover); color: var(--text-active); }
+:root[data-layout="agent"] .sidebar-toggle[aria-pressed="true"] { color: var(--text-active); }
+:root[data-layout="agent"] .sidebar-toggle:focus-visible { outline: 1px solid currentColor; outline-offset: -2px; }
+:root[data-layout="agent"] .tab { padding: 0 4px 0 6px; gap: 6px; }
+.tab-icon { display: none; }
+:root[data-layout="agent"] .tab-icon {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 18px; width: 18px; height: 18px;
+  border-radius: 5px; color: var(--glass-text);
+}
+:root[data-layout="agent"] .tab-icon[data-icon="canvas"] { background: color-mix(in srgb, currentColor 12%, transparent); }
+:root[data-layout="agent"] .tab.active .tab-icon { color: var(--text-active); }
+:root[data-layout="agent"] .tab-icon .glyph { width: 12px; height: 12px; }
+:root[data-layout="agent"] .tab-icon[data-icon="globe"] .glyph { width: 15px; height: 15px; }
+:root[data-layout="agent"] .tab-icon img { width: 16px; height: 16px; border-radius: 3px; object-fit: contain; }

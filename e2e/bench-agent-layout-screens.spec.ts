@@ -4,7 +4,7 @@
 //   VITE_AI_API_URL=http://127.0.0.1:5195/api/chat NODE_OPTIONS=--no-experimental-webstorage \
 //     npm run dev -- --port 5194 --strictPort
 //   cd ../wt-glass   # this repo (pen-editor-desktop)
-//   PEN_DESKTOP_URL=http://localhost:5194/app npm run test:e2e:bench -- e2e/bench-agent-layout-screens.spec.ts
+//   PEN_DESKTOP_URL=http://localhost:5194/app npm run test:e2e:shots
 //
 // The spec starts a stub AI backend (:5195, AI SDK v6 UI-message SSE) and a stub web page, and decides the
 // scripted turn from the user message text: "design" (batch_design: a mobile screen), "browse" (browse_open on
@@ -225,7 +225,7 @@ class Stub {
 }
 
 const STUB_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>Stub Page</title>
-<style>body{font:16px system-ui;margin:0;background:#f4efe6;color:#1d1a16}main{max-width:560px;margin:80px auto;padding:0 24px}
+<style>body{font:16px system-ui;margin:0;background:${process.env.AGENT_STUB_BG ?? "#f4efe6"};color:#1d1a16}main{max-width:560px;margin:80px auto;padding:0 24px}
 h1{font-size:40px;margin:0 0 12px}.card{background:#fffaf2;border:1px solid #e5dccb;border-radius:16px;padding:20px;margin-top:20px}
 button{background:#ff7a45;color:#fff;border:0;border-radius:999px;padding:10px 20px;font-size:16px}</style></head>
 <body><main><h1>Stub Page</h1><p>A local page served by the stub backend for browse_open.</p>
@@ -286,7 +286,14 @@ async function launch(opts: { dark?: boolean; tag: string; emptyShot?: string })
   const tabbar = await find((p) => p.url().endsWith("/tabbar/tabbar.html"));
   // Empty start: the window opens with zero tabs. Size it first, capture the placeholder (optional), then open a canvas tab.
   await app.evaluate(({ BaseWindow }) => {
-    const w = BaseWindow.getAllWindows().find((x) => x.getTitle() === "Pineapple Editor")!;
+    const w = (() => {
+      // The main window = the one that owns the tab bar view (robust against title/app renames).
+      const w = BaseWindow.getAllWindows().find((x) =>
+        x.contentView.children.some((c) => (c as unknown as { webContents?: Electron.WebContents }).webContents?.getURL().endsWith("/tabbar/tabbar.html")),
+      );
+      if (!w) throw new Error("main window (owner of the tab bar view) not found");
+      return w;
+    })();
     w.setContentSize(1440, 900);
     w.center();
   });
@@ -305,7 +312,14 @@ async function launch(opts: { dark?: boolean; tag: string; emptyShot?: string })
   const canvas = await find(isCanvas);
   // 1440x900 content, like a normal desktop window.
   await app.evaluate(({ BaseWindow }) => {
-    const w = BaseWindow.getAllWindows().find((x) => x.getTitle() === "Pineapple Editor")!;
+    const w = (() => {
+      // The main window = the one that owns the tab bar view (robust against title/app renames).
+      const w = BaseWindow.getAllWindows().find((x) =>
+        x.contentView.children.some((c) => (c as unknown as { webContents?: Electron.WebContents }).webContents?.getURL().endsWith("/tabbar/tabbar.html")),
+      );
+      if (!w) throw new Error("main window (owner of the tab bar view) not found");
+      return w;
+    })();
     w.setContentSize(1440, 900);
     w.center();
   });
@@ -391,12 +405,26 @@ async function shot(shell: Shell, name: string): Promise<string> {
   fs.mkdirSync(OUT, { recursive: true });
   const file = path.join(OUT, name);
   await new Promise((r) => setTimeout(r, 600)); // let Pixi / layout settle
-  const id = await shell.app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().find((x) => x.getTitle() === "Pineapple Editor")!.getMediaSourceId());
+  const id = await shell.app.evaluate(({ BaseWindow }) => (() => {
+      // The main window = the one that owns the tab bar view (robust against title/app renames).
+      const w = BaseWindow.getAllWindows().find((x) =>
+        x.contentView.children.some((c) => (c as unknown as { webContents?: Electron.WebContents }).webContents?.getURL().endsWith("/tabbar/tabbar.html")),
+      );
+      if (!w) throw new Error("main window (owner of the tab bar view) not found");
+      return w;
+    })().getMediaSourceId());
   const wid = Number(id.split(":")[1]);
   try {
     if (process.platform !== "darwin" || process.env.AGENT_SHOT_COMPOSITE) throw new Error("composite forced");
     // Bring the window to the front so nothing overlaps; screencapture -l renders the window itself anyway.
-    await shell.app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().find((x) => x.getTitle() === "Pineapple Editor")!.show());
+    await shell.app.evaluate(({ BaseWindow }) => (() => {
+      // The main window = the one that owns the tab bar view (robust against title/app renames).
+      const w = BaseWindow.getAllWindows().find((x) =>
+        x.contentView.children.some((c) => (c as unknown as { webContents?: Electron.WebContents }).webContents?.getURL().endsWith("/tabbar/tabbar.html")),
+      );
+      if (!w) throw new Error("main window (owner of the tab bar view) not found");
+      return w;
+    })().show());
     execFileSync("screencapture", ["-x", "-o", "-l", String(wid), file], { timeout: 20_000 });
     const st = fs.statSync(file);
     if (st.size < 5_000) throw new Error(`screencapture produced ${st.size} bytes`);
@@ -411,7 +439,14 @@ async function shot(shell: Shell, name: string): Promise<string> {
 /** Fallback: capturePage() of every view at its bounds, drawn onto one canvas in a hidden window. */
 async function composite(shell: Shell, file: string): Promise<void> {
   const parts = await shell.app.evaluate(async ({ BaseWindow }) => {
-    const win = BaseWindow.getAllWindows().find((x) => x.getTitle() === "Pineapple Editor")!;
+    const win = (() => {
+      // The main window = the one that owns the tab bar view (robust against title/app renames).
+      const w = BaseWindow.getAllWindows().find((x) =>
+        x.contentView.children.some((c) => (c as unknown as { webContents?: Electron.WebContents }).webContents?.getURL().endsWith("/tabbar/tabbar.html")),
+      );
+      if (!w) throw new Error("main window (owner of the tab bar view) not found");
+      return w;
+    })();
     const cb = win.getContentBounds();
     const out: Array<{ x: number; y: number; w: number; h: number; png: string }> = [];
     for (const child of win.contentView.children) {
@@ -445,7 +480,8 @@ function note(state: string, line: string): void {
   console.log(`[${state}] ${line}`);
 }
 
-test.describe.configure({ mode: "serial" });
+// Default mode (not serial): the soft state-6 assertion may fail and the dark run must still capture its screenshots.
+test.describe.configure({ mode: "default" });
 
 let stub: Stub;
 test.beforeAll(async () => {
@@ -496,6 +532,13 @@ test("agent layout: states 1-6 (light)", async () => {
   expect(await sceneCount(panel)).toBe(0); // panel has no scene store at all or an empty one
   note("03", `canvas has ${await sceneCount(c1)} nodes incl. Focus Home; panel scene empty`);
   await shot(shell, "03-done.png");
+  // 08: sidebar toggle collapses the agent panel (hidden, not destroyed); the tab island takes the width.
+  await shell.tabbar.evaluate(() => (window as unknown as { penTabbar: { togglePanel(): void } }).penTabbar.togglePanel());
+  await expect(shell.tabbar.locator("#toggle-panel")).toHaveAttribute("aria-pressed", "false");
+  await new Promise((r) => setTimeout(r, 500));
+  await shot(shell, "08-collapsed.png");
+  await shell.tabbar.evaluate(() => (window as unknown as { penTabbar: { togglePanel(): void } }).penTabbar.togglePanel());
+  await expect(shell.tabbar.locator("#toggle-panel")).toHaveAttribute("aria-pressed", "true");
 
   // ---- 4 two canvases + browser
   const first = (await listTabs(panel))[0];
@@ -614,8 +657,10 @@ test("agent layout: states 1-6 (light)", async () => {
   const text2 = (await panel.locator("body").innerText()).replace(/\n+/g, " | ");
   note("06", `expanded row OUTPUT: ${text2.slice(text2.indexOf("OUTPUT") >= 0 ? text2.indexOf("OUTPUT") : 0).slice(0, 300)}`);
   const dt = heldErrorText >= 0 ? heldErrorText : heldRunningGone;
-  note("06", dt >= 0 && dt < 1_500 ? `ASSERT ok: error shown ${dt} ms after the close, stream still open` : "ASSERT FAILED: the chat shows no error within 1.5 s of the close while the stream is still open (row stays Running... until the model's tool-input ends)");
-  note("06", "ASSERT: output text is \"The canvas tab was closed.\": " + /canvas tab was closed/i.test(text2));
+  note("06", `error shown ${dt} ms after the close (-1 = never), stream still open`);
+  // Soft: a failure is visible in the report but the remaining screenshots are still captured.
+  expect.soft(dt >= 0 && dt < 1_500, "the chat shows an error within 1.5 s of the close while the stream is still open (row stays Running... until the model's tool-input ends)").toBe(true);
+  expect.soft(/canvas tab was closed/i.test(text2), 'output text is "The canvas tab was closed."').toBe(true);
 
   note("errors", JSON.stringify(Object.fromEntries(shell.errors)));
   } finally {
@@ -639,6 +684,14 @@ test("agent layout: state 7 (dark)", async () => {
     expect(await sceneCount(panel)).toBe(0);
     note("07", "dark theme in panel and canvas; design turn done, nodes on canvas, panel scene empty");
     await shot(shell, "07-dark.png");
+    // 07b: a browser tab in the dark theme (address row = top of the island).
+    await newChat(panel);
+    await send(panel, "browse the stub page");
+    await expect(panel.getByText("Opened the stub page in the browser tab.")).toBeVisible({ timeout: 40_000 });
+    const stubIdx = await shell.tabbar.locator(".tab .title").evaluateAll((els) => els.findIndex((e) => /stub/i.test(e.textContent ?? "")));
+    if (stubIdx >= 0) await shell.tabbar.locator(".tab").nth(stubIdx).click();
+    await new Promise((r) => setTimeout(r, 1200));
+    await shot(shell, "07b-dark-browser.png");
     note("errors-dark", JSON.stringify(Object.fromEntries(shell.errors)));
 
   } finally {

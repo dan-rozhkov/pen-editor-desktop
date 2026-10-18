@@ -53,11 +53,11 @@ Geometry is the pure `src/main/layout.ts` (`computeWindowLayout`). The tab bar
 view and the macOS rim span the FULL window width as before, so the traffic
 lights stay where they are. The panel sits BELOW the tab bar on the left (top =
 tab-bar height incl. the browser address row, inset by the 1px rim left and
-bottom like tab views); tab views get `tabArea`, to the right of the panel
+bottom like tab views; flag-off geometry, the agent layout below differs); tab views get `tabArea`, to the right of the panel
 (one rim-width gap between them). `TabManager.layout(rect)` just applies that
 rect; it computes nothing. Panel width is a parameter (`clampAgentPanelWidth`:
-min 300, max 50% of the window; default 380); drag-resize and collapse are not
-built yet.
+min 300, max 50% of the window; default 380); drag-resize is not built; collapse
+is the sidebar toggle below.
 
 Inside the tab bar the strip starts at the panel's right edge: `window.ts`
 adds `tabStripLeft` to the existing `tabbar:state` snapshot (no new channel);
@@ -68,53 +68,84 @@ the bar above the panel is an empty draggable title area. Popup anchors (new
 tab, browser tools) are tab-bar CSS px = window coords (tab bar at x=0): no
 offset.
 
-**Glass + islands (agent layout look).** With the flag, `computeWindowLayout`
-gets `islands: { gap: ISLAND_GAP (8), radius: ISLAND_RADIUS (12) }` (`layout.ts`,
-unit-tested) and the geometry above is replaced by: tab bar full width at the
-top (it also holds the traffic lights); below it two rounded islands, the panel
-at `x = gap`, then `gap`, then the tab area (active tab view + empty-state view),
-then `gap` to the right edge, and `gap` to the bottom edge. Default window
-1440x900: panel `{x:8, w:380}`, tab area `{x:396, w:1036}`, both `y = tab-bar
-height`. `tabStripLeft` = the tab area's left edge (396), so the strip lines up
-with the tab island. `radius` is returned by the layout; `window.ts` applies it
-with `WebContentsView.setBorderRadius` (Electron 43) to the panel and empty view
-in `layout()` and to every tab view at creation (`ISLAND_RADIUS`). `rim` is
-`null` in this mode: no `windowRim` view and `WINDOW_EDGE = 0` (the 1px rim stays
-for flag off). Glass: the existing macOS `vibrancy: "under-window"` +
-`visualEffectState: "active"` on the BaseWindow; the tab bar view background is
-`#00000000` and `[data-layout="agent"]` in `tabbar.css` makes body/rows
-transparent, so the vibrancy shows through the bar and the gaps. Non-macOS: no
-vibrancy, `win.setBackgroundColor` (`glassColorForTheme`: `#e4e6ea` light,
-`#2b2b2e` dark, updated in `pushState`) stands in for the glass. Islands are
-opaque, theme-matched (`backgroundColorForTheme`: white / `#1a1a1a`). The
-snapshot carries `layout: "agent"` (`tabbarLayoutKind`), `renderer.ts` writes it
-to `data-layout` on `<html>`; flag-specific tab styling (transparent inactive
-tabs, translucent active fill `--glass-tab-active`, hover `--glass-tab-hover`,
-8px radius, no hairlines, glass "+" and address row) lives only under that
-selector, tokens in `tokens.css`. Address row and "+" (agent layout): the "+" button sits at the right edge of the tab bar (8px in). The panel island always starts at the tab ROW height (38, `tabRowHeight` in `layout.ts`); only the tab area starts below the address row (70). The address row is painted in the island colour (`--island-bg`, = the frontend's `--color-surface-panel`: `#fff` / dark `#2a2a2a`, also `backgroundColorForTheme` dark and the empty view) as the top of the tab island: it is inset to the tab area's x-range with 12px rounded top corners, and the tab bar view is `radius` px taller than the row (layout `tabbar.height` = 70 + 12) with a `::after` tail in island colour under the tab view's rounded top corners (tab views are above the tab bar in z-order), so no glass notch shows. Known cosmetic: the page's own rounded top corners show against the white tail.
+**Glass + islands (agent layout look).** With the flag `computeWindowLayout` gets
+`islands: { gap: ISLAND_GAP (8), radius: ISLAND_RADIUS (12) }` (`layout.ts`, unit-tested)
+and the flag-off geometry above is replaced by: the tab bar full width at the top (it
+also holds the traffic lights); below it two rounded islands, the panel at `x = gap`, then
+`gap`, then the tab area (active tab view + empty-state view), then `gap` to the right
+edge and `gap` to the bottom edge. The panel island starts at the tab ROW height (38,
+`tabRowHeight`) whatever the address row does; only the tab area starts below the address
+row. Default 1440x900: panel `{x:8, y:38, w:380}`, tab area `{x:396, w:1036}` (y 38, or 70
+with an address row). `tabStripLeft` = the tab area's left edge. Radius: `ISLAND_RADIUS`
+(12) is set ONCE per view with `WebContentsView.setBorderRadius` (Electron 43) at creation
+(panel, empty view, every tab view); `layout()` only places views. `rim` is `null` in this
+mode: no `windowRim` view, `WINDOW_EDGE = 0` (the 1px rim stays for flag off).
 
-Theme and tint (agent layout only): the app/OS appearance is NEVER changed
-(no `nativeTheme.themeSource`: it is app-wide and would flip `prefers-color-scheme`
-for browser tabs, isolated sessions and QA runs). The vibrancy keeps following the
-OS; a plain `View` (`glassTintView`, bottom-most child, macOS only, no page/IPC) paints
-a translucent editor-theme colour over it: `glassTint(theme, osDark)` in
-`windowTheme.ts` (pure, tested) gives `rgba(244,245,248,a)` for light and
-`rgba(28,28,30,a)` for dark with `a = 0.35` when the editor theme matches the OS
-appearance (wallpaper stays visible) and `0.85` when it differs (a light editor on
-a dark OS still reads light glass, and vice versa). `window.ts` re-applies it on
-each `pushState` and on `nativeTheme` `updated` (OS change). Non-macOS keeps the
-solid `win.setBackgroundColor`. The frontend ignores the OS (stored `ui-theme`,
-default light), so the system fallback here is "light"; with no editor theme
-reported yet, main reads the panel page's `html.dark` (`readPanelTheme`) and
-`adoptPanelTheme` (windowTheme.ts) adopts it. The panel has no channel, so it is
-re-read on its own document load (`isPanelDocument`: not the offline fallback), on
-window focus and, throttled to 1/s, on every push while no editor tab reported a
-theme; an editor's own report always wins. Island radius comes from the layout
-only (`islandRadius`, applied to the panel, empty view and all tab views when it
-changes). Vibrancy material stays `under-window` (`sidebar` renders identically;
-`menu` is ~3 levels darker; `header` is near opaque); `screencapture -l` does not
-include the blurred wallpaper, so that effect needs a real-screen check. Screenshots: opt-in
-`e2e/bench-agent-layout-screens.spec.ts` (`00-empty.png` is the placeholder).
+*Glass.* macOS `vibrancy: "under-window"` + `visualEffectState: "active"` on the BaseWindow;
+the tab bar view is `#00000000` and `[data-layout="agent"]` (tabbar.css) makes body/rows
+transparent. Non-macOS: no vibrancy, `win.setBackgroundColor(GLASS_SOLID[theme])`. The
+snapshot carries `layout: "agent"` (`tabbarLayoutKind`); `renderer.ts` writes it to
+`data-layout` on `<html>`, and all agent styling lives under that selector (flag-off CSS is
+untouched).
+
+*Colours: one place each.* TS: `windowTheme.ts` (`ISLAND_BG` light `#ffffff` / dark
+`#2a2a2a` = the frontend's `--color-surface-panel`, `GLASS_SOLID`, `contentBackground`,
+`fallbackTheme`, `glassTint`). CSS: `tokens.css` (`--island-bg`, same values, pinned equal by
+`test/windowTheme.test.ts`; `--tab-active-bg` is an alias of it). Islands (panel, tab views,
+empty view, address row) use the island colour, so in dark the chat and the tab island match.
+The flag-off dark content colour stays `#1a1a1a` (`contentBackground(theme, false)`). The active
+tab pill keeps its own translucent `--glass-tab-active` (unchanged).
+
+*Address row.* Painted in the island colour as the top of the tab island: inset to the tab
+area's x-range, 12px rounded top corners. The tab VIEW (also rounded) starts `radius` px
+higher, under the row (`layout.tabView`; `TabManager.layout` gets it), and the tab bar view
+and the panel are re-added above the tab views after each tab view is created (stacking),
+so the row hides the view's rounded top corners: no glass notch, no painted tail. The
+tab bar view only overlaps the panel in its transparent area. "+" sits at the right edge.
+
+*Theme and tint.* The app/OS appearance is NEVER changed (no `nativeTheme.themeSource`: it is
+app-wide and would flip `prefers-color-scheme` for browser tabs, isolated sessions and QA
+runs). The vibrancy follows the OS; a plain `View` (`glassTintView`, bottom-most, macOS only,
+no page/IPC) paints `glassTint(theme, osDark)` over it: `rgba(244,245,248,a)` light /
+`rgba(28,28,30,a)` dark, `a = 0.35` when the editor theme matches the OS appearance and `0.85`
+when it differs; re-applied on each `pushState` and on `nativeTheme` `updated`. The frontend
+ignores the OS (stored `ui-theme`, default light): fallback "light". With no editor theme
+known, main reads the panel page's `html.dark` (`readPanelTheme`; the panel has no channel):
+on its own document load (`isPanelDocument`, not the offline fallback), on window focus, and
+at most once per second per push, only while the panel is the source
+(`shouldReadPanelTheme`: nothing remembered, remembered from the panel, or ZERO editor tabs;
+`adoptPanelTheme` lets the panel win again at zero editor tabs). An editor's own report wins
+while an editor tab exists. Vibrancy material stays `under-window` (`sidebar` renders
+identically; `menu` ~3 levels darker; `header` near opaque); `screencapture -l` does not include
+the blurred wallpaper, so that effect needs a real-screen check.
+
+**Sidebar toggle (agent layout).** A button right after the traffic lights (before the tab
+strip) hides/shows the agent panel; also View > "Show/Hide Agent Panel" with
+`CmdOrCtrl+Alt+B` (free in the editor: Cmd+\ is "hide UI", Cmd+Alt+S is boolean subtract).
+State: `panelCollapsed` in `window.ts`, persisted in `agent-panel-settings.json` in userData
+(`agentPanelSettings.ts`, like cursor-settings.json). Geometry: `agentPanelWidthFor(collapsed)`
+-> 0; `computeWindowLayout` with `panelWidth: 0` in islands mode gives `panelVisible: false`,
+`tabArea.x = gap` (left gap 8) and the panel view is `setVisible(false)` (hidden, not
+destroyed: the chat keeps running and keeps its state). The strip then starts right after the
+button (CSS `--controls-end`). IPC: `tabbar:toggle-panel` tabbar->main (sender-checked,
+`fromOurTabbar`), state back on `tabbar:state` as `panelCollapsed`; the menu action
+`toggleAgentPanel` is a local action (no `menu:command` id). A canvas tab opened by the agent
+or a launch never auto-expands a collapsed panel: only the user's toggle changes it.
+Tests: `layout.test.ts`, `agentPanelSettings.test.ts`, `menu.test.ts`, `e2e/agent-panel-toggle.spec.ts`.
+
+**Tab icons (agent layout).** Every tab has a leading icon (`tabIcons.ts`, pure, tested):
+canvas (editor) tabs a canvas glyph in a tinted rounded square, browser tabs the page favicon,
+globe until one arrives. The favicon comes from `page-favicon-updated` (first http/https
+URL), is fetched (agent layout only; flag off makes no extra request) through THAT tab's own session (`createIconFetcher` + `toIconDataUrl`, 64 KB
+cap, image types only), cleared on a new document, and travels as a data URL in
+`TabState.icon` (`TabEntry.favicon`; the tab bar CSP allows `img-src data:` only). The agent's
+cursor arrow replaces the icon while the agent drives a browser tab. Compact paddings, no
+separators, the close "x" only on the active tab and on hover.
+
+Screenshots: opt-in `npm run test:e2e:shots` (`e2e/bench-agent-layout-screens.spec.ts`, gated
+by `AGENT_SHOTS=1` so the default bench run skips it; needs a local frontend on :5194 and writes
+`AGENT_SHOTS_DIR`; `AGENT_STUB_BG` sets the stub page background). The window is found by
+its tab bar view, not by title.
 
 The panel is NOT a tab: not in `TabManager`, not in the tab bar, never passed
 to `mcpService.registerTab`, so it has no MCP access (it does get `browser:command`, owner-checked, see "Canvas link"). Its
@@ -248,6 +279,7 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `tabbar:state` main→tabbar (`TabsSnapshot`, now including `mcpStatus`), re-sent on tabbar `did-finish-load`
 - `tabbar:theme` main→tabbar (`light` | `dark`, active editor theme or system fallback)
 - `tabbar:new` / `tabbar:activate` / `tabbar:close` tabbar→main (sender-checked)
+- `tabbar:toggle-panel` tabbar→main (sender-checked) — the agent-layout sidebar button: show/hide the agent panel (see "Sidebar toggle"); the new state returns as `panelCollapsed` on `tabbar:state`
 - `tabbar:new-browser` tabbar/empty-state→main (sender-checked) — a user-driven browser tab (`newUserBrowserTab`); sent by the empty-state placeholder only (agent layout, `preload/empty.ts`)
 - `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Editor Tab / New Browser Tab; "New Canvas Tab" instead of "New Editor Tab" with the agent-layout flag), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` is sent by the empty-state placeholder's "New Canvas Tab" button (agent layout); e2e also drives it through `penTabbar.newTab()`, which a native menu can't be clicked through
 - `tabbar:tools-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the browser chrome row's gear button: native menu (Viewport emulation via CDP, Open/Close Developer Tools, Zoom) for the active browser tab; builder in `src/main/browserToolsMenu.ts`

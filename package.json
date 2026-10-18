@@ -15,6 +15,7 @@
     "test:e2e": "npm run build && playwright test",
     "test:e2e:live": "npm run build && playwright test --config playwright.live.config.ts",
     "test:e2e:bench": "npm run build && playwright test --config playwright.bench.config.ts",
+    "test:e2e:shots": "npm run build && AGENT_SHOTS=1 playwright test --config playwright.bench.config.ts e2e/bench-agent-layout-screens.spec.ts",
     "dist": "npm run build && electron-builder --mac"
   },
   "devDependencies": {

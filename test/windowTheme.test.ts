@@ -16,16 +16,55 @@ describe("resolveWindowTheme", () => {
   });
 });
 
-import { adoptPanelTheme, glassTint, isPanelDocument, GLASS_ALPHA_DIFFERENT, GLASS_ALPHA_SAME } from "../src/main/windowTheme";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { adoptPanelTheme, shouldReadPanelTheme, contentBackground, fallbackTheme, glassTint, isPanelDocument, ISLAND_BG, GLASS_ALPHA_DIFFERENT, GLASS_ALPHA_SAME } from "../src/main/windowTheme";
 
 describe("adoptPanelTheme", () => {
   it("adopts the panel theme until an editor reported", () => {
-    expect(adoptPanelTheme({ remembered: null, fromPanel: false }, "dark")).toEqual({ remembered: "dark", fromPanel: true, changed: true });
-    expect(adoptPanelTheme({ remembered: "dark", fromPanel: true }, "light")).toEqual({ remembered: "light", fromPanel: true, changed: true });
-    expect(adoptPanelTheme({ remembered: "dark", fromPanel: true }, "dark").changed).toBe(false);
+    expect(adoptPanelTheme({ remembered: null, fromPanel: false }, "dark", 0)).toEqual({ remembered: "dark", fromPanel: true, changed: true });
+    expect(adoptPanelTheme({ remembered: "dark", fromPanel: true }, "light", 1)).toEqual({ remembered: "light", fromPanel: true, changed: true });
+    expect(adoptPanelTheme({ remembered: "dark", fromPanel: true }, "dark", 1).changed).toBe(false);
   });
-  it("never overrides an editor's report", () => {
-    expect(adoptPanelTheme({ remembered: "light", fromPanel: false }, "dark")).toEqual({ remembered: "light", fromPanel: false, changed: false });
+  it("never overrides an editor's report while an editor tab exists", () => {
+    expect(adoptPanelTheme({ remembered: "light", fromPanel: false }, "dark", 2)).toEqual({ remembered: "light", fromPanel: false, changed: false });
+  });
+  it("lets the panel win again when there are zero editor tabs (stale editor theme)", () => {
+    expect(adoptPanelTheme({ remembered: "light", fromPanel: false }, "dark", 0)).toEqual({ remembered: "dark", fromPanel: true, changed: true });
+  });
+});
+
+describe("shouldReadPanelTheme", () => {
+  const base = { remembered: "light" as const, fromPanel: false, editorTabs: 1, now: 5000, lastRead: 0, throttleMs: 1000 };
+  it("does not read while an editor is the source", () => {
+    expect(shouldReadPanelTheme(base)).toBe(false);
+  });
+  it("reads while nothing is remembered, the panel is the source, or there are zero editor tabs", () => {
+    expect(shouldReadPanelTheme({ ...base, remembered: null })).toBe(true);
+    expect(shouldReadPanelTheme({ ...base, fromPanel: true })).toBe(true);
+    expect(shouldReadPanelTheme({ ...base, editorTabs: 0 })).toBe(true);
+  });
+  it("throttles, except with throttleMs 0", () => {
+    expect(shouldReadPanelTheme({ ...base, remembered: null, lastRead: 4500 })).toBe(false);
+    expect(shouldReadPanelTheme({ ...base, remembered: null, lastRead: 4500, throttleMs: 0 })).toBe(true);
+  });
+});
+
+describe("agent layout colours", () => {
+  it("dark island = frontend panel surface; flag-off dark content is unchanged", () => {
+    expect(contentBackground("dark", true)).toBe("#2a2a2a");
+    expect(contentBackground("dark", false)).toBe("#1a1a1a");
+    expect(contentBackground("light", true)).toBe("#ffffff");
+    expect(contentBackground("light", false)).toBe("#ffffff");
+  });
+  it("falls back to light in the agent layout regardless of the OS", () => {
+    expect(fallbackTheme(true, true)).toBe("light");
+    expect(fallbackTheme(false, true)).toBe("dark");
+    expect(fallbackTheme(false, false)).toBe("light");
+  });
+  it("tokens.css --island-bg equals the TS constants", () => {
+    const css = readFileSync(path.join(__dirname, "../src/tabbar/tokens.css"), "utf8");
+    expect(css).toContain(`--island-bg: light-dark(${ISLAND_BG.light}, ${ISLAND_BG.dark});`);
   });
 });
 

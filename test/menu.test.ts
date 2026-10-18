@@ -21,6 +21,7 @@ describe("buildMenuTemplate", () => {
       useThisAppForMcp: vi.fn(),
       setCursorMotion: vi.fn(),
       setCursorEnabled: vi.fn(),
+      toggleAgentPanel: vi.fn(),
     };
   });
 
@@ -247,5 +248,26 @@ describe("buildNewTabMenuTemplate", () => {
     (editor.click as () => void)();
     expect(actions.newTab).toHaveBeenCalledOnce();
     expect(buildNewTabMenuTemplate(actions, { canvasTabs: false })[0].label).toBe("New Editor Tab");
+  });
+});
+
+describe("View > Agent Panel", () => {
+  const actions = {
+    newTab: vi.fn(), newBrowserTab: vi.fn(), openPasswords: vi.fn(), closeTab: vi.fn(), nextTab: vi.fn(), prevTab: vi.fn(),
+    forwardToActiveTab: vi.fn(), useThisAppForMcp: vi.fn(), setCursorMotion: vi.fn(), setCursorEnabled: vi.fn(), toggleAgentPanel: vi.fn(),
+  } as MenuActions;
+  it("View menu has a Show/Hide Agent Panel item (Cmd/Ctrl+Alt+B) only with the agent layout", () => {
+    const labels = (opts: Parameters<typeof buildMenuTemplate>[1]) => {
+      const view = buildMenuTemplate(actions, opts).find((m) => m.label === "View");
+      return (view?.submenu as MenuItemConstructorOptions[]).map((m) => m.label);
+    };
+    expect(labels({ isMac: true })).not.toContain("Hide Agent Panel");
+    expect(labels({ isMac: true, agentPanel: { collapsed: false } })).toContain("Hide Agent Panel");
+    expect(labels({ isMac: true, agentPanel: { collapsed: true } })).toContain("Show Agent Panel");
+    const view = buildMenuTemplate(actions, { isMac: false, agentPanel: { collapsed: false } }).find((m) => m.label === "View");
+    const it = (view?.submenu as MenuItemConstructorOptions[]).find((m) => m.label === "Hide Agent Panel")!;
+    expect(it.accelerator).toBe("CmdOrCtrl+Alt+B");
+    (it.click as () => void)();
+    expect(actions.toggleAgentPanel).toHaveBeenCalledTimes(1);
   });
 });

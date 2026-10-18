@@ -64,10 +64,14 @@ export interface WindowLayout {
   tabbar: Rect;
   /** The backing view that paints the macOS rim, below the tab bar, full width. */
   rim: Rect | null;
+  /** False when the panel is collapsed (islands mode, panelWidth 0): the panel view must be hidden. */
+  panelVisible: boolean;
   /** Corner radius of the panel / tab-area islands; 0 when not in glass mode. */
   radius: number;
   /** Where tab views go: right of the panel, below the tab bar, inset by `edge` left/right/bottom. */
   tabArea: Rect;
+  /** What `TabManager.layout` applies: `tabArea`, plus `radius` px upward under the address row in islands mode. */
+  tabView: Rect;
   /** Window x where the tab strip starts inside the tab bar (the panel's right edge; 0 without a panel). */
   tabStripLeft: number;
 }
@@ -76,23 +80,29 @@ function computeIslandLayout(input: WindowLayoutInput, gapIn: number, radiusIn: 
   const width = Math.max(0, input.width);
   const height = Math.max(0, input.height);
   const gap = Math.max(0, gapIn);
+  const radius = Math.max(0, radiusIn);
   const tabbarHeight = Math.min(Math.max(0, input.tabbarHeight), height);
   const rowHeight = Math.min(Math.max(0, input.tabRowHeight ?? tabbarHeight), tabbarHeight);
-  const radius = Math.max(0, radiusIn);
-  // With an address row the tab bar view reaches `radius` px further down: the row is the
-  // top of the tab island, and that tail fills the region under the tab view's rounded top corners.
-  const tabbarFullHeight = Math.min(height, tabbarHeight + (tabbarHeight > rowHeight ? radius : 0));
-  // The panel never leaves room for less than the three gaps.
+  // Collapsed panel: width 0 (the view is hidden, not destroyed); the tab island then keeps only the left gap.
+  const collapsed = input.panelWidth === 0;
   const avail = Math.max(0, width - 3 * gap);
-  const panelW = Math.min(clampAgentPanelWidth(input.panelWidth as number, width), avail);
+  const panelW = collapsed ? 0 : Math.min(clampAgentPanelWidth(input.panelWidth as number, width), avail);
   const panelX = Math.min(gap, width);
-  const tabX = Math.min(width, panelX + panelW + gap);
+  const tabX = collapsed ? panelX : Math.min(width, panelX + panelW + gap);
+  const tabW = Math.max(0, width - tabX - gap);
+  const tabBodyH = Math.max(0, height - tabbarHeight - gap);
+  // With an address row the tab VIEW starts `radius` px higher, under the row (the row,
+  // in the tab bar view above it, is the top of the island and hides the view's rounded
+  // top corners); the visible island content still starts at `tabbarHeight`.
+  const overlap = tabbarHeight > rowHeight ? Math.min(radius, tabbarHeight - rowHeight) : 0;
   return {
     panel: { x: panelX, y: rowHeight, width: panelW, height: Math.max(0, height - rowHeight - gap) },
-    tabbar: { x: 0, y: 0, width, height: tabbarFullHeight },
+    panelVisible: panelW > 0,
+    tabbar: { x: 0, y: 0, width, height: tabbarHeight },
     rim: null,
     radius,
-    tabArea: { x: tabX, y: tabbarHeight, width: Math.max(0, width - tabX - gap), height: Math.max(0, height - tabbarHeight - gap) },
+    tabArea: { x: tabX, y: tabbarHeight, width: tabW, height: tabBodyH },
+    tabView: { x: tabX, y: tabbarHeight - overlap, width: tabW, height: tabBodyH + overlap },
     tabStripLeft: tabX,
   };
 }
@@ -111,15 +121,18 @@ export function computeWindowLayout(input: WindowLayoutInput): WindowLayout {
   // Tab views start one rim-width right of the panel (the gap shows the rim
   // colour as a divider); with no panel that is just the left inset.
   const tabX = Math.min(width, panelW + edge);
+  const tabArea = { x: tabX, y: tabbarHeight, width: Math.max(0, width - tabX - edge), height: bodyHeight };
   return {
     panel:
       input.panelWidth === null
         ? null
         : { x: panelX, y: tabbarHeight, width: Math.max(0, panelW - panelX), height: bodyHeight },
     tabbar: { x: 0, y: 0, width, height: tabbarHeight },
+    panelVisible: input.panelWidth !== null,
     rim: { x: 0, y: tabbarHeight, width, height: belowBar },
     radius: 0,
-    tabArea: { x: tabX, y: tabbarHeight, width: Math.max(0, width - tabX - edge), height: bodyHeight },
+    tabArea: tabArea,
+    tabView: tabArea,
     tabStripLeft: panelW,
   };
 }
@@ -127,4 +140,13 @@ export function computeWindowLayout(input: WindowLayoutInput): WindowLayout {
 /** Value of the tab bar's `data-layout` attribute (carried by the `tabbar:state` snapshot); absent with the flag off. */
 export function tabbarLayoutKind(agentLayout: boolean): "agent" | undefined {
   return agentLayout ? "agent" : undefined;
+}
+
+/**
+ * Agent panel collapsed state -> the width fed to `computeWindowLayout`:
+ * 0 when collapsed (islands mode: the panel view is hidden, the tab island takes the width),
+ * else the default width.
+ */
+export function agentPanelWidthFor(collapsed: boolean): number {
+  return collapsed ? 0 : AGENT_PANEL_DEFAULT_WIDTH;
 }

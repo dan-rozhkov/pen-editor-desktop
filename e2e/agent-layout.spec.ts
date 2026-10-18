@@ -125,6 +125,9 @@ test("agent layout flag adds a left /agent panel; tabs still work", async () => 
   // Tabs still work: open a second editor tab.
   await tabbarPage.evaluate(() => (window as unknown as { penTabbar: { newTab(): void } }).penTabbar.newTab());
   await expect(tabbarPage.locator(".tab")).toHaveCount(2);
+  // Every tab has a leading icon (canvas glyph for editor tabs).
+  await expect(tabbarPage.locator(".tab .tab-icon")).toHaveCount(2);
+  await expect(tabbarPage.locator('.tab .tab-icon[data-icon="canvas"]')).toHaveCount(2);
   // The new tab is a canvas tab too.
   await expect
     .poll(() => app.windows().filter((p) => p.url().startsWith(`${baseUrl}/app`)).map((p) => new URL(p.url()).searchParams.get("chat")))

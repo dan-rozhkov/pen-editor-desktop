@@ -13,6 +13,9 @@ isolateUserData();
 export default defineConfig({
   testDir: "e2e",
   testMatch: /[\\/]bench-[^\\/]*\.spec\.ts$/,
+  // The agent-layout screenshot run needs a local frontend + stub backend: only with AGENT_SHOTS=1
+  // (`npm run test:e2e:shots`), never as part of the default `npm run test:e2e:bench`.
+  testIgnore: process.env.AGENT_SHOTS ? undefined : /bench-agent-layout-screens\.spec\.ts$/,
   timeout: 900_000, // 15 minutes per test — comfortably above the spec's own 12-minute per-run cap.
   workers: 1,
   globalTeardown: "./e2e/globalTeardown.ts",

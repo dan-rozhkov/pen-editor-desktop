@@ -8,7 +8,7 @@
   --content-bg: light-dark(#ffffff, #1a1a1a);
   /* Agent layout island surface = the frontend's --color-surface-panel (index.css). */
   --island-bg: light-dark(#ffffff, #2a2a2a);
-  --tab-active-bg: light-dark(#ffffff, #2a2a2a);
+  --tab-active-bg: var(--island-bg);
   --control-hover-bg: light-dark(#e5e5e5, #383838);
   --field-hover-bg: light-dark(#f2f2f2, #333333);
   --border: light-dark(#e0e0e0, #404040);

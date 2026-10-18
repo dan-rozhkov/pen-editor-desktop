@@ -37,7 +37,8 @@ import {
 } from "@sideform/browser-agent/controller";
 import { resolveAgentPanelUrl, resolveTabEditorUrl, editorPreloadArguments, initialTabs, onLastTabClosed } from "./config";
 import { secureWebPreferences } from "./webPreferences";
-import { AGENT_PANEL_DEFAULT_WIDTH, ISLAND_GAP, ISLAND_RADIUS, computeWindowLayout, tabbarLayoutKind } from "./layout";
+import { ISLAND_GAP, ISLAND_RADIUS, agentPanelWidthFor, computeWindowLayout, tabbarLayoutKind } from "./layout";
+import { AGENT_PANEL_SETTINGS_FILE, readAgentPanelSettings, writeAgentPanelSettings } from "./agentPanelSettings";
 import { isRecord, parseJournalOrigins, parseToken, rawToken } from "./checkpointArgs";
 import { JournalOwners } from "./journalOwners";
 import { FixtureOwners } from "./fixtureOwners";
@@ -51,12 +52,13 @@ import type { McpService, IpcListenerGateway } from "./mcp/service";
 import { fillLogin } from "./browser/fillLogin";
 import { isLoginBindingCall, promptChoiceFromButton, savePromptCopy, type LoginCapture } from "./browser/loginCapture";
 import { normalizeOrigin, type CredentialStore } from "./browser/credentialStore";
-import type { FaviconCache } from "./browser/faviconCache";
+import { createIconFetcher, toIconDataUrl, type FaviconCache } from "./browser/faviconCache";
+import { pickFaviconUrl } from "./tabIcons";
 import type { PasswordsWindow } from "./passwordsWindow";
 import { createTabAgentActivity, isAgentPageCommand } from "./agentActivity";
 import { decideCloseTarget, guardMenuActions } from "./closeTarget";
 import { isTabCreationSender, planEmptyViewUpdate, type EmptyViewState } from "./emptyView";
-import { adoptPanelTheme, glassTint, isPanelDocument, resolveWindowTheme } from "./windowTheme";
+import { GLASS_SOLID, adoptPanelTheme, contentBackground, fallbackTheme, glassTint, isPanelDocument, resolveWindowTheme, shouldReadPanelTheme } from "./windowTheme";
 import { denyAllPermissions } from "./browser/permissions";
 import {
   BrowserSessions,
@@ -214,13 +216,9 @@ export function createMainWindow(
   });
 
   const themeKey = Symbol("main-window-theme");
-  // Agent layout: the frontend does NOT follow the OS (its theme is the stored
-  // `ui-theme`, default light), so the fallback before any editor/panel reports
-  // is "light". The OS appearance (vibrancy) is never changed: the glass is
-  // tinted instead (`glassTintView`, windowTheme.ts `glassTint`).
-  const systemTheme = (): UITheme => (agentLayout ? "light" : nativeTheme.shouldUseDarkColors ? "dark" : "light");
-  // Agent layout, non-macOS: solid stand-in for the macOS glass behind the islands.
-  const glassColorForTheme = (theme: UITheme): string => (theme === "dark" ? "#2b2b2e" : "#e4e6ea");
+  // Agent layout: the OS appearance (vibrancy) is never changed; the glass is tinted
+  // instead (`glassTintView`, windowTheme.ts `glassTint`). Fallback theme and colours: windowTheme.ts.
+  const systemTheme = (): UITheme => fallbackTheme(agentLayout, nativeTheme.shouldUseDarkColors);
 
   // --- tab bar view ---
   const tabbarView = new WebContentsView({
@@ -254,7 +252,7 @@ export function createMainWindow(
     tabbarView.setBackgroundColor("#00000000");
     // Not macOS: no vibrancy, so a solid neutral reads as the "glass" colour
     // (updated per theme in pushState).
-    if (process.platform !== "darwin") win.setBackgroundColor(glassColorForTheme(systemTheme()));
+    if (process.platform !== "darwin") win.setBackgroundColor(GLASS_SOLID[systemTheme()]);
   }
   void tabbarView.webContents.loadFile(path.join(__dirname, "../tabbar/tabbar.html"));
 
@@ -267,9 +265,7 @@ export function createMainWindow(
   // whenever a more accurate theme becomes known (an editor tab's own
   // reported theme, or the resolved theme once a browser tab is active —
   // see setBackgroundColor usages below).
-  const backgroundColorForTheme = (theme: UITheme): string =>
-    // Agent layout: the dark island colour is the frontend's `--color-surface-panel` (#2a2a2a), like the chat panel.
-    theme === "dark" ? (agentLayout ? "#2a2a2a" : "#1a1a1a") : "#ffffff";
+  const backgroundColorForTheme = (theme: UITheme): string => contentBackground(theme, agentLayout);
 
   // --- agent panel (flag) ---
   // Not a tab: never given to TabManager or mcpService (no mcp access). Its
@@ -286,6 +282,7 @@ export function createMainWindow(
   if (agentPanelView) {
     win.contentView.addChildView(agentPanelView);
     agentPanelView.setBackgroundColor(backgroundColorForTheme(systemTheme()));
+    agentPanelView.setBorderRadius(ISLAND_RADIUS);
     // Anything but the panel's own page is not for the panel: other editor
     // origin pages open as an editor tab (the canvas-tab URL), foreign origins go to
     // the system browser.
@@ -329,9 +326,11 @@ export function createMainWindow(
   // True while `rememberedEditorTheme` came from the agent panel page, not from an editor tab (an editor's own report always wins).
   let rememberedFromPanel = false;
   let lastPanelThemeRead = 0;
-  // Corner radius of the island views, as last computed by layout() (0 until the first layout).
-  let islandRadius = 0;
-  const islandTabViews = new Set<WebContentsView>();
+  const editorTabCount = (s: TabsSnapshot) => s.tabs.filter((t) => t.kind === "editor").length;
+  const maybeReadPanelTheme = (throttleMs: number) => {
+    const snap = tabs.getSnapshot();
+    if (shouldReadPanelTheme({ remembered: rememberedEditorTheme, fromPanel: rememberedFromPanel, editorTabs: editorTabCount(snap), now: Date.now(), lastRead: lastPanelThemeRead, throttleMs })) readPanelTheme();
+  };
   let lastResolvedForTint: UITheme = systemTheme();
   const readPanelTheme = () => {
     if (!agentPanelView || agentPanelView.webContents.isDestroyed()) return;
@@ -342,7 +341,7 @@ export function createMainWindow(
     wc.executeJavaScript("document.documentElement.classList.contains('dark') ? 'dark' : 'light'")
       .then((t: unknown) => {
         if (t !== "dark" && t !== "light") return;
-        const next = adoptPanelTheme({ remembered: rememberedEditorTheme, fromPanel: rememberedFromPanel }, t);
+        const next = adoptPanelTheme({ remembered: rememberedEditorTheme, fromPanel: rememberedFromPanel }, t, editorTabCount(tabs.getSnapshot()));
         rememberedEditorTheme = next.remembered;
         rememberedFromPanel = next.fromPanel;
         if (next.changed) pushState(tabs.getSnapshot());
@@ -358,6 +357,7 @@ export function createMainWindow(
     win.contentView.addChildView(emptyView);
     attachLocalOnlyPolicy(emptyView.webContents);
     emptyView.setBackgroundColor(backgroundColorForTheme(systemTheme()));
+    emptyView.setBorderRadius(ISLAND_RADIUS);
     emptyView.setVisible(false);
     void emptyView.webContents.loadFile(path.join(__dirname, "../tabbar/empty.html"));
     // The page may finish loading after the first pushState: hand it the latest theme.
@@ -402,6 +402,19 @@ export function createMainWindow(
   let previousSnapshot: TabsSnapshot | null = null;
   // Tab strip's left offset inside the tab bar (= panel's right edge); set by `layout`.
   let tabStripLeft = 0;
+  // Agent panel collapsed (persisted in userData). Only the user's toggle changes it: a canvas
+  // tab opened by the agent or a launch never auto-expands it. Flag off: always expanded.
+  const agentPanelSettingsPath = path.join(app.getPath("userData"), AGENT_PANEL_SETTINGS_FILE);
+  let panelCollapsed = agentLayout ? readAgentPanelSettings(agentPanelSettingsPath).collapsed : false;
+  const setPanelCollapsed = (collapsed: boolean) => {
+    if (!agentLayout || collapsed === panelCollapsed) return;
+    panelCollapsed = collapsed;
+    writeAgentPanelSettings(agentPanelSettingsPath, { collapsed });
+    pushState(tabs.getSnapshot());
+    rebuildMenu();
+    // Keep the typing focus sensible: a collapsed panel cannot hold it.
+    if (collapsed && agentPanelView && !agentPanelView.webContents.isDestroyed() && agentPanelView.webContents.isFocused()) tabs.activeHandle()?.focus?.();
+  };
   const pushState = (s: TabsSnapshot) => {
     // s.mcpActiveWebContentsId is computed by TabManager itself (see
     // TabsSnapshot's doc comment / finding 1) — window.ts just forwards it,
@@ -431,16 +444,22 @@ export function createMainWindow(
     // user is doing.
     const focusAddressBar = shouldFocusAddressBar(previousSnapshot, s);
     previousSnapshot = s;
-    tabbarView.webContents.send("tabbar:state", { ...s, focusAddressBar, tabStripLeft, layout: tabbarLayoutKind(agentLayout) });
+    tabbarView.webContents.send("tabbar:state", {
+      ...s,
+      focusAddressBar,
+      tabStripLeft,
+      layout: tabbarLayoutKind(agentLayout),
+      panelCollapsed: agentLayout ? panelCollapsed : undefined,
+    });
     const themed = resolveWindowTheme({ activeTheme: s.activeTheme, remembered: rememberedEditorTheme, system: systemTheme() });
     rememberedEditorTheme = themed.remembered;
     if (s.activeTheme !== null) rememberedFromPanel = false;
     // Zero editor themes known: the panel page is the source; re-read at most once per second.
-    else if (agentLayout && Date.now() - lastPanelThemeRead > 1000) readPanelTheme();
+    else if (agentLayout) maybeReadPanelTheme(1000);
     const resolvedTheme = themed.theme;
     // Keep in sync with tokens.css's --window-rim.
     windowRim?.setBackgroundColor(resolvedTheme === "dark" ? "#4d4d4d" : "#ececec");
-    if (agentLayout && process.platform !== "darwin") win.setBackgroundColor(glassColorForTheme(resolvedTheme));
+    if (agentLayout && process.platform !== "darwin") win.setBackgroundColor(GLASS_SOLID[resolvedTheme]);
     lastResolvedForTint = resolvedTheme;
     glassTintView?.setBackgroundColor(glassTint(resolvedTheme, nativeTheme.shouldUseDarkColors).color);
     tabbarView.webContents.send("tabbar:theme", resolvedTheme);
@@ -590,11 +609,12 @@ export function createMainWindow(
             },
       );
       win.contentView.addChildView(view);
-      // Agent layout: the tab content is an island with rounded corners; the radius
-      // comes from the layout (`islandRadius`) and layout() re-applies it on change.
+      // Agent layout: the tab content is an island with rounded corners. Stacking: the tab bar
+      // (whose address row is the island's top) and the panel go above the tab view.
       if (agentLayout) {
-        view.setBorderRadius(islandRadius);
-        islandTabViews.add(view);
+        view.setBorderRadius(ISLAND_RADIUS);
+        win.contentView.addChildView(tabbarView);
+        if (agentPanelView) win.contentView.addChildView(agentPanelView);
       }
       const viewId = view.webContents.id;
       // Opaque by default for both kinds — see backgroundColorForTheme's doc
@@ -807,6 +827,21 @@ export function createMainWindow(
       const tabLoginCapture = loginServices.loginCapture.forTab();
       if (kind === "browser") {
         // Site icon for the Passwords window: the first favicon of a page whose origin has a saved login.
+        // Tab strip icon (agent layout): the favicon fetched through THIS tab's own session as a
+        // data URL; cleared on a new document so a stale icon never outlives its page.
+        // Agent layout only (flag off makes no extra request). The fetch uses the session's own UA,
+        // not a CDP emulated one: a known, harmless limit.
+        if (agentLayout) view.webContents.on("did-navigate", () => faviconListener?.(null));
+        if (agentLayout) view.webContents.on("page-favicon-updated", (_e, favicons) => {
+          const url = pickFaviconUrl(favicons);
+          if (!url) return;
+          void createIconFetcher((u, init) => view.webContents.session.fetch(u, init))(url)
+            .then((icon) => {
+              const data = icon ? toIconDataUrl(icon.contentType, icon.bytes) : null;
+              if (data && !view.webContents.isDestroyed()) faviconListener?.(data);
+            })
+            .catch(() => undefined);
+        });
         if (!sessionId) view.webContents.on("page-favicon-updated", (_e, favicons) => {
           const origin = normalizeOrigin(view.webContents.getURL());
           if (origin) void loginServices.faviconCache.seen(origin, favicons).catch(() => undefined);
@@ -1041,6 +1076,7 @@ export function createMainWindow(
         });
       }
 
+      let faviconListener: ((dataUrl: string | null) => void) | null = null;
       let navListener: ((s: { url: string; title: string; canGoBack: boolean; canGoForward: boolean }) => void) | null =
         null;
       const reportNavState = () => {
@@ -1128,7 +1164,6 @@ export function createMainWindow(
         setBounds: (b) => view.setBounds(b),
         setVisible: (v) => view.setVisible(v),
         destroy: () => {
-          islandTabViews.delete(view);
           themeCallbacks.delete(viewId);
           titleCallbacks.delete(viewId);
           viewportByTab.forget(viewId);
@@ -1173,6 +1208,9 @@ export function createMainWindow(
         getWebContentsId: () => viewId,
         onNavigationStateChanged: (cb) => {
           navListener = cb;
+        },
+        onFaviconChanged: (cb) => {
+          faviconListener = cb;
         },
         // The placeholder document is not something the user or agent navigated to: it reads as empty.
         getURL: () => (isPlaceholderShown() ? "" : view.webContents.getURL()),
@@ -1907,24 +1945,21 @@ export function createMainWindow(
       height,
       tabbarHeight,
       edge: WINDOW_EDGE,
-      panelWidth: agentPanelView ? AGENT_PANEL_DEFAULT_WIDTH : null,
+      panelWidth: agentPanelView ? agentPanelWidthFor(panelCollapsed) : null,
       tabRowHeight: TABBAR_HEIGHT,
       islands: agentLayout ? { gap: ISLAND_GAP, radius: ISLAND_RADIUS } : null,
     });
     tabStripLeft = l.tabStripLeft;
-    if (agentPanelView && l.panel) agentPanelView.setBounds(l.panel);
+    if (agentPanelView && l.panel) {
+      agentPanelView.setBounds(l.panel);
+      // Collapsed: hidden, not destroyed (the chat keeps running and its state survives).
+      agentPanelView.setVisible(l.panelVisible);
+    }
     tabbarView.setBounds(l.tabbar);
     if (windowRim && l.rim) windowRim.setBounds(l.rim);
     glassTintView?.setBounds({ x: 0, y: 0, width, height });
-    if (l.radius !== islandRadius) {
-      // One source (layout.ts): all islands get the radius when it changes, not on every layout().
-      islandRadius = l.radius;
-      agentPanelView?.setBorderRadius(islandRadius);
-      emptyView?.setBorderRadius(islandRadius);
-      for (const v of islandTabViews) v.setBorderRadius(islandRadius);
-    }
     emptyView?.setBounds(l.tabArea);
-    tabs.layout(l.tabArea);
+    tabs.layout(l.tabView);
   };
   win.on("resize", layout);
   layout();
@@ -2034,6 +2069,9 @@ export function createMainWindow(
   };
   const onTabbarActivate = (e: Electron.IpcMainEvent, id: number) =>
     fromOurTabbar(e) && tabs.activate(id);
+  const onTabbarTogglePanel = (e: Electron.IpcMainEvent) => {
+    if (fromOurTabbar(e)) setPanelCollapsed(!panelCollapsed);
+  };
   const onTabbarClose = (e: Electron.IpcMainEvent, id: number) =>
     fromOurTabbar(e) && closeTabByUser(id);
   const onTabbarNavigate = (e: Electron.IpcMainEvent, payload: unknown) => {
@@ -2056,6 +2094,7 @@ export function createMainWindow(
   ipcMain.on("tabbar:tools-menu", onTabbarToolsMenu);
   ipcMain.on("tabbar:activate", onTabbarActivate);
   ipcMain.on("tabbar:close", onTabbarClose);
+  ipcMain.on("tabbar:toggle-panel", onTabbarTogglePanel);
   ipcMain.on("tabbar:navigate", onTabbarNavigate);
   // Re-send current state when the tab bar (re)loads — it may have missed
   // snapshots emitted before its DOM was ready.
@@ -2077,7 +2116,7 @@ export function createMainWindow(
   win.on("focus", () => {
     loginServices.passwordsWindow.focusMain(themeKey);
     // The user may have switched the panel's theme (it has no channel): re-read on focus.
-    if (agentLayout && tabs.getSnapshot().activeTheme === null) readPanelTheme();
+    if (agentLayout) maybeReadPanelTheme(0);
   });
   win.on("closed", () => {
     ipcMain.removeListener("tabbar:new", onTabbarNew);
@@ -2086,6 +2125,7 @@ export function createMainWindow(
     ipcMain.removeListener("tabbar:tools-menu", onTabbarToolsMenu);
     ipcMain.removeListener("tabbar:activate", onTabbarActivate);
     ipcMain.removeListener("tabbar:close", onTabbarClose);
+    ipcMain.removeListener("tabbar:toggle-panel", onTabbarTogglePanel);
     ipcMain.removeListener("tabbar:navigate", onTabbarNavigate);
     ipcMain.removeListener("editor:theme", onEditorTheme);
     ipcMain.removeListener("editor:document-title", onEditorDocumentTitle);
@@ -2142,6 +2182,7 @@ export function createMainWindow(
             prevTab: () => tabs.prevTab(),
             forwardToActiveTab: (commandId) => tabs.activeHandle()?.sendMenuCommand(commandId),
             useThisAppForMcp: () => void mcpService.forcePublish(),
+            toggleAgentPanel: () => setPanelCollapsed(!panelCollapsed),
             setCursorMotion: (motion) => updateCursorSettings({ motion }),
             setCursorEnabled: (enabled) => {
               updateCursorSettings({ enabled });
@@ -2154,7 +2195,7 @@ export function createMainWindow(
           () => loginServices.passwordsWindow.isFocused(),
           () => loginServices.passwordsWindow.close(),
         ),
-        { isMac: process.platform === "darwin", canvasTabs: agentLayout },
+        { isMac: process.platform === "darwin", canvasTabs: agentLayout, agentPanel: agentLayout ? { collapsed: panelCollapsed } : undefined },
         mcpService.getStatus(),
         effectiveCursor(),
       ),

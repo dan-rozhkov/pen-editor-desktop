@@ -7,6 +7,7 @@ import {
   ISLAND_GAP,
   ISLAND_RADIUS,
   tabbarLayoutKind,
+  agentPanelWidthFor,
 } from "../src/main/layout";
 
 describe("clampAgentPanelWidth", () => {
@@ -125,11 +126,38 @@ describe("islands with an address row", () => {
     const l = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 70, tabRowHeight: 38, edge: 0, panelWidth: 380, islands: { gap: 8, radius: 12 } });
     expect(l.panel).toEqual({ x: 8, y: 38, width: 380, height: 754 });
     expect(l.tabArea).toEqual({ x: 396, y: 70, width: 796, height: 722 });
-    // The tab bar view reaches `radius` below the row (tail under the tab view's rounded corners).
-    expect(l.tabbar).toEqual({ x: 0, y: 0, width: 1200, height: 82 });
+    expect(l.tabbar).toEqual({ x: 0, y: 0, width: 1200, height: 70 });
   });
   it("has no tail without an address row", () => {
     const l = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 38, tabRowHeight: 38, edge: 0, panelWidth: 380, islands: { gap: 8, radius: 12 } });
     expect(l.tabbar.height).toBe(38);
+  });
+});
+
+describe("islands: address row (tab view under the row) and collapsed panel", () => {
+  const islands = { gap: 8, radius: 12 };
+  it("tab view starts radius px higher under the row; the island content still starts below it", () => {
+    const l = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 70, tabRowHeight: 38, edge: 0, panelWidth: 380, islands });
+    expect(l.panel).toEqual({ x: 8, y: 38, width: 380, height: 754 });
+    expect(l.tabbar).toEqual({ x: 0, y: 0, width: 1200, height: 70 });
+    expect(l.tabArea).toEqual({ x: 396, y: 70, width: 796, height: 722 });
+    expect(l.tabView).toEqual({ x: 396, y: 58, width: 796, height: 734 });
+  });
+  it("tab view equals the tab area without an address row, and in flag-off mode", () => {
+    const a = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 38, tabRowHeight: 38, edge: 0, panelWidth: 380, islands });
+    expect(a.tabView).toEqual(a.tabArea);
+    const b = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 38, edge: 1, panelWidth: null });
+    expect(b.tabView).toEqual(b.tabArea);
+  });
+  it("collapsed panel (width 0): panel hidden, tab island takes the width with the left gap", () => {
+    expect(agentPanelWidthFor(true)).toBe(0);
+    expect(agentPanelWidthFor(false)).toBe(AGENT_PANEL_DEFAULT_WIDTH);
+    const l = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 38, edge: 0, panelWidth: agentPanelWidthFor(true), islands });
+    expect(l.panelVisible).toBe(false);
+    expect(l.panel!.width).toBe(0);
+    expect(l.tabArea).toEqual({ x: 8, y: 38, width: 1184, height: 754 });
+    expect(l.tabStripLeft).toBe(8);
+    const open = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 38, edge: 0, panelWidth: agentPanelWidthFor(false), islands });
+    expect(open.panelVisible).toBe(true);
   });
 });

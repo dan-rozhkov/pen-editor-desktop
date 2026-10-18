@@ -1,3 +1,4 @@
+import { agentPanelMenuLabel } from "./agentPanelSettings";
 import type { MenuItemConstructorOptions } from "electron";
 import type { McpStatus } from "./tabManager";
 import { CURSOR_MOTION_STYLES, type CursorMotionStyle } from "./config";
@@ -36,6 +37,8 @@ export interface MenuActions {
   setCursorMotion(style: CursorMotionStyle): void;
   /** Saves + applies the agent cursor's on/off switch (View menu). */
   setCursorEnabled(enabled: boolean): void;
+  /** Agent layout: show/hide the agent chat panel (View menu, same as the tab bar's sidebar button). A local action: no `menu:command` id. */
+  toggleAgentPanel(): void;
 }
 
 // No terminal in a packaged app, so this label plus the tab-strip indicator
@@ -88,7 +91,7 @@ export function buildNewTabMenuTemplate(
  */
 export function buildMenuTemplate(
   actions: MenuActions,
-  opts: { isMac: boolean; canvasTabs?: boolean },
+  opts: { isMac: boolean; canvasTabs?: boolean; agentPanel?: { collapsed: boolean } },
   mcpStatus: McpStatus = "off",
   cursor: CursorMenuState = { ...defaultCursorSettings(), motionLocked: false, enabledLocked: false },
 ): MenuItemConstructorOptions[] {
@@ -149,6 +152,13 @@ export function buildMenuTemplate(
       { role: "togglefullscreen" },
       { role: "toggleDevTools" },
       { type: "separator" },
+      // Agent layout only. Cmd/Ctrl+Alt+B: free in the editor (Cmd+\ is "hide UI", Cmd+Alt+S is boolean subtract).
+      ...(opts.agentPanel
+        ? [
+            { label: agentPanelMenuLabel(opts.agentPanel.collapsed), accelerator: "CmdOrCtrl+Alt+B", click: () => actions.toggleAgentPanel() },
+            { type: "separator" } as MenuItemConstructorOptions,
+          ]
+        : []),
       {
         label: "Agent Cursor Motion",
         submenu: [
