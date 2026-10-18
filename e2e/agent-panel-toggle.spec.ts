@@ -23,6 +23,15 @@ test.beforeAll(async () => {
 });
 test.afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
+/** The tab bar's strip offset (CSS var) and the tab row's computed left padding. */
+async function stripOffsets(tabbar: import("@playwright/test").Page) {
+  return tabbar.evaluate(() => ({
+    stripLeft: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--tab-strip-left")),
+    rowPadding: parseFloat(getComputedStyle(document.querySelector(".tab-row")!).paddingLeft),
+    chromeMargin: parseFloat(getComputedStyle(document.querySelector(".chrome-row")!).marginLeft),
+  }));
+}
+
 async function views(app: ElectronApplication) {
   return app.evaluate(({ BaseWindow }, base) => {
     const win = BaseWindow.getAllWindows()[0];
@@ -59,11 +68,19 @@ test("sidebar toggle collapses and expands the agent panel and persists across a
   await expect(toggle).toBeVisible();
   await expect(toggle).toHaveAttribute("aria-label", "Hide agent panel");
   await expect.poll(async () => (await views(app)).editor?.x).toBe(396);
+  // The tab bar's strip offset matches the tab island (expanded).
+  await expect.poll(async () => (await stripOffsets(tabbar)).stripLeft).toBe(396);
+  expect((await stripOffsets(tabbar)).rowPadding).toBe(396);
+  expect((await stripOffsets(tabbar)).chromeMargin).toBe(396);
 
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
   await expect(toggle).toHaveAttribute("aria-label", "Show agent panel");
   await expect.poll(async () => (await views(app)).editor?.x).toBe(8);
+  // ... and follows the collapse: the strip var is the new island x; the row never starts left of it.
+  await expect.poll(async () => (await stripOffsets(tabbar)).stripLeft).toBe(8);
+  expect((await stripOffsets(tabbar)).rowPadding).toBeGreaterThanOrEqual(8);
+  expect((await stripOffsets(tabbar)).chromeMargin).toBe(8);
   let v = await views(app);
   expect(v.agent.visible).toBe(false); // hidden, not destroyed
   const winW = await app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows()[0].getContentBounds().width);
@@ -86,6 +103,8 @@ test("sidebar toggle collapses and expands the agent panel and persists across a
   // Expand again.
   await tabbar.locator("#toggle-panel").click();
   await expect.poll(async () => (await views(app)).editor?.x).toBe(396);
+  await expect.poll(async () => (await stripOffsets(tabbar)).stripLeft).toBe(396);
+  expect((await stripOffsets(tabbar)).rowPadding).toBe(396);
   expect((await views(app)).agent.visible).toBe(true);
   await app.close();
   fs.rmSync(userData, { recursive: true, force: true });

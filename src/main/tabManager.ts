@@ -1,6 +1,6 @@
 import type { BrowserTabInfo } from "@sideform/browser-agent/controller";
 import type { LastTabPolicy } from "./config";
-import { tabIcon, type TabIcon } from "./tabIcons";
+import { acceptFavicon, tabIcon, type TabIcon } from "./tabIcons";
 export type UITheme = "light" | "dark";
 
 /** How a tab becomes the active one. `focus: false` shows it without moving keyboard focus into it. */
@@ -476,7 +476,7 @@ export class TabManager {
       // send them. A fresh browser tab loads nothing until
       // BrowserController navigates it (browse_open).
       view.onFaviconChanged?.((dataUrl) => {
-        const next = dataUrl ?? undefined;
+        const next = acceptFavicon(dataUrl); // validated once, when stored
         if (entry.favicon === next) return;
         entry.favicon = next;
         this.emit();

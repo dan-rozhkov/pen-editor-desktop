@@ -30,6 +30,9 @@ type TabsSnapshot = {
   layout?: "agent";
   /** Agent layout: the agent panel is collapsed (sidebar toggle state). */
   panelCollapsed?: boolean;
+  /** Agent layout: island gap / corner radius in px (layout.ts), for the address row CSS. */
+  islandGap?: number;
+  islandRadius?: number;
 };
 type UITheme = "light" | "dark";
 
@@ -207,6 +210,8 @@ function agentCursorIcon(): SVGSVGElement {
 
 window.penTabbar.onState((state) => {
   // The tab row's left padding is max(mac traffic-light padding, this) — see tabbar.css.
+  if (state.islandGap !== undefined) document.documentElement.style.setProperty("--island-gap", `${state.islandGap}px`);
+  if (state.islandRadius !== undefined) document.documentElement.style.setProperty("--island-radius", `${state.islandRadius}px`);
   togglePanelEl.hidden = state.layout !== "agent";
   const collapsed = state.panelCollapsed === true;
   togglePanelEl.setAttribute("aria-pressed", String(!collapsed));

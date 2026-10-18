@@ -45,23 +45,6 @@ export function adoptPanelTheme(
   return { remembered: panelTheme, fromPanel: true, changed: state.remembered !== panelTheme };
 }
 
-/**
- * Whether main should (re-)read the panel page's theme now. Only while the panel
- * is the source (nothing remembered, remembered from the panel, or no editor tab);
- * `throttleMs` rate-limits the per-push reads (0 for focus / document load).
- */
-export function shouldReadPanelTheme(input: {
-  remembered: UITheme | null;
-  fromPanel: boolean;
-  editorTabs: number;
-  now: number;
-  lastRead: number;
-  throttleMs: number;
-}): boolean {
-  const panelIsSource = input.remembered === null || input.fromPanel || input.editorTabs === 0;
-  return panelIsSource && input.now - input.lastRead >= input.throttleMs;
-}
-
 /** True when `url` is a document of the panel page (same origin, panel path or a subpath), not e.g. the offline fallback. */
 export function isPanelDocument(url: string, panelUrl: string): boolean {
   try {

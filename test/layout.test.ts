@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, it, expect } from "vitest";
 import {
   AGENT_PANEL_DEFAULT_WIDTH,
@@ -121,33 +123,32 @@ describe("tabbarLayoutKind", () => {
   });
 });
 
-describe("islands with an address row", () => {
-  it("keeps the panel at the tab row height; only the tab area follows the address row", () => {
-    const l = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 70, tabRowHeight: 38, edge: 0, panelWidth: 380, islands: { gap: 8, radius: 12 } });
-    expect(l.panel).toEqual({ x: 8, y: 38, width: 380, height: 754 });
-    expect(l.tabArea).toEqual({ x: 396, y: 70, width: 796, height: 722 });
-    expect(l.tabbar).toEqual({ x: 0, y: 0, width: 1200, height: 70 });
-  });
-  it("has no tail without an address row", () => {
-    const l = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 38, tabRowHeight: 38, edge: 0, panelWidth: 380, islands: { gap: 8, radius: 12 } });
-    expect(l.tabbar.height).toBe(38);
-  });
-});
-
 describe("islands: address row (tab view under the row) and collapsed panel", () => {
   const islands = { gap: 8, radius: 12 };
-  it("tab view starts radius px higher under the row; the island content still starts below it", () => {
+  it("panel stays at the tab row height; the tab view starts exactly below the row; the tab bar has a radius-tall tail", () => {
     const l = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 70, tabRowHeight: 38, edge: 0, panelWidth: 380, islands });
     expect(l.panel).toEqual({ x: 8, y: 38, width: 380, height: 754 });
-    expect(l.tabbar).toEqual({ x: 0, y: 0, width: 1200, height: 70 });
     expect(l.tabArea).toEqual({ x: 396, y: 70, width: 796, height: 722 });
-    expect(l.tabView).toEqual({ x: 396, y: 58, width: 796, height: 734 });
+    expect(l.tabbar).toEqual({ x: 0, y: 0, width: 1200, height: 82 });
+    expect(l.tabTail).toBe(12);
   });
-  it("tab view equals the tab area without an address row, and in flag-off mode", () => {
+  it("no tail without an address row, and none in flag-off mode", () => {
     const a = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 38, tabRowHeight: 38, edge: 0, panelWidth: 380, islands });
-    expect(a.tabView).toEqual(a.tabArea);
+    expect(a.tabbar.height).toBe(38);
+    expect(a.tabTail).toBe(0);
     const b = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 38, edge: 1, panelWidth: null });
-    expect(b.tabView).toEqual(b.tabArea);
+    expect(b.tabbar.height).toBe(38);
+    expect(b.gap).toBe(0);
+  });
+  it("passes gap and radius through for the tab bar (CSS variables), pinned in tabbar.css", () => {
+    const l = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 70, tabRowHeight: 38, edge: 0, panelWidth: 380, islands: { gap: 6, radius: 10 } });
+    expect(l.gap).toBe(6);
+    expect(l.radius).toBe(10);
+    const css = fs.readFileSync(path.join(__dirname, "../src/tabbar/tabbar.css"), "utf8");
+    expect(css).toContain("var(--island-gap");
+    expect(css).toContain("var(--island-radius");
+    expect(css).not.toMatch(/border-radius:\s*12px 12px 0 0/);
+    expect(css).not.toMatch(/margin:\s*0 8px 0/);
   });
   it("collapsed panel (width 0): panel hidden, tab island takes the width with the left gap", () => {
     expect(agentPanelWidthFor(true)).toBe(0);

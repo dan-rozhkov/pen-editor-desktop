@@ -97,11 +97,16 @@ The flag-off dark content colour stays `#1a1a1a` (`contentBackground(theme, fals
 tab pill keeps its own translucent `--glass-tab-active` (unchanged).
 
 *Address row.* Painted in the island colour as the top of the tab island: inset to the tab
-area's x-range, 12px rounded top corners. The tab VIEW (also rounded) starts `radius` px
-higher, under the row (`layout.tabView`; `TabManager.layout` gets it), and the tab bar view
-and the panel are re-added above the tab views after each tab view is created (stacking),
-so the row hides the view's rounded top corners: no glass notch, no painted tail. The
-tab bar view only overlaps the panel in its transparent area. "+" sits at the right edge.
+area's x-range, rounded top corners. Gap and radius are NOT hardcoded in CSS: `layout.ts`
+returns them (`gap`, `radius`), `window.ts` sends them on `tabbar:state` (`islandGap`,
+`islandRadius`) and `renderer.ts` writes `--island-gap` / `--island-radius` (pinned by
+`layout.test.ts`). The tab VIEW starts exactly below the row (`tabArea`): no page content is
+hidden (an earlier "view 12px under the row" trick hid the top of every page and was removed).
+The tab bar view is `radius` px taller than the row (`layout.tabTail`) and its `::after` tail
+paints that strip in the island colour, so the notches under the tab view's rounded top corners
+are island-coloured, not glass. Known cosmetic limit: the page's own rounded top corners show
+against that island colour (e.g. a white page on the dark island shows two small dark wedges).
+"+" sits at the right edge.
 
 *Theme and tint.* The app/OS appearance is NEVER changed (no `nativeTheme.themeSource`: it is
 app-wide and would flip `prefers-color-scheme` for browser tabs, isolated sessions and QA
@@ -109,13 +114,14 @@ runs). The vibrancy follows the OS; a plain `View` (`glassTintView`, bottom-most
 no page/IPC) paints `glassTint(theme, osDark)` over it: `rgba(244,245,248,a)` light /
 `rgba(28,28,30,a)` dark, `a = 0.35` when the editor theme matches the OS appearance and `0.85`
 when it differs; re-applied on each `pushState` and on `nativeTheme` `updated`. The frontend
-ignores the OS (stored `ui-theme`, default light): fallback "light". With no editor theme
-known, main reads the panel page's `html.dark` (`readPanelTheme`; the panel has no channel):
-on its own document load (`isPanelDocument`, not the offline fallback), on window focus, and
-at most once per second per push, only while the panel is the source
-(`shouldReadPanelTheme`: nothing remembered, remembered from the panel, or ZERO editor tabs;
-`adoptPanelTheme` lets the panel win again at zero editor tabs). An editor's own report wins
-while an editor tab exists. Vibrancy material stays `under-window` (`sidebar` renders
+ignores the OS (stored `ui-theme`, default light): fallback "light". The panel page paints its
+theme as the class `dark` on `<html>`; its preload (`preload/agentPanel.ts`) reads it on
+DOMContentLoaded and observes the class with a MutationObserver, sending `panel:theme`
+("light" | "dark") on change (no polling). Main (`onPanelTheme`) accepts it only from the panel's
+own webContents AND its own page (`isPanelDocument` on the sender frame: not the offline
+fallback), and `adoptPanelTheme` applies the rule: the panel's theme wins until an editor tab
+reported, and again whenever there are ZERO editor tabs; an editor's own report wins while an
+editor tab exists. Vibrancy material stays `under-window` (`sidebar` renders
 identically; `menu` ~3 levels darker; `header` near opaque); `screencapture -l` does not include
 the blurred wallpaper, so that effect needs a real-screen check.
 
@@ -127,7 +133,12 @@ State: `panelCollapsed` in `window.ts`, persisted in `agent-panel-settings.json`
 -> 0; `computeWindowLayout` with `panelWidth: 0` in islands mode gives `panelVisible: false`,
 `tabArea.x = gap` (left gap 8) and the panel view is `setVisible(false)` (hidden, not
 destroyed: the chat keeps running and keeps its state). The strip then starts right after the
-button (CSS `--controls-end`). IPC: `tabbar:toggle-panel` tabbar->main (sender-checked,
+button (CSS `--controls-end`). `pushState` computes the layout BEFORE it builds the snapshot, so
+`tabStripLeft` (and the island numbers) the tab bar gets always match what is applied; a resize
+that moves the offset re-pushes (e2e checks the row padding / address row margin after toggling).
+Focus never goes to the hidden panel: `emptyView.ts` `resolveFocusTarget` sends it to the
+placeholder or the active tab, and collapsing while the panel has focus hands it over
+(`focusAfterCollapse`). IPC: `tabbar:toggle-panel` tabbar->main (sender-checked,
 `fromOurTabbar`), state back on `tabbar:state` as `panelCollapsed`; the menu action
 `toggleAgentPanel` is a local action (no `menu:command` id). A canvas tab opened by the agent
 or a launch never auto-expands a collapsed panel: only the user's toggle changes it.
@@ -135,10 +146,15 @@ Tests: `layout.test.ts`, `agentPanelSettings.test.ts`, `menu.test.ts`, `e2e/agen
 
 **Tab icons (agent layout).** Every tab has a leading icon (`tabIcons.ts`, pure, tested):
 canvas (editor) tabs a canvas glyph in a tinted rounded square, browser tabs the page favicon,
-globe until one arrives. The favicon comes from `page-favicon-updated` (first http/https
-URL), is fetched (agent layout only; flag off makes no extra request) through THAT tab's own session (`createIconFetcher` + `toIconDataUrl`, 64 KB
-cap, image types only), cleared on a new document, and travels as a data URL in
-`TabState.icon` (`TabEntry.favicon`; the tab bar CSP allows `img-src data:` only). The agent's
+globe until one arrives. The favicon comes from `page-favicon-updated`: a valid `data:` icon is used
+as is, the first http(s) URL is fetched through THAT tab's own session (`createIconFetcher` +
+`toIconDataUrl`, 64 KB cap, image types only), memoized by favicon URL (`createFaviconMemo`), and
+aborted when the tab is destroyed. Only the shared browser's tabs and only with the agent layout
+(flag off and isolated QA-session tabs make no extra request). A per-tab navigation generation
+(`createGeneration`) drops a fetch that finishes after a new document began; the icon is cleared
+only when the origin changes (`shouldClearFavicon`). It is validated ONCE when stored on the tab
+(`acceptFavicon`, the single icon validator `isIconDataUrl` of `passwords/helpers.ts`) and travels
+as a data URL in `TabState.icon` (the tab bar CSP allows `img-src data:` only). The agent's
 cursor arrow replaces the icon while the agent drives a browser tab. Compact paddings, no
 separators, the close "x" only on the active tab and on hover.
 
@@ -279,6 +295,7 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `tabbar:state` main→tabbar (`TabsSnapshot`, now including `mcpStatus`), re-sent on tabbar `did-finish-load`
 - `tabbar:theme` main→tabbar (`light` | `dark`, active editor theme or system fallback)
 - `tabbar:new` / `tabbar:activate` / `tabbar:close` tabbar→main (sender-checked)
+- `panel:theme` agent panel preload→main (`light` | `dark`, agent layout only; accepted only from the panel's webContents and page) — the theme the panel paints, see "Theme and tint"
 - `tabbar:toggle-panel` tabbar→main (sender-checked) — the agent-layout sidebar button: show/hide the agent panel (see "Sidebar toggle"); the new state returns as `panelCollapsed` on `tabbar:state`
 - `tabbar:new-browser` tabbar/empty-state→main (sender-checked) — a user-driven browser tab (`newUserBrowserTab`); sent by the empty-state placeholder only (agent layout, `preload/empty.ts`)
 - `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Editor Tab / New Browser Tab; "New Canvas Tab" instead of "New Editor Tab" with the agent-layout flag), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` is sent by the empty-state placeholder's "New Canvas Tab" button (agent layout); e2e also drives it through `penTabbar.newTab()`, which a native menu can't be clicked through

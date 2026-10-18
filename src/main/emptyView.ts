@@ -58,3 +58,18 @@ export function planEmptyViewUpdate(
 export function isTabCreationSender(senderId: number, tabbarId: number, emptyId: number | undefined): boolean {
   return senderId === tabbarId || (emptyId !== undefined && senderId === emptyId);
 }
+
+/** Where focus actually goes once the collapsed state of the agent panel is known. "tab" = the active tab view keeps/gets it. */
+export type FocusTarget = "empty" | "panel" | "tab" | "none";
+
+/** Never focus the hidden (collapsed) panel: use the placeholder when it is shown, else the active tab. */
+export function resolveFocusTarget(desired: EmptyFocusTarget, panelCollapsed: boolean, emptyVisible: boolean): FocusTarget {
+  if (desired === "none") return "none";
+  if (desired === "panel" && panelCollapsed) return emptyVisible ? "empty" : "tab";
+  return desired;
+}
+
+/** Focus after the panel was collapsed while it had focus. */
+export function focusAfterCollapse(emptyVisible: boolean): "empty" | "tab" {
+  return emptyVisible ? "empty" : "tab";
+}

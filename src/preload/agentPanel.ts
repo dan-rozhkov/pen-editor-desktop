@@ -123,3 +123,20 @@ const canvas = {
 };
 
 contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser });
+
+// Theme report for main (channel `panel:theme`): the page paints the stored editor theme as the
+// class `dark` on <html>. Initial read on DOMContentLoaded, then a MutationObserver on that class.
+// Main accepts it only from this webContents and only from the panel's own page.
+if (window === window.top) {
+  let lastTheme: "light" | "dark" | null = null;
+  const report = () => {
+    const theme = document.documentElement.classList.contains("dark") ? "dark" : "light";
+    if (theme === lastTheme) return;
+    lastTheme = theme;
+    ipcRenderer.send("panel:theme", theme);
+  };
+  document.addEventListener("DOMContentLoaded", () => {
+    report();
+    new MutationObserver(report).observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  });
+}

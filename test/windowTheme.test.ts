@@ -18,7 +18,7 @@ describe("resolveWindowTheme", () => {
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { adoptPanelTheme, shouldReadPanelTheme, contentBackground, fallbackTheme, glassTint, isPanelDocument, ISLAND_BG, GLASS_ALPHA_DIFFERENT, GLASS_ALPHA_SAME } from "../src/main/windowTheme";
+import { adoptPanelTheme, contentBackground, fallbackTheme, glassTint, isPanelDocument, ISLAND_BG, GLASS_ALPHA_DIFFERENT, GLASS_ALPHA_SAME } from "../src/main/windowTheme";
 
 describe("adoptPanelTheme", () => {
   it("adopts the panel theme until an editor reported", () => {
@@ -31,22 +31,6 @@ describe("adoptPanelTheme", () => {
   });
   it("lets the panel win again when there are zero editor tabs (stale editor theme)", () => {
     expect(adoptPanelTheme({ remembered: "light", fromPanel: false }, "dark", 0)).toEqual({ remembered: "dark", fromPanel: true, changed: true });
-  });
-});
-
-describe("shouldReadPanelTheme", () => {
-  const base = { remembered: "light" as const, fromPanel: false, editorTabs: 1, now: 5000, lastRead: 0, throttleMs: 1000 };
-  it("does not read while an editor is the source", () => {
-    expect(shouldReadPanelTheme(base)).toBe(false);
-  });
-  it("reads while nothing is remembered, the panel is the source, or there are zero editor tabs", () => {
-    expect(shouldReadPanelTheme({ ...base, remembered: null })).toBe(true);
-    expect(shouldReadPanelTheme({ ...base, fromPanel: true })).toBe(true);
-    expect(shouldReadPanelTheme({ ...base, editorTabs: 0 })).toBe(true);
-  });
-  it("throttles, except with throttleMs 0", () => {
-    expect(shouldReadPanelTheme({ ...base, remembered: null, lastRead: 4500 })).toBe(false);
-    expect(shouldReadPanelTheme({ ...base, remembered: null, lastRead: 4500, throttleMs: 0 })).toBe(true);
   });
 });
 

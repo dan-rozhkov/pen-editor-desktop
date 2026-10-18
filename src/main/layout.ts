@@ -66,12 +66,14 @@ export interface WindowLayout {
   rim: Rect | null;
   /** False when the panel is collapsed (islands mode, panelWidth 0): the panel view must be hidden. */
   panelVisible: boolean;
+  /** Island gap (px); 0 when not in islands mode. Sent to the tab bar (CSS `--island-gap`). */
+  gap: number;
+  /** Height of the island-colour tail the tab bar page paints under the address row (0 without a row). */
+  tabTail: number;
   /** Corner radius of the panel / tab-area islands; 0 when not in glass mode. */
   radius: number;
   /** Where tab views go: right of the panel, below the tab bar, inset by `edge` left/right/bottom. */
   tabArea: Rect;
-  /** What `TabManager.layout` applies: `tabArea`, plus `radius` px upward under the address row in islands mode. */
-  tabView: Rect;
   /** Window x where the tab strip starts inside the tab bar (the panel's right edge; 0 without a panel). */
   tabStripLeft: number;
 }
@@ -91,18 +93,20 @@ function computeIslandLayout(input: WindowLayoutInput, gapIn: number, radiusIn: 
   const tabX = collapsed ? panelX : Math.min(width, panelX + panelW + gap);
   const tabW = Math.max(0, width - tabX - gap);
   const tabBodyH = Math.max(0, height - tabbarHeight - gap);
-  // With an address row the tab VIEW starts `radius` px higher, under the row (the row,
-  // in the tab bar view above it, is the top of the island and hides the view's rounded
-  // top corners); the visible island content still starts at `tabbarHeight`.
-  const overlap = tabbarHeight > rowHeight ? Math.min(radius, tabbarHeight - rowHeight) : 0;
+  // With an address row the tab bar view reaches `radius` px below the row: the row is the top
+  // of the tab island and that tail (island colour, drawn by the tab bar page) fills the notches
+  // under the tab view's rounded top corners. The tab view itself starts exactly below the row
+  // (`tabArea`): no page content is ever hidden.
+  const tail = tabbarHeight > rowHeight ? Math.min(radius, Math.max(0, height - tabbarHeight)) : 0;
   return {
     panel: { x: panelX, y: rowHeight, width: panelW, height: Math.max(0, height - rowHeight - gap) },
     panelVisible: panelW > 0,
-    tabbar: { x: 0, y: 0, width, height: tabbarHeight },
+    tabbar: { x: 0, y: 0, width, height: tabbarHeight + tail },
     rim: null,
     radius,
+    gap,
+    tabTail: tail,
     tabArea: { x: tabX, y: tabbarHeight, width: tabW, height: tabBodyH },
-    tabView: { x: tabX, y: tabbarHeight - overlap, width: tabW, height: tabBodyH + overlap },
     tabStripLeft: tabX,
   };
 }
@@ -132,7 +136,8 @@ export function computeWindowLayout(input: WindowLayoutInput): WindowLayout {
     rim: { x: 0, y: tabbarHeight, width, height: belowBar },
     radius: 0,
     tabArea: tabArea,
-    tabView: tabArea,
+    gap: 0,
+    tabTail: 0,
     tabStripLeft: panelW,
   };
 }

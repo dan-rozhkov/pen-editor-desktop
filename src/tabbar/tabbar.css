@@ -228,14 +228,19 @@ body {
 :root[data-layout="agent"] #new-tab:hover { background: var(--glass-tab-hover); color: var(--text-active); }
 :root[data-layout="agent"] #new-tab::before,
 :root[data-layout="agent"] #new-tab::after { left: 8px; top: 13.5px; }
-/* The address row is the top of the tab island: island colour and rounded top
-   corners. The tab view (rounded too) starts under it and this row, in the view above
-   it, hides its corners (window.ts stacking + layout.ts `tabView`). */
-:root[data-layout="agent"] .tab-row { padding-right: 8px; }
+/* The address row is the top of the tab island: island colour and rounded top corners
+   (--island-gap / --island-radius come from layout.ts through the tabbar:state snapshot).
+   The tab bar view is `radius` px taller than the row; the ::after tail paints that strip in
+   the island colour, so the notches under the tab view's rounded top corners are not glass.
+   The tab view itself starts exactly below the row: no page content is hidden. */
+:root[data-layout="agent"] .tab-row { padding-right: var(--island-gap, 8px); }
 :root[data-layout="agent"] .chrome-row {
   background: var(--island-bg); border-bottom: 0;
-  margin: 0 8px 0 var(--tab-strip-left, 0px); padding: 0 6px;
-  border-radius: 12px 12px 0 0;
+  margin: 0 var(--island-gap, 8px) 0 var(--tab-strip-left, 0px); padding: 0 6px;
+  border-radius: var(--island-radius, 12px) var(--island-radius, 12px) 0 0;
+}
+:root[data-layout="agent"] .chrome-row::after {
+  content: ""; position: absolute; left: 0; right: 0; top: 100%; height: var(--island-radius, 12px); background: var(--island-bg);
 }
 :root[data-layout="agent"] .nav-btn { color: var(--glass-text); }
 :root[data-layout="agent"] .nav-btn:hover:not(:disabled) { background: var(--glass-tab-hover); color: var(--text-active); }

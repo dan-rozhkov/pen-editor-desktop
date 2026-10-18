@@ -35,3 +35,21 @@ describe("emptyView decisions", () => {
     expect(isTabCreationSender(3, 1, undefined)).toBe(false);
   });
 });
+
+import { focusAfterCollapse, resolveFocusTarget } from "../src/main/emptyView";
+
+describe("focus with a collapsed agent panel", () => {
+  it("never focuses the hidden panel", () => {
+    expect(resolveFocusTarget("panel", true, true)).toBe("empty");
+    expect(resolveFocusTarget("panel", true, false)).toBe("tab");
+    expect(resolveFocusTarget("panel", false, true)).toBe("panel");
+  });
+  it("leaves other targets alone", () => {
+    expect(resolveFocusTarget("empty", true, true)).toBe("empty");
+    expect(resolveFocusTarget("none", true, true)).toBe("none");
+  });
+  it("collapsing while the panel has focus moves it to the placeholder or the active tab", () => {
+    expect(focusAfterCollapse(true)).toBe("empty");
+    expect(focusAfterCollapse(false)).toBe("tab");
+  });
+});
