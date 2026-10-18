@@ -40,6 +40,9 @@ import { secureWebPreferences } from "./webPreferences";
 import { AGENT_PANEL_DEFAULT_WIDTH, computeWindowLayout } from "./layout";
 import { isRecord, parseJournalOrigins, parseToken, rawToken } from "./checkpointArgs";
 import { JournalOwners } from "./journalOwners";
+import { FixtureOwners } from "./fixtureOwners";
+import { isBrowserOwner as isBrowserOwnerId, isOrphaningEvent } from "./orphanRelease";
+import { CanvasLinkRouter } from "./canvasLink";
 import { FetchRouter } from "./fetchRouting";
 import { BLANK_DOCUMENT_URL, createCommitGate } from "./commitGate";
 import * as fixtureSession from "./fixtureSession";
@@ -245,10 +248,11 @@ export function createMainWindow(
   const backgroundColorForTheme = (theme: UITheme): string => (theme === "dark" ? "#1a1a1a" : "#ffffff");
 
   // --- agent panel (flag) ---
-  // Not a tab: never given to TabManager or mcpService, and its preload
-  // exposes no IPC, so it has no browser:command / mcp access. It sits below
-  // the tab bar (see layout.ts); an opaque, theme-matched background like the
-  // tab content views, updated in pushState.
+  // Not a tab: never given to TabManager or mcpService (no mcp access). Its
+  // preload exposes the browser bridge (browser:command, owner-checked by
+  // isBrowserOwner below) and the canvas link (canvas:*). It sits below the
+  // tab bar (see layout.ts); an opaque, theme-matched background like the tab
+  // content views, updated in pushState.
   const panelUrl = resolveAgentPanelUrl(editorUrl);
   const agentPanelView = agentLayout
     ? new WebContentsView({
@@ -270,6 +274,34 @@ export function createMainWindow(
     attachOfflineFallback(agentPanelView.webContents, offlineFile);
     void agentPanelView.webContents.loadURL(panelUrl);
   }
+  // --- canvas link (flag): panel <-> canvas tabs, see canvasLink.ts ---
+  // Pure router; this adapts Electron (sender checks, sends, tab actions). The
+  // sends sit here, with literal channel names, for test/ipcContract.test.ts.
+  const panelWc = () => (agentPanelView && !agentPanelView.webContents.isDestroyed() ? agentPanelView.webContents : null);
+  const canvasLink = agentLayout
+    ? new CanvasLinkRouter({
+        isEditorTab: (id) => tabs.isEditorTab(id),
+        isPanel: (id) => agentPanelView !== null && agentPanelView.webContents.id === id,
+        sendFromTab: (msg) => {
+          const wc = panelWc();
+          wc?.send("canvas:from-tab", msg);
+        },
+        sendTabs: (list) => {
+          const wc = panelWc();
+          wc?.send("canvas:tabs", list);
+        },
+        sendFromPanel: (id, env) => {
+          const wc = webContents.fromId(id);
+          if (wc && !wc.isDestroyed()) wc.send("canvas:from-panel", env);
+        },
+        openEditorTab: (activate) => {
+          const id = tabs.newTab("editor", undefined, { activate });
+          return tabs.webContentsIdOf(id) as number;
+        },
+        activateTab: (id) => tabs.activateEditorByWebContentsId(id),
+        now: () => performance.timeOrigin + performance.now(),
+      })
+    : null;
   // The last snapshot actually pushed — kept only so shouldFocusAddressBar
   // (tabManager.ts) has a "previous" to compare against. window.ts owns
   // this bit of bookkeeping so the pure predicate itself stays stateless;
@@ -284,6 +316,10 @@ export function createMainWindow(
     // sees a tab's destruction in time to repoint away from a dying editor
     // tab before this snapshot goes out.
     mcpService.setActiveTab(s.mcpActiveWebContentsId);
+    if (canvasLink) {
+      const info = tabs.editorTabsInfo();
+      canvasLink.syncTabs(info.tabs, info.activeWebContentsId);
+    }
     // A fresh, empty-URL browser tab (File ▸ New Browser Tab, or switching
     // to one that was never navigated) becoming active must put the caret
     // in the address bar, the way every real browser does on a new tab —
@@ -790,13 +826,22 @@ export function createMainWindow(
         // Mocks are owned by main; the editor tab that drives the agent releases
         // them in its renderer `finally`, which never runs on reload/crash/close.
         const releaseOrphanedFixture = () => {
-          releaseSharedFixture();
+          releaseOwnedFixture(viewId);
           journalOwners.stopOwnedBy(viewId);
           closeSessionsOwnedBy(viewId);
         };
-        view.webContents.on("render-process-gone", releaseOrphanedFixture);
+        view.webContents.on("render-process-gone", () => {
+          releaseOrphanedFixture();
+          canvasLink?.tabGone(viewId);
+        });
         view.webContents.on("did-start-navigation", (details) => {
           if (details.isMainFrame && !details.isSameDocument) releaseOrphanedFixture();
+        });
+        // A registered canvas tab is gone for the panel once a reload COMMITS
+        // (not at did-start-navigation, which also fires for navigations that
+        // never commit: denied by the policy, 204, downloads).
+        view.webContents.on("did-navigate", () => {
+          if (isOrphaningEvent({ type: "did-navigate" })) canvasLink?.tabGone(viewId);
         });
         attachNavigationPolicy(view.webContents, editorOrigin, (url) => void shell.openExternal(url));
         attachOfflineFallback(view.webContents, offlineFile);
@@ -969,9 +1014,10 @@ export function createMainWindow(
           cdpEventListeners.clear();
           if (kind === "editor") {
             mcpService.unregisterTab(viewId);
-            releaseSharedFixture();
+            releaseOwnedFixture(viewId);
             journalOwners.stopOwnedBy(viewId);
             closeSessionsOwnedBy(viewId, true);
+            canvasLink?.tabGone(viewId, true);
           }
           if (debuggerAttached) {
             try {
@@ -1392,6 +1438,12 @@ export function createMainWindow(
   };
   // Releases the shared controller's fixture (token = that fixture only; none =
   // whatever is active), then forgets the menu records of the tabs it overrode.
+  // Who applied the shared fixture: an orphaned owner releases only its own.
+  const fixtureOwners = new FixtureOwners();
+  const releaseOwnedFixture = (owner: number) => {
+    const owned = fixtureOwners.takeOwnedBy(owner);
+    if (owned) void releaseSharedFixture(owned.token);
+  };
   const releaseSharedFixture = (token?: string): Promise<void> =>
     browserController
       .releaseFixture(token)
@@ -1490,12 +1542,36 @@ export function createMainWindow(
     if (gone) sessions.forgetOwner(owner);
   };
 
+  // Who may send `browser:command`, and whose fixtures/journals/sessions are
+  // released when it goes away: this window's editor tabs and its agent panel.
+  const panelId = agentPanelView ? agentPanelView.webContents.id : null;
+  const isBrowserOwner = (id: number): boolean =>
+    isBrowserOwnerId(id, (x) => tabs.isEditorTab(x), agentPanelView && !agentPanelView.webContents.isDestroyed() ? panelId : null);
+  // The panel is never destroyed on its own but reloads and can crash: like an
+  // editor tab, that skips its renderer cleanup, so main releases what it owned.
+  const releasePanelOrphans = (gone = false) => {
+    if (panelId === null) return;
+    releaseOwnedFixture(panelId);
+    journalOwners.stopOwnedBy(panelId);
+    closeSessionsOwnedBy(panelId, gone);
+  };
+  if (agentPanelView) {
+    agentPanelView.webContents.on("render-process-gone", () => {
+      if (isOrphaningEvent({ type: "render-process-gone" })) releasePanelOrphans();
+    });
+    agentPanelView.webContents.on("did-navigate", () => {
+      if (isOrphaningEvent({ type: "did-navigate" })) releasePanelOrphans();
+    });
+  }
+
   const onBrowserCommand = async (event: Electron.IpcMainInvokeEvent, payload: unknown) => {
     // Single source of truth for "which webContents id is an editor tab" —
     // TabManager.isEditorTab (finding 10). Deliberately not a second,
     // window.ts-local registry: two independent lists of the same fact can
     // drift, and TabManager's is already kept correct by newTab/destroy.
-    if (!tabs.isEditorTab(event.sender.id)) return { error: "Not allowed." };
+    // The agent panel (flag) is a legitimate owner too: its browser tools run there
+    // (its preload bridge is the same one the editor tabs have).
+    if (!isBrowserOwner(event.sender.id)) return { error: "Not allowed." };
     if (!isRecord(payload) || typeof payload.command !== "string") {
       return { error: "Malformed browser command." };
     }
@@ -1569,7 +1645,7 @@ export function createMainWindow(
       // journal would be recorded into it: end that journal first. (A session
       // has one owner and its own journal: nothing to end.)
       if (sessionId === undefined) {
-        journal.beforeCommand(sender, payload.command, payload.args, (id) => tabs.isEditorTab(id));
+        journal.beforeCommand(sender, payload.command, payload.args, isBrowserOwner);
       }
       switch (payload.command) {
         case "open":
@@ -1608,12 +1684,18 @@ export function createMainWindow(
           // The fixture's own page loads are part of the run: flush BEFORE it.
           clearScopeDiagnostics(sessionId);
           const shared = sessionId === undefined;
-          if (shared) resetViewportRecords(agentEmulation.beginApply());
+          if (shared) {
+            resetViewportRecords(agentEmulation.beginApply());
+            fixtureOwners.beginApply();
+          }
           let result: unknown;
           try {
             result = await controller.applyFixture(fixture as Parameters<BrowserController["applyFixture"]>[0], { allowNetworkMocks: true });
           } finally {
-            if (shared) resetViewportRecords(agentEmulation.finishApply(result));
+            if (shared) {
+              resetViewportRecords(agentEmulation.finishApply(result));
+              fixtureOwners.finishApply(sender, result);
+            }
           }
           return result;
         }
@@ -1626,7 +1708,10 @@ export function createMainWindow(
           return { ok: true };
         }
         case "releaseFixture": {
-          if (sessionId === undefined) await releaseSharedFixture(rawToken(payload.args));
+          if (sessionId === undefined) {
+            await releaseSharedFixture(rawToken(payload.args));
+            fixtureOwners.released(rawToken(payload.args));
+          }
           else await controller.releaseFixture(rawToken(payload.args));
           return { ok: true };
         }
@@ -1638,7 +1723,7 @@ export function createMainWindow(
         case "startJournal": {
           const parsed = parseJournalOrigins(payload.args);
           if (!parsed.ok) return { error: "invalid origins" };
-          return journal.start(sender, (id) => tabs.isEditorTab(id), parsed.origins);
+          return journal.start(sender, isBrowserOwner, parsed.origins);
         }
         case "stopJournal":
           return journal.stop(sender, parseToken(payload.args));
@@ -1661,6 +1746,22 @@ export function createMainWindow(
     }
   };
   ipcMain.handle("browser:command", onBrowserCommand);
+
+  // --- canvas link IPC (flag only) ---
+  const onCanvasRegister = (event: Electron.IpcMainEvent) => canvasLink?.register(event.sender.id);
+  const onCanvasUnregister = (event: Electron.IpcMainEvent) => canvasLink?.unregister(event.sender.id);
+  const onCanvasToPanel = (event: Electron.IpcMainEvent, env: unknown) => canvasLink?.toPanel(event.sender.id, env);
+  const onCanvasToTab = (event: Electron.IpcMainEvent, payload: unknown) => canvasLink?.toTab(event.sender.id, payload);
+  const onCanvasActivate = (event: Electron.IpcMainEvent, tabId: unknown) => canvasLink?.activate(event.sender.id, tabId);
+  if (canvasLink) {
+    ipcMain.on("canvas:register", onCanvasRegister);
+    ipcMain.on("canvas:unregister", onCanvasUnregister);
+    ipcMain.on("canvas:to-panel", onCanvasToPanel);
+    ipcMain.on("canvas:to-tab", onCanvasToTab);
+    ipcMain.on("canvas:activate", onCanvasActivate);
+    ipcMain.handle("canvas:list", (event) => canvasLink.list(event.sender.id));
+    ipcMain.handle("canvas:open", (event, opts: unknown) => canvasLink.open(event.sender.id, opts));
+  }
 
   // --- layout ---
   const layout = () => {
@@ -1832,6 +1933,16 @@ export function createMainWindow(
     ipcMain.removeListener("editor:theme", onEditorTheme);
     ipcMain.removeListener("editor:document-title", onEditorDocumentTitle);
     ipcMain.removeHandler("browser:command");
+    ipcMain.removeListener("canvas:register", onCanvasRegister);
+    ipcMain.removeListener("canvas:unregister", onCanvasUnregister);
+    ipcMain.removeListener("canvas:to-panel", onCanvasToPanel);
+    ipcMain.removeListener("canvas:to-tab", onCanvasToTab);
+    ipcMain.removeListener("canvas:activate", onCanvasActivate);
+    ipcMain.removeHandler("canvas:list");
+    ipcMain.removeHandler("canvas:open");
+    canvasLink?.dispose();
+    // The panel's fixture, checkpoint journals and browser sessions die with the window.
+    releasePanelOrphans(true);
     nativeTheme.removeListener("updated", onSystemThemeChanged);
     loginServices.passwordsWindow.setTheme(themeKey, null);
     unsubscribeMcpStatus();

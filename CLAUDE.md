@@ -69,10 +69,10 @@ tab, browser tools) are tab-bar CSS px = window coords (tab bar at x=0): no
 offset.
 
 The panel is NOT a tab: not in `TabManager`, not in the tab bar, never passed
-to `mcpService.registerTab`, so it has no `browser:command` or MCP access. Its
+to `mcpService.registerTab`, so it has no MCP access (it does get `browser:command`, owner-checked, see "Canvas link"). Its
 `webPreferences` come from `secureWebPreferences` (`webPreferences.ts`, shared
 with the tab bar and editor/browser views); its preload `src/preload/agentPanel.ts`
-exposes only `window.penAgentPanel = { version: 1 }`. Navigation
+exposes only `window.penAgentPanel = { version: 2, canvas, browser }` (see "Canvas link"). Navigation
 (`decidePanelNavigation`, `attachPanelNavigationPolicy` in `navigation.ts`):
 same origin AND the panel path or a subpath stays; any other same-origin URL
 (`/app`, `/`) is denied in the panel and opens a new editor tab (the canvas
@@ -98,7 +98,19 @@ panel URL is still derived from the plain `editorUrl`. The "+" menu item reads
 = true` from `preload/tab.ts`: main passes `--pen-agent-layout`
 (`editorPreloadArguments`, `webPreferences.additionalArguments`, editor tabs
 only) and the sandboxed preload reads it from `process.argv`. Flag off: the
-property is absent. e2e: `agent-layout.spec.ts` / `smoke.spec.ts`. The canvas-link channels (`docs/canvas-link.md`) are a later step.
+property is absent. e2e: `agent-layout.spec.ts` / `smoke.spec.ts`. The canvas-link channels (`docs/canvas-link.md`) are described in "Canvas link" below.
+
+## Canvas link (agent layout flag)
+
+Protocol, roles and message rules: `docs/canvas-link.md` (a copy; the source is pen-editor `docs/canvas-link.md` and `src/lib/canvasLink/protocol.ts`). Everything here exists only with `PEN_DESKTOP_AGENT_LAYOUT=1`; flag off creates no router, registers none of the `canvas:*` channels and the preloads expose nothing new on editor tabs.
+
+- **Router** — `src/main/canvasLink.ts` (`CanvasLinkRouter`, pure; Electron injected like `tabManager.ts`; one per window, created in `window.ts`). The tab id on the wire is the tab's **webContents id** (like MCP `tabId`). Registry: per tab a `registrationId` (counter kept per tab, +1 on every `canvas:register`, so a reload gets a new one; a second register without a gone first sends `tab-gone` for the old one), the title and the activation order. `listTabs()` is ordered most recently active canvas tab first (never-activated tabs: latest registered first); `active` marks the tab active in the strip. `window.ts` feeds `syncTabs()` from `pushState` (`TabManager.editorTabsInfo()`; the router ignores a call that changed no tab, title or activation), and `canvas:tabs` is pushed only when the serialized list changed (register, gone, title, activation).
+- **Routing** — panel→tab `canvas:to-tab {tabId, env}` only to registered tabs, else `{kind:"error", refId: env.id}` comes back to the panel (as `canvas:from-tab`); tab→panel `canvas:to-panel env` is forwarded as `canvas:from-tab {tabId, env}` (main adds the sender). Payloads are never interpreted: only the envelope is checked (object, string `id`, finite number `sentAt`, object `msg` with string `kind`); malformed envelopes and the main-only kinds `error` / `tab-gone` coming from a renderer are dropped. Order is kept, nothing is batched. `tab-gone {registrationId}` goes to the panel when a registered tab is destroyed, navigates its main frame (a COMMITTED non-same-document `did-navigate`; not `did-start-navigation`, which also fires for denied navigations, 204s and downloads), sends `canvas:unregister`, or its renderer dies.
+- **Open** — `canvas:open {activate?}` calls `TabManager.newTab("editor", undefined, { activate })` (editor tabs are canvas tabs in this layout; `activate !== true` creates the tab hidden in the background: no activation, no agent pin change, no strip flash) and resolves `{tabId, registrationId}` (the registration that resolved it) when THAT tab calls `canvas:register`; it rejects after 20 s (`OPEN_TIMEOUT_MS`, timer injectable) or when the tab is destroyed first. A navigation of the new tab (its first load) does not reject it.
+- **Sender checks** — `canvas:register` / `canvas:unregister` / `canvas:to-panel`: this window's editor tabs only (`TabManager.isEditorTab`; `unregister` and `to-panel` only when registered); `canvas:list|open|activate|to-tab`: this window's agent panel webContents only (others get `[]`, a rejection or silence). Listeners are added per window and removed in the window's `closed` handler.
+- **Preloads** — editor tab: `window.penDesktop.canvasHost = { register, unregister, post, onMessage }`, exposed only when the `--pen-agent-layout` argument is present (same mechanism as `agentLayout`). Panel: `window.penAgentPanel = { version: 2, canvas: { listTabs, openTab, activateTab, post, onMessage, onTabsChanged }, browser }`.
+- **Panel browser access** — the panel's browser tools run in the panel, with or without a canvas tab. `penAgentPanel.browser` has the same shape as `penDesktop.browser` (incl. `isolated(id)` and `closeSession(id)`) over the same `browser:command` invoke. A sandboxed preload cannot import `tab.ts`, so the code is a copy; `test/ipcContract.test.ts` pins both to the same command set. Main accepts the sender if it is an editor tab OR the panel (`isBrowserOwner` in `window.ts`). The panel's identity is its **webContents id**, used exactly like an editor tab's: it owns isolated sessions (`BrowserSessions` owner), checkpoint journals (`JournalOwners`, `isBrowserOwner` as the liveness check) and the shared fixture. When the panel reloads (main-frame non-same-document `did-start-navigation`) or its renderer dies, main releases the shared fixture, stops its journals and closes its sessions (`closeSessionsOwnedBy`); on window close its sessions are closed and forgotten. Nothing else widens: no MCP for the panel (`mcpService.registerTab` is never called for it), and a browser/panel id is never a canvas tab.
+- Tests: `test/canvasLink.test.ts` (router), `test/preloadCanvasLink.test.ts`, the channel table and command-set checks in `test/ipcContract.test.ts`, `e2e/canvas-link.spec.ts` (list, both directions, openTab, tab-gone on close/reload, panel browser) and `e2e/agent-layout.spec.ts`.
 
 ## The live gate (what the stub suites cannot see)
 
@@ -167,7 +179,8 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below
 - `mcp:call` main→tab only (`{callId, tool, args}`)
 - `mcp:result` tab→main (`{callId, type: "tool_result" | "tool_error", result?, error?}`)
-- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture" | "applyFixture" | "releaseFixture" | "clearActEmulation" | "fillLogin" | "startJournal" | "stopJournal" | "captureCheckpoint" | "assert" | "closeSession", args, session?}`, sent only by an *editor* tab's preload and verified against the registered editor tabs before acting; `session` (optional) routes to an isolated session, `closeSession` ends one (no new channel); see "Built-in browser tab" and "Isolated sessions" below
+- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture" | "applyFixture" | "releaseFixture" | "clearActEmulation" | "fillLogin" | "startJournal" | "stopJournal" | "captureCheckpoint" | "assert" | "closeSession", args, session?}`, sent only by an *editor* tab's preload (or, with the agent layout flag, the agent panel's: `window.penAgentPanel.browser`) and verified against the registered editor tabs / the panel's webContents before acting; `session` (optional) routes to an isolated session, `closeSession` ends one (no new channel); see "Built-in browser tab" and "Isolated sessions" below
+- Canvas link (agent layout flag only; section "Canvas link"): `canvas:list` / `canvas:open` panel→main, **invoke/handle**; `canvas:activate` / `canvas:to-tab` panel→main (sender: the panel); `canvas:register` / `canvas:unregister` / `canvas:to-panel` tab→main (sender: an editor tab; `unregister` and `to-panel` only when registered); `canvas:from-tab` main→panel (`{tabId, env}`), `canvas:tabs` main→panel (`CanvasTabInfo[]`), `canvas:from-panel` main→tab (`env`)
 - `passwords:list` / `passwords:add` / `passwords:update` / `passwords:remove` / `passwords:never-remove` Passwords window→main, **invoke/handle**, each sender-checked against that window's own webContents; handlers are registered when the window opens and removed when it closes. No reply ever holds a password — see "Saved logins" below
 - `passwords:theme` main→Passwords window, payload `{ theme: "light" | "dark", vibrancyMatches: boolean }`. `theme` is the tab-bar theme (`tabbar:theme`) of the main window the user focused last (BaseWindow `focus`; each window's push is kept under its own key in `themeSource.ts`). If that window is closed or none was focused yet, the latest push of any open main window applies; with none left it follows `nativeTheme` again. `vibrancyMatches` is false when `theme` differs from the OS appearance: macOS sidebar vibrancy follows the OS, so the renderer then paints the sidebar opaque (`data-opaque-sidebar`). Pushed on window load and whenever the effective `{theme, vibrancyMatches}` changes (an unchanged value is not re-sent)
 - `passwords:changed` main→Passwords window, no payload. Sent when a site icon was stored (favicon fetched). The renderer re-reads `passwords:list` and refreshes the sidebar, rows and, in view mode only, the detail pane; an open Add/Edit form is never rebuilt
@@ -312,9 +325,21 @@ view is ever destroyed and before the closing snapshot goes out — see the
 `mcpActiveWebContentsId (finding 1)` tests in `test/tabManager.test.ts`.
 
 The `browser:command` `ipcMain.handle` in `window.ts` checks the sender
-against `TabManager.isEditorTab()` — the single source of truth for "which
-webContents id is an editor tab" (there used to be a second, ad hoc `Set`
-kept in `window.ts` alongside it; the two could drift, so it was deleted).
+against `isBrowserOwner` (`orphanRelease.ts`): `TabManager.isEditorTab()` — the
+single source of truth for "which webContents id is an editor tab" (there used
+to be a second, ad hoc `Set` kept in `window.ts` alongside it; the two could
+drift, so it was deleted) — OR, with the agent layout flag, the agent panel's
+webContents id (its preload carries a copy of the same bridge; the copy is
+pinned identical by `test/preloadBrowserBridge.test.ts`).
+
+Ownership of the SHARED browser's fixture is per sender, like the journal:
+`src/main/fixtureOwners.ts` records which webContents (editor tab or panel)
+applied it and its token. An editor tab's first load/reload/close releases only a
+fixture it owns, and the panel's reload/crash/window close only the panel's.
+The panel's orphans (fixture, journals, isolated sessions) are released on
+`render-process-gone` and on a COMMITTED main-frame navigation (`did-navigate`),
+never on `did-start-navigation`, which also fires for navigations the panel policy
+denies, 204s and downloads (`isOrphaningEvent`, `orphanRelease.ts`).
 
 Popups (`target="_blank"`, `window.open`) inside a browser tab open as a new
 browser tab (`navigation.ts`'s `attachBrowserTabPolicy` /
@@ -827,7 +852,7 @@ absent means defaults). Malformed `origins` make `startJournal` return
 chars, else ignored; `releaseFixture` passes its token as is.
 
 The checkpoint holds secrets (cookies, storage of the listed origins; default is
-the base page's origin only). It is returned to the calling editor tab only,
+the base page's origin only). It is returned to the calling editor tab (or the agent panel) only,
 and the editor keeps it in memory; main never stores or logs it.
 
 Ownership: because the controller is shared, `src/main/journalOwners.ts`

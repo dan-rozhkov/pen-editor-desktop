@@ -400,7 +400,12 @@ export class TabManager {
     },
   ) {}
 
-  newTab(kind: TabKind = "editor", session?: string): number {
+  /**
+   * `opts.activate: false` creates the tab in the background: it is hidden and
+   * never becomes active, the agent's pin is untouched (the canvas link's
+   * background `canvas:open`). Isolated session tabs always open that way.
+   */
+  newTab(kind: TabKind = "editor", session?: string, opts: { activate?: boolean } = {}): number {
     const id = this.nextId++;
     const view = this.opts.createView(kind, kind === "browser" ? session : undefined);
     const entry: TabEntry = {
@@ -448,9 +453,9 @@ export class TabManager {
     }
     this.tabs.push(entry);
     if (this.lastLayout) this.applyLayout(entry);
-    if (kind === "browser" && session !== undefined) {
-      // An isolated session's tab opens in the BACKGROUND: the editor keeps
-      // focus and the active tab. The user can click it to watch.
+    if ((kind === "browser" && session !== undefined) || opts.activate === false) {
+      // An isolated session's tab (or an explicit background open) opens in the
+      // BACKGROUND: the editor keeps focus and the active tab. The user can click it to watch.
       view.setVisible(false);
       this.emit();
     } else {
@@ -656,6 +661,26 @@ export class TabManager {
   /** Closes every tab of one isolated session (session teardown). */
   closeSessionTabs(session: string): void {
     for (const t of this.tabs.filter((x) => x.kind === "browser" && x.session === session)) this.closeTab(t.id);
+  }
+
+  /** Editor tabs in strip order, for the canvas link (webContents ids, current titles). */
+  editorTabsInfo(): { tabs: { webContentsId: number; title: string }[]; activeWebContentsId: number | null } {
+    const active = this.tabs.find((t) => t.id === this.activeId);
+    return {
+      tabs: this.tabs.filter((t) => t.kind === "editor").map((t) => ({ webContentsId: t.view.getWebContentsId(), title: t.title })),
+      activeWebContentsId: active?.kind === "editor" ? active.view.getWebContentsId() : null,
+    };
+  }
+
+  /** The webContents id of a tab, or null. */
+  webContentsIdOf(id: number): number | null {
+    return this.tabs.find((t) => t.id === id)?.view.getWebContentsId() ?? null;
+  }
+
+  /** Activates the editor tab with this webContents id (no-op for anything else). */
+  activateEditorByWebContentsId(webContentsId: number): void {
+    const tab = this.tabs.find((t) => t.kind === "editor" && t.view.getWebContentsId() === webContentsId);
+    if (tab) this.activate(tab.id);
   }
 
   isEditorTab(webContentsId: number): boolean {

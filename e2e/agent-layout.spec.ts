@@ -33,8 +33,10 @@ test("agent layout flag adds a left /agent panel; tabs still work", async () => 
     app.windows().find((p) => p.url().startsWith(`${baseUrl}/agent`)) ??
     (await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(`${baseUrl}/agent`) }));
   await expect(agentPage.locator("#ready")).toHaveText("stub-agent");
-  // The panel keeps the sandboxed preload bridge and nothing else.
-  expect(await agentPage.evaluate(() => (window as never as { penAgentPanel?: { version: number } }).penAgentPanel)).toEqual({ version: 1 });
+  // The panel keeps the sandboxed preload bridge: canvas link + browser, nothing else.
+  expect(await agentPage.evaluate(() => (window as never as { penAgentPanel?: { version: number } }).penAgentPanel)).toMatchObject({ version: 2 });
+  // Canvas link + browser only (no MCP, no menu).
+  expect(await agentPage.evaluate(() => Object.keys((window as never as { penAgentPanel: object }).penAgentPanel).sort())).toEqual(["browser", "canvas", "version"]);
   expect(await agentPage.evaluate(() => typeof (window as never as { penDesktop?: unknown }).penDesktop)).toBe("undefined");
 
   const editorPage =

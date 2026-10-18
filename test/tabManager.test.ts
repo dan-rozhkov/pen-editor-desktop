@@ -95,6 +95,23 @@ describe("TabManager", () => {
     expect(tm.getSnapshot().activeKind).toBe("editor");
   });
 
+  it("newTab with activate:false opens in the background without activating or emitting an activation", () => {
+    const first = tm.newTab();
+    const browser = tm.newTab("browser");
+    tm.activate(first);
+    const before = states.length;
+    const bg = tm.newTab("editor", undefined, { activate: false });
+    const snap = tm.getSnapshot();
+    expect(snap.activeId).toBe(first);
+    expect(snap.tabs.map((t) => t.id)).toContain(bg);
+    expect(views[2].setVisible).toHaveBeenLastCalledWith(false);
+    expect(views[2].loadURL).toHaveBeenCalled();
+    expect(states.length).toBe(before + 1);
+    expect(states[states.length - 1].activeId).toBe(first);
+    // The agent's browser pin was not touched.
+    expect(tm.currentBrowserTabId(undefined)).toBe(browser);
+  });
+
   it("second tab hides the first and shows itself", () => {
     tm.newTab();
     tm.newTab();

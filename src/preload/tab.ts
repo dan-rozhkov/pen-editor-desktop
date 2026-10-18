@@ -191,6 +191,26 @@ const browser = {
     ipcRenderer.invoke("browser:command", { command: "closeSession", session: sessionId }),
 };
 
+// Canvas link (agent layout only; docs/canvas-link.md): this tab as a canvas the
+// agent panel may drive. Absent without the flag, so a flag-off tab is unchanged.
+const canvasHost = {
+  register(): void {
+    ipcRenderer.send("canvas:register");
+  },
+  /** Tell main this page's canvas link is gone without a navigation (it then sends `tab-gone`). */
+  unregister(): void {
+    ipcRenderer.send("canvas:unregister");
+  },
+  post(env: unknown): void {
+    ipcRenderer.send("canvas:to-panel", env);
+  },
+  onMessage(cb: (env: unknown) => void): () => void {
+    const listener = (_e: IpcRendererEvent, env: unknown) => cb(env);
+    ipcRenderer.on("canvas:from-panel", listener);
+    return () => ipcRenderer.removeListener("canvas:from-panel", listener);
+  },
+};
+
 const api = {
   setDocumentTitle(title: string | null): void {
     ipcRenderer.send("editor:document-title", title);
@@ -205,7 +225,7 @@ const api = {
   // Agent layout (main adds this argv marker to editor tabs only; the literal
   // repeats config.ts AGENT_LAYOUT_ARG, a sandboxed preload cannot import it).
   // Absent otherwise: the page cannot set argv, so this survives URL changes.
-  ...(process.argv.includes("--pen-agent-layout") ? { agentLayout: true as const } : {}),
+  ...(process.argv.includes("--pen-agent-layout") ? { agentLayout: true as const, canvasHost } : {}),
 };
 
 contextBridge.exposeInMainWorld("penDesktop", api);

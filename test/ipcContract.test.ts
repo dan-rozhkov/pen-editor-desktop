@@ -40,6 +40,17 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "passwords:changed", direction: "main->renderer" },
   { name: "passwords:remove", direction: "renderer->main" },
   { name: "passwords:never-remove", direction: "renderer->main" },
+  // Canvas link (agent layout flag only): panel <-> canvas tabs, see CLAUDE.md "Canvas link".
+  { name: "canvas:list", direction: "renderer->main" },
+  { name: "canvas:open", direction: "renderer->main" },
+  { name: "canvas:activate", direction: "renderer->main" },
+  { name: "canvas:to-tab", direction: "renderer->main" },
+  { name: "canvas:from-tab", direction: "main->renderer" },
+  { name: "canvas:tabs", direction: "main->renderer" },
+  { name: "canvas:register", direction: "renderer->main" },
+  { name: "canvas:unregister", direction: "renderer->main" },
+  { name: "canvas:to-panel", direction: "renderer->main" },
+  { name: "canvas:from-panel", direction: "main->renderer" },
 ];
 
 const SRC = resolve(__dirname, "../src");
@@ -52,19 +63,53 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-const source = sourceFiles(SRC)
-  .map((path) => readFileSync(path, "utf8"))
-  .join("\n");
+/**
+ * Drops `//` and block comments while keeping string / template literals
+ * intact, so a channel named only in a doc comment can never satisfy a scan.
+ */
+function stripComments(code: string): string {
+  let out = "";
+  let i = 0;
+  while (i < code.length) {
+    const c = code[i];
+    const n = code[i + 1];
+    if (c === "/" && n === "/") {
+      while (i < code.length && code[i] !== "\n") i++;
+    } else if (c === "/" && n === "*") {
+      const end = code.indexOf("*/", i + 2);
+      i = end === -1 ? code.length : end + 2;
+    } else if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1;
+      while (j < code.length && code[j] !== c) j += code[j] === "\\" ? 2 : 1;
+      out += code.slice(i, j + 1);
+      i = j + 1;
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out;
+}
+
+const codeOf = (files: string[]) => files.map((path) => stripComments(readFileSync(path, "utf8"))).join("\n");
+const allFiles = sourceFiles(SRC);
+const source = codeOf(allFiles);
+const mainSource = codeOf(allFiles.filter((f) => f.startsWith(join(SRC, "main"))));
 
 /** Channel names passed to any of `object.method(` calls, e.g. ipcMain.on("x"). */
-function channelsFor(object: string, methods: string[]): Set<string> {
+function channelsFor(object: string, methods: string[], from: string = source): Set<string> {
   const pattern = new RegExp(`${object}\\.(?:${methods.join("|")})\\(\\s*"([^"]+)"`, "g");
-  return new Set([...source.matchAll(pattern)].map((match) => match[1]));
+  return new Set([...from.matchAll(pattern)].map((match) => match[1]));
 }
 
 const mainReceives = channelsFor("ipcMain", ["on", "once", "handle"]);
 const mainRemoves = channelsFor("ipcMain", ["removeListener", "removeAllListeners", "removeHandler"]);
-const mainSends = channelsFor("webContents", ["send"]);
+// ANY `<receiver>.send("x"` / `<receiver>?.send("x"` in main code (aliases such as `wc`
+// included), comments stripped. The test below makes sure no send hides behind a
+// non-literal channel.
+const mainSends = new Set(
+  [...mainSource.matchAll(/\??\.send\(\s*"([^"]+)"/g)].map((m) => m[1]),
+);
 const rendererSends = channelsFor("ipcRenderer", ["send", "invoke"]);
 const rendererReceives = channelsFor("ipcRenderer", ["on", "once"]);
 
@@ -81,6 +126,18 @@ describe("IPC channel contract", () => {
       ...rendererReceives,
     ]);
     expect([...found].sort()).toEqual(CHANNELS.map((c) => c.name).sort());
+  });
+
+  it("every property send( in main code names its channel with a string literal (the scan cannot be dodged)", () => {
+    // `tab.send(callId, ...)` is the MCP dispatcher's own callback (mcp/dispatcher.ts), not an IPC send.
+    const nonLiteral = [...mainSource.matchAll(/(\w+)\??\.send\(\s*(?!")/g)].filter((m) => m[1] !== "tab");
+    expect(nonLiteral.map((m) => m[0])).toEqual([]);
+  });
+
+  it("a channel mentioned only in a comment does not count as sent", () => {
+    expect(stripComments('// x.send("fake:chan")\n/* y.send("fake:two") */ const a = "k//z"; w?.send("real:one");')).toBe(
+      '\n const a = "k//z"; w?.send("real:one");',
+    );
   });
 
   it("every main->renderer channel is sent from main and listened for in a preload", () => {
@@ -132,6 +189,14 @@ describe("browser:command commands", () => {
 
   it("the preload sends exactly the list plus closeSession", () => {
     expect([...sentByPreload].sort()).toEqual([...list, "closeSession"].sort());
+  });
+
+  it("the agent panel preload carries its own browser bridge with the very same command set", () => {
+    const panelPreload = readFileSync(join(SRC, "preload/agentPanel.ts"), "utf8");
+    const sentByPanel = new Set([...panelPreload.matchAll(/command: "(\w+)"/g)].map((m) => m[1]));
+    expect([...sentByPanel].sort()).toEqual([...sentByPreload].sort());
+    expect(panelPreload).toContain("session: scope.session");
+    expect(panelPreload).toContain("isolated: (sessionId: string) => makeBrowser");
   });
 
   it("assert (QA checks) is wired end to end: list, page-driving, dispatch, preload, shared and isolated", () => {
