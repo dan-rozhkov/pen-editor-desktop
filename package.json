@@ -1,6 +1,6 @@
 {
   "name": "pen-editor-desktop",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Sideform Desktop app",
   "main": "dist/main/index.js",
   "private": true,
