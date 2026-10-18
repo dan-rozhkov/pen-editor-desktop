@@ -37,7 +37,7 @@ import {
 } from "@sideform/browser-agent/controller";
 import { resolveAgentPanelUrl, resolveTabEditorUrl, editorPreloadArguments, initialTabs, onLastTabClosed } from "./config";
 import { secureWebPreferences } from "./webPreferences";
-import { AGENT_PANEL_DEFAULT_WIDTH, computeWindowLayout } from "./layout";
+import { AGENT_PANEL_DEFAULT_WIDTH, ISLAND_GAP, ISLAND_RADIUS, computeWindowLayout, tabbarLayoutKind } from "./layout";
 import { isRecord, parseJournalOrigins, parseToken, rawToken } from "./checkpointArgs";
 import { JournalOwners } from "./journalOwners";
 import { FixtureOwners } from "./fixtureOwners";
@@ -56,7 +56,7 @@ import type { PasswordsWindow } from "./passwordsWindow";
 import { createTabAgentActivity, isAgentPageCommand } from "./agentActivity";
 import { decideCloseTarget, guardMenuActions } from "./closeTarget";
 import { isTabCreationSender, planEmptyViewUpdate, type EmptyViewState } from "./emptyView";
-import { resolveWindowTheme } from "./windowTheme";
+import { adoptPanelTheme, glassTint, isPanelDocument, resolveWindowTheme } from "./windowTheme";
 import { denyAllPermissions } from "./browser/permissions";
 import {
   BrowserSessions,
@@ -213,6 +213,15 @@ export function createMainWindow(
       : {}),
   });
 
+  const themeKey = Symbol("main-window-theme");
+  // Agent layout: the frontend does NOT follow the OS (its theme is the stored
+  // `ui-theme`, default light), so the fallback before any editor/panel reports
+  // is "light". The OS appearance (vibrancy) is never changed: the glass is
+  // tinted instead (`glassTintView`, windowTheme.ts `glassTint`).
+  const systemTheme = (): UITheme => (agentLayout ? "light" : nativeTheme.shouldUseDarkColors ? "dark" : "light");
+  // Agent layout, non-macOS: solid stand-in for the macOS glass behind the islands.
+  const glassColorForTheme = (theme: UITheme): string => (theme === "dark" ? "#2b2b2e" : "#e4e6ea");
+
   // --- tab bar view ---
   const tabbarView = new WebContentsView({
     webPreferences: secureWebPreferences(path.join(__dirname, "../preload/tabbar.js")),
@@ -222,7 +231,13 @@ export function createMainWindow(
   // backing view showing through the 1px gap `tabs.layout(..., WINDOW_EDGE)`
   // leaves at the left/right/bottom; across the tab bar, tabbar.css draws
   // it (`--window-rim`). Added first so it sits below every other view.
-  const WINDOW_EDGE = process.platform === "darwin" ? 1 : 0;
+  // Agent layout = glass + islands (layout.ts): no rim, the window glass shows
+  // between the islands, so the rim view and its 1px gap do not exist.
+  const WINDOW_EDGE = process.platform === "darwin" && !agentLayout ? 1 : 0;
+  // Agent layout on macOS: a plain View at the very bottom paints the glass tint
+  // (translucent editor-theme colour) over the vibrancy; no page, no IPC.
+  const glassTintView = agentLayout && process.platform === "darwin" ? new View() : null;
+  if (glassTintView) win.contentView.addChildView(glassTintView);
   const windowRim = WINDOW_EDGE ? new View() : null;
   if (windowRim) win.contentView.addChildView(windowRim);
   win.contentView.addChildView(tabbarView);
@@ -234,10 +249,15 @@ export function createMainWindow(
     // tokens) instead of painting over it with an opaque view background.
     tabbarView.setBackgroundColor("#00000000");
   }
+  if (agentLayout) {
+    // Tab bar sits directly on the glass (tabbar.css [data-layout="agent"]).
+    tabbarView.setBackgroundColor("#00000000");
+    // Not macOS: no vibrancy, so a solid neutral reads as the "glass" colour
+    // (updated per theme in pushState).
+    if (process.platform !== "darwin") win.setBackgroundColor(glassColorForTheme(systemTheme()));
+  }
   void tabbarView.webContents.loadFile(path.join(__dirname, "../tabbar/tabbar.html"));
 
-  const themeKey = Symbol("main-window-theme");
-  const systemTheme = (): UITheme => (nativeTheme.shouldUseDarkColors ? "dark" : "light");
   // Tab CONTENT views (editor/browser) must stay opaque no matter what the
   // glass tab bar above is doing — otherwise the desktop behind the window
   // would show through actual page content. A WebContentsView defaults to a
@@ -247,7 +267,9 @@ export function createMainWindow(
   // whenever a more accurate theme becomes known (an editor tab's own
   // reported theme, or the resolved theme once a browser tab is active —
   // see setBackgroundColor usages below).
-  const backgroundColorForTheme = (theme: UITheme): string => (theme === "dark" ? "#1a1a1a" : "#ffffff");
+  const backgroundColorForTheme = (theme: UITheme): string =>
+    // Agent layout: the dark island colour is the frontend's `--color-surface-panel` (#2a2a2a), like the chat panel.
+    theme === "dark" ? (agentLayout ? "#2a2a2a" : "#1a1a1a") : "#ffffff";
 
   // --- agent panel (flag) ---
   // Not a tab: never given to TabManager or mcpService (no mcp access). Its
@@ -275,6 +297,11 @@ export function createMainWindow(
     );
     attachOfflineFallback(agentPanelView.webContents, offlineFile);
     void agentPanelView.webContents.loadURL(panelUrl);
+    // The panel page paints the stored editor theme (`ui-theme`, `.dark` on <html>)
+    // and has no channel to report it. Main reads it (readPanelTheme, below) on the
+    // panel's own document load, on window focus and (throttled) on every push while
+    // no editor tab has reported a theme; adoptPanelTheme (windowTheme.ts) decides.
+    agentPanelView.webContents.on("did-finish-load", () => readPanelTheme());
   }
   // --- empty state (flag): shown in the tab area while the window has no tab ---
   // The agent layout starts with zero tabs (config.ts initialTabs) and may
@@ -299,6 +326,29 @@ export function createMainWindow(
   };
   // The last editor theme any tab reported: keeps the chrome stable at zero tabs.
   let rememberedEditorTheme: UITheme | null = null;
+  // True while `rememberedEditorTheme` came from the agent panel page, not from an editor tab (an editor's own report always wins).
+  let rememberedFromPanel = false;
+  let lastPanelThemeRead = 0;
+  // Corner radius of the island views, as last computed by layout() (0 until the first layout).
+  let islandRadius = 0;
+  const islandTabViews = new Set<WebContentsView>();
+  let lastResolvedForTint: UITheme = systemTheme();
+  const readPanelTheme = () => {
+    if (!agentPanelView || agentPanelView.webContents.isDestroyed()) return;
+    const wc = agentPanelView.webContents;
+    // Only the panel's own page: not the offline fallback or any other document.
+    if (!isPanelDocument(wc.getURL(), panelUrl)) return;
+    lastPanelThemeRead = Date.now();
+    wc.executeJavaScript("document.documentElement.classList.contains('dark') ? 'dark' : 'light'")
+      .then((t: unknown) => {
+        if (t !== "dark" && t !== "light") return;
+        const next = adoptPanelTheme({ remembered: rememberedEditorTheme, fromPanel: rememberedFromPanel }, t);
+        rememberedEditorTheme = next.remembered;
+        rememberedFromPanel = next.fromPanel;
+        if (next.changed) pushState(tabs.getSnapshot());
+      })
+      .catch(() => undefined);
+  };
   const emptyView = agentLayout
     ? new WebContentsView({
         webPreferences: secureWebPreferences(path.join(__dirname, "../preload/empty.js")),
@@ -381,12 +431,18 @@ export function createMainWindow(
     // user is doing.
     const focusAddressBar = shouldFocusAddressBar(previousSnapshot, s);
     previousSnapshot = s;
-    tabbarView.webContents.send("tabbar:state", { ...s, focusAddressBar, tabStripLeft });
+    tabbarView.webContents.send("tabbar:state", { ...s, focusAddressBar, tabStripLeft, layout: tabbarLayoutKind(agentLayout) });
     const themed = resolveWindowTheme({ activeTheme: s.activeTheme, remembered: rememberedEditorTheme, system: systemTheme() });
     rememberedEditorTheme = themed.remembered;
+    if (s.activeTheme !== null) rememberedFromPanel = false;
+    // Zero editor themes known: the panel page is the source; re-read at most once per second.
+    else if (agentLayout && Date.now() - lastPanelThemeRead > 1000) readPanelTheme();
     const resolvedTheme = themed.theme;
     // Keep in sync with tokens.css's --window-rim.
     windowRim?.setBackgroundColor(resolvedTheme === "dark" ? "#4d4d4d" : "#ececec");
+    if (agentLayout && process.platform !== "darwin") win.setBackgroundColor(glassColorForTheme(resolvedTheme));
+    lastResolvedForTint = resolvedTheme;
+    glassTintView?.setBackgroundColor(glassTint(resolvedTheme, nativeTheme.shouldUseDarkColors).color);
     tabbarView.webContents.send("tabbar:theme", resolvedTheme);
     agentPanelView?.setBackgroundColor(backgroundColorForTheme(resolvedTheme));
     if (emptyView && !emptyView.webContents.isDestroyed()) {
@@ -534,6 +590,12 @@ export function createMainWindow(
             },
       );
       win.contentView.addChildView(view);
+      // Agent layout: the tab content is an island with rounded corners; the radius
+      // comes from the layout (`islandRadius`) and layout() re-applies it on change.
+      if (agentLayout) {
+        view.setBorderRadius(islandRadius);
+        islandTabViews.add(view);
+      }
       const viewId = view.webContents.id;
       // Opaque by default for both kinds — see backgroundColorForTheme's doc
       // comment above. Best guess (system theme) until something more
@@ -1066,6 +1128,7 @@ export function createMainWindow(
         setBounds: (b) => view.setBounds(b),
         setVisible: (v) => view.setVisible(v),
         destroy: () => {
+          islandTabViews.delete(view);
           themeCallbacks.delete(viewId);
           titleCallbacks.delete(viewId);
           viewportByTab.forget(viewId);
@@ -1845,11 +1908,21 @@ export function createMainWindow(
       tabbarHeight,
       edge: WINDOW_EDGE,
       panelWidth: agentPanelView ? AGENT_PANEL_DEFAULT_WIDTH : null,
+      tabRowHeight: TABBAR_HEIGHT,
+      islands: agentLayout ? { gap: ISLAND_GAP, radius: ISLAND_RADIUS } : null,
     });
     tabStripLeft = l.tabStripLeft;
     if (agentPanelView && l.panel) agentPanelView.setBounds(l.panel);
     tabbarView.setBounds(l.tabbar);
-    windowRim?.setBounds(l.rim);
+    if (windowRim && l.rim) windowRim.setBounds(l.rim);
+    glassTintView?.setBounds({ x: 0, y: 0, width, height });
+    if (l.radius !== islandRadius) {
+      // One source (layout.ts): all islands get the radius when it changes, not on every layout().
+      islandRadius = l.radius;
+      agentPanelView?.setBorderRadius(islandRadius);
+      emptyView?.setBorderRadius(islandRadius);
+      for (const v of islandTabViews) v.setBorderRadius(islandRadius);
+    }
     emptyView?.setBounds(l.tabArea);
     tabs.layout(l.tabArea);
   };
@@ -1988,6 +2061,8 @@ export function createMainWindow(
   // snapshots emitted before its DOM was ready.
   tabbarView.webContents.on("did-finish-load", () => pushState(tabs.getSnapshot()));
   const onSystemThemeChanged = () => {
+    // The OS appearance also decides how strong the agent layout's glass tint is.
+    if (glassTintView) glassTintView.setBackgroundColor(glassTint(lastResolvedForTint, nativeTheme.shouldUseDarkColors).color);
     if (tabs.getSnapshot().activeTheme === null && rememberedEditorTheme === null) pushState(tabs.getSnapshot());
   };
   nativeTheme.on("updated", onSystemThemeChanged);
@@ -1999,7 +2074,11 @@ export function createMainWindow(
   // this, every close/reopen cycle leaks the ipcMain listeners above plus
   // every tab's WebContentsView (renderer process stays alive).
   // The Passwords window follows the main window the user focused last.
-  win.on("focus", () => loginServices.passwordsWindow.focusMain(themeKey));
+  win.on("focus", () => {
+    loginServices.passwordsWindow.focusMain(themeKey);
+    // The user may have switched the panel's theme (it has no channel): re-read on focus.
+    if (agentLayout && tabs.getSnapshot().activeTheme === null) readPanelTheme();
+  });
   win.on("closed", () => {
     ipcMain.removeListener("tabbar:new", onTabbarNew);
     ipcMain.removeListener("tabbar:new-browser", onTabbarNewBrowser);

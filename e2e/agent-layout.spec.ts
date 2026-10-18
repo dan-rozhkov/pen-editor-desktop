@@ -73,16 +73,21 @@ test("agent layout flag adds a left /agent panel; tabs still work", async () => 
   const winW = await app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows()[0].getContentBounds().width);
   // Tab bar spans the full window width at the top (traffic lights stay put).
   expect(bounds.tabbar).toMatchObject({ x: 0, y: 0, width: winW });
-  // Panel and tab views sit below the bar; the panel is left of the tab views.
+  // Glass + islands: panel and tab views sit below the bar, 8px gaps between them and to the left/right/bottom window edges.
+  const winH = await app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows()[0].getContentBounds().height);
   expect(bounds.agent.y).toBe(bounds.tabbar.height);
   expect(bounds.editor.y).toBe(bounds.tabbar.height);
-  expect(bounds.agent.x + bounds.agent.width).toBeLessThanOrEqual(bounds.editor.x);
+  expect(bounds.agent.x).toBe(8);
+  expect(bounds.editor.x - (bounds.agent.x + bounds.agent.width)).toBe(8);
+  expect(winW - (bounds.editor.x + bounds.editor.width)).toBe(8);
+  expect(winH - (bounds.agent.y + bounds.agent.height)).toBe(8);
   expect(bounds.agent.height).toBe(bounds.editor.height);
 
   // The panel is not a tab: only the editor tab is in the strip.
   await expect(tabbarPage.locator(".tab")).toHaveCount(1);
-  // The tab strip starts at the panel's right edge (or later, past the macOS traffic lights).
-  const panelRight = bounds.agent.x + bounds.agent.width;
+  // The tab strip starts at the tab island's left edge (or later, past the macOS traffic lights).
+  const panelRight = bounds.editor.x;
+  expect(await tabbarPage.evaluate(() => document.documentElement.dataset.layout)).toBe("agent");
   const rowPad = await tabbarPage.evaluate(() => parseFloat(getComputedStyle(document.querySelector(".tab-row")!).paddingLeft));
   expect(rowPad).toBe(process.platform === "darwin" ? Math.max(88, panelRight) : panelRight);
 

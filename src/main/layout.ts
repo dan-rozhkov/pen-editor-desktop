@@ -17,6 +17,9 @@ export const AGENT_PANEL_DEFAULT_WIDTH = 380;
 export const AGENT_PANEL_MIN_WIDTH = 300;
 /** The panel never takes more than this share of the window width. */
 export const AGENT_PANEL_MAX_FRACTION = 0.5;
+/** Glass + islands: gap between the islands and to the window edges, and their corner radius (px). */
+export const ISLAND_GAP = 8;
+export const ISLAND_RADIUS = 12;
 
 /**
  * Clamp a requested panel width to [MIN, 50% of the window]. In a window
@@ -35,10 +38,23 @@ export interface WindowLayoutInput {
   height: number;
   /** Tab bar height including the browser address row, when shown. */
   tabbarHeight: number;
+  /**
+   * Islands mode: height of the tab row alone (without the browser address row).
+   * The panel island starts here; only the tab area starts at `tabbarHeight`.
+   * Defaults to `tabbarHeight`.
+   */
+  tabRowHeight?: number;
   /** 1px rim on macOS, else 0. */
   edge: number;
   /** Requested panel width, or null for no panel (flag off). */
   panelWidth: number | null;
+  /**
+   * Glass + islands (agent layout): the panel and the tab area become rounded
+   * "islands" on the translucent window, `gap` px apart and `gap` px from the
+   * left/right/bottom window edges. Ignored without a panel. `edge` is not
+   * used in this mode (no rim).
+   */
+  islands?: { gap: number; radius: number } | null;
 }
 
 export interface WindowLayout {
@@ -47,14 +63,42 @@ export interface WindowLayout {
   /** Always the full window width at the top. */
   tabbar: Rect;
   /** The backing view that paints the macOS rim, below the tab bar, full width. */
-  rim: Rect;
+  rim: Rect | null;
+  /** Corner radius of the panel / tab-area islands; 0 when not in glass mode. */
+  radius: number;
   /** Where tab views go: right of the panel, below the tab bar, inset by `edge` left/right/bottom. */
   tabArea: Rect;
   /** Window x where the tab strip starts inside the tab bar (the panel's right edge; 0 without a panel). */
   tabStripLeft: number;
 }
 
+function computeIslandLayout(input: WindowLayoutInput, gapIn: number, radiusIn: number): WindowLayout {
+  const width = Math.max(0, input.width);
+  const height = Math.max(0, input.height);
+  const gap = Math.max(0, gapIn);
+  const tabbarHeight = Math.min(Math.max(0, input.tabbarHeight), height);
+  const rowHeight = Math.min(Math.max(0, input.tabRowHeight ?? tabbarHeight), tabbarHeight);
+  const radius = Math.max(0, radiusIn);
+  // With an address row the tab bar view reaches `radius` px further down: the row is the
+  // top of the tab island, and that tail fills the region under the tab view's rounded top corners.
+  const tabbarFullHeight = Math.min(height, tabbarHeight + (tabbarHeight > rowHeight ? radius : 0));
+  // The panel never leaves room for less than the three gaps.
+  const avail = Math.max(0, width - 3 * gap);
+  const panelW = Math.min(clampAgentPanelWidth(input.panelWidth as number, width), avail);
+  const panelX = Math.min(gap, width);
+  const tabX = Math.min(width, panelX + panelW + gap);
+  return {
+    panel: { x: panelX, y: rowHeight, width: panelW, height: Math.max(0, height - rowHeight - gap) },
+    tabbar: { x: 0, y: 0, width, height: tabbarFullHeight },
+    rim: null,
+    radius,
+    tabArea: { x: tabX, y: tabbarHeight, width: Math.max(0, width - tabX - gap), height: Math.max(0, height - tabbarHeight - gap) },
+    tabStripLeft: tabX,
+  };
+}
+
 export function computeWindowLayout(input: WindowLayoutInput): WindowLayout {
+  if (input.panelWidth !== null && input.islands) return computeIslandLayout(input, input.islands.gap, input.islands.radius);
   const width = Math.max(0, input.width);
   const height = Math.max(0, input.height);
   const panelW = input.panelWidth === null ? 0 : clampAgentPanelWidth(input.panelWidth, width);
@@ -74,7 +118,13 @@ export function computeWindowLayout(input: WindowLayoutInput): WindowLayout {
         : { x: panelX, y: tabbarHeight, width: Math.max(0, panelW - panelX), height: bodyHeight },
     tabbar: { x: 0, y: 0, width, height: tabbarHeight },
     rim: { x: 0, y: tabbarHeight, width, height: belowBar },
+    radius: 0,
     tabArea: { x: tabX, y: tabbarHeight, width: Math.max(0, width - tabX - edge), height: bodyHeight },
     tabStripLeft: panelW,
   };
+}
+
+/** Value of the tab bar's `data-layout` attribute (carried by the `tabbar:state` snapshot); absent with the flag off. */
+export function tabbarLayoutKind(agentLayout: boolean): "agent" | undefined {
+  return agentLayout ? "agent" : undefined;
 }

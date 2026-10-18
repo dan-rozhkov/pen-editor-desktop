@@ -6,6 +6,8 @@
   color-scheme: light dark;
   --bar-bg: light-dark(#f5f5f5, #1a1a1a);
   --content-bg: light-dark(#ffffff, #1a1a1a);
+  /* Agent layout island surface = the frontend's --color-surface-panel (index.css). */
+  --island-bg: light-dark(#ffffff, #2a2a2a);
   --tab-active-bg: light-dark(#ffffff, #2a2a2a);
   --control-hover-bg: light-dark(#e5e5e5, #383838);
   --field-hover-bg: light-dark(#f2f2f2, #333333);
@@ -27,6 +29,12 @@
      one solid surface flowing into the content below, glass everywhere else
      — Codex's split (glass chrome, solid content). */
   --bar-glass: light-dark(rgba(246, 246, 246, 0.78), rgba(26, 26, 26, 0.85));
+  /* Glass + islands (agent layout, `data-layout="agent"` in tabbar.css): tabs sit
+     directly on the window glass, so no bar fill — only a subtle dark/light
+     wash for the active and hovered tab. Hover is slightly lighter than active. */
+  --glass-tab-active: light-dark(rgba(0, 0, 0, 0.07), rgba(255, 255, 255, 0.1));
+  --glass-tab-hover: light-dark(rgba(0, 0, 0, 0.04), rgba(255, 255, 255, 0.06));
+  --glass-text: light-dark(rgba(0, 0, 0, 0.62), rgba(255, 255, 255, 0.62));
   --window-rim: light-dark(#ececec, #4d4d4d);
   /* Brand pair is theme-independent; only the idle (background-tab) pair differs. */
   --agent-cursor: #0d99ff;

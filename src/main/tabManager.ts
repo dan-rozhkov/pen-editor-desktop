@@ -344,6 +344,8 @@ export interface TabsSnapshot {
    * window.ts right before sending `tabbar:state` (the layout owns the number).
    */
   tabStripLeft?: number;
+  /** `"agent"` with the agent-layout flag (glass + islands styling hook, `data-layout`); absent otherwise. Filled in by window.ts. */
+  layout?: "agent";
 }
 
 interface TabEntry {

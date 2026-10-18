@@ -201,3 +201,46 @@ body {
 /* Finding 5: a rejected submission (couldn't be normalized into a
    navigable http(s) URL) stays visible instead of silently doing nothing. */
 .url-input.invalid { box-shadow: inset 0 0 0 1px #d64545; }
+
+/* --- glass + islands (agent layout; `data-layout="agent"` from the tabbar:state
+   snapshot). The tab bar view is transparent: tabs sit directly on the window
+   glass (macOS vibrancy; a solid neutral window colour elsewhere). No rim, no
+   hairlines, no opaque fills. Everything above is untouched with the flag off. --- */
+:root[data-layout="agent"] body,
+:root[data-layout="agent"][data-macos] body { background: transparent; color: var(--glass-text); }
+:root[data-layout="agent"] body::after { display: none; }
+:root[data-layout="agent"] .tab-row {
+  background: none;
+  align-items: center;
+  gap: 2px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+:root[data-layout="agent"] #tabs { align-items: center; gap: 2px; min-width: 0; }
+:root[data-layout="agent"] .tab {
+  height: 28px; border-right: 0; border-radius: 8px; color: var(--glass-text);
+}
+:root[data-layout="agent"] .tab:not(.active):hover { background: var(--glass-tab-hover); color: var(--text-active); }
+:root[data-layout="agent"] .tab.active { background: var(--glass-tab-active); color: var(--text-active); }
+:root[data-layout="agent"] #new-tab {
+  flex: 0 0 28px; width: 28px; height: 28px; border-radius: 8px; color: var(--glass-text);
+}
+:root[data-layout="agent"] #new-tab:hover { background: var(--glass-tab-hover); color: var(--text-active); }
+:root[data-layout="agent"] #new-tab::before,
+:root[data-layout="agent"] #new-tab::after { left: 8px; top: 13.5px; }
+/* The address row is the top of the tab island: island colour, rounded top corners,
+   and a `tail` (the tab bar view is 12px taller than the row) that fills the area under
+   the tab view's rounded top corners so there is no glass notch. */
+:root[data-layout="agent"] .tab-row { padding-right: 8px; }
+:root[data-layout="agent"] .chrome-row {
+  background: var(--island-bg); border-bottom: 0;
+  margin: 0 8px 0 var(--tab-strip-left, 0px); padding: 0 6px;
+  border-radius: 12px 12px 0 0;
+}
+:root[data-layout="agent"] .chrome-row::after {
+  content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 12px; background: var(--island-bg);
+}
+:root[data-layout="agent"] .nav-btn { color: var(--glass-text); }
+:root[data-layout="agent"] .nav-btn:hover:not(:disabled) { background: var(--glass-tab-hover); color: var(--text-active); }
+:root[data-layout="agent"] .url-input:hover,
+:root[data-layout="agent"] .url-input:focus { background: var(--glass-tab-active); }
