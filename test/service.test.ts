@@ -330,6 +330,82 @@ describe("McpService", () => {
     expect(handle.sent).toHaveLength(0); // no page round-trip
   });
 
+  describe("on-demand canvas tab (agent layout, zero tabs)", () => {
+    const setup = async (timeout = 20_000) => {
+      let callTool!: (name: string, args: Record<string, unknown>) => Promise<{ content: { type: string; text?: string }[]; isError?: true }>;
+      deps = makeDeps({
+        onDemandTabTimeoutMs: timeout,
+        startServer: vi.fn(async (options) => {
+          callTool = options.deps.callTool as typeof callTool;
+          return makeFakeServer();
+        }),
+      });
+      const service = new McpService(deps);
+      await service.start();
+      const handle = makeTabHandle();
+      const open = vi.fn(() => {
+        service.registerTab(5, handle);
+        service.setActiveTab(5);
+      });
+      return { service, handle, open, call: (n: string, a: Record<string, unknown> = {}) => callTool(n, a) };
+    };
+
+    it("opens a tab for a call with no editor tab, waits for its registration, then dispatches", async () => {
+      const { service, handle, open, call } = await setup();
+      service.setOnDemandTabOpener(open);
+      const p = call("get_editor_state");
+      await Promise.resolve();
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(handle.sent).toHaveLength(0);
+      service.handleRegister(5, { protocol: 1, tools: ["get_editor_state"] });
+      await vi.waitFor(() => expect(handle.sent).toHaveLength(1));
+      service.handleResult(5, { callId: handle.sent[0].callId, type: "tool_result", result: "ok" });
+      expect((await p).content[0].text).toBe("ok");
+    });
+
+    it("concurrent calls share one open", async () => {
+      const { service, handle, open, call } = await setup();
+      service.setOnDemandTabOpener(open);
+      const a = call("get_editor_state");
+      const b = call("get_editor_state");
+      await Promise.resolve();
+      service.handleRegister(5, { protocol: 1, tools: ["get_editor_state"] });
+      await vi.waitFor(() => expect(handle.sent).toHaveLength(1));
+      service.handleResult(5, { callId: handle.sent[0].callId, type: "tool_result", result: "1" });
+      await vi.waitFor(() => expect(handle.sent).toHaveLength(2));
+      service.handleResult(5, { callId: handle.sent[1].callId, type: "tool_result", result: "2" });
+      await Promise.all([a, b]);
+      expect(open).toHaveBeenCalledTimes(1);
+    });
+
+    it("list_editor_tabs also opens a tab and reports it as ready", async () => {
+      const { service, open, call } = await setup();
+      service.setOnDemandTabOpener(open);
+      const p = call("list_editor_tabs");
+      await Promise.resolve();
+      service.handleRegister(5, { protocol: 1, tools: [] });
+      const parsed = JSON.parse((await p).content[0].text ?? "{}") as { tabs: { tabId: number; mcpReady: boolean }[] };
+      expect(parsed.tabs).toEqual([expect.objectContaining({ tabId: 5, mcpReady: true })]);
+    });
+
+    it("times out into the usual error when the tab never registers", async () => {
+      const { service, open, call } = await setup(20);
+      service.setOnDemandTabOpener(open);
+      const result = await call("get_editor_state");
+      expect(result.isError).toBe(true);
+      expect(open).toHaveBeenCalledTimes(1);
+    });
+
+    it("an explicit tabId never opens a tab; without the opener nothing changes", async () => {
+      const { service, open, call } = await setup();
+      service.setOnDemandTabOpener(open);
+      expect((await call("get_editor_state", { tabId: 99 })).content[0].text).toBe("No editor tab with id 99.");
+      service.setOnDemandTabOpener(null);
+      expect((await call("get_editor_state")).content[0].text).toBe("No editor tab is open.");
+      expect(open).not.toHaveBeenCalled();
+    });
+  });
+
   // Finding 5: forcePublish's writeHandshakeEntry (a rename() over the
   // watched file, per handshake.ts) unlinks the inode a pre-existing
   // watcher is bound to. Without re-creating the watcher, §5.4's "someone

@@ -49,6 +49,7 @@ test("agent layout opens with the panel only; the placeholder opens and returns 
     await expect(empty.locator(".hint")).toHaveText("Canvas and browser tabs open here.");
     await expect(empty.locator("#new-canvas")).toHaveText("New Canvas Tab");
     await expect(empty.locator("#new-browser")).toHaveText("New Browser Tab");
+    await expect(empty.locator("#sessions-note")).toBeHidden();
     const emptyVisible = () =>
       app.evaluate(({ BaseWindow }) => {
         const win = BaseWindow.getAllWindows()[0];

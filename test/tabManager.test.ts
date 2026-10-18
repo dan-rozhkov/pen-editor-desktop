@@ -6,6 +6,7 @@ import {
   type TabKind,
   type TabViewHandle,
   type TabsSnapshot,
+  decideActivationFocus,
 } from "../src/main/tabManager";
 
 function makeFakeView() {
@@ -949,7 +950,7 @@ describe("TabManager scopes (isolated browser sessions)", () => {
   });
 });
 
-describe("TabManager with zero tabs (agent layout: onLastTabClosed stay-empty)", () => {
+describe("TabManager with zero tabs (agent layout: lastTabPolicy stay-empty)", () => {
   const make = () => {
     const states: TabsSnapshot[] = [];
     let wc = 1;
@@ -960,7 +961,7 @@ describe("TabManager with zero tabs (agent layout: onLastTabClosed stay-empty)",
         return v;
       },
       editorUrl: "https://x/app?chat=off",
-      onLastTabClosed: "stay-empty",
+      lastTabPolicy: "stay-empty",
       onStateChanged: (s) => states.push(s),
     });
     return { tm, states };
@@ -1012,6 +1013,35 @@ describe("TabManager with zero tabs (agent layout: onLastTabClosed stay-empty)",
     const b = tm.newTab("editor", undefined, { activate: false });
     expect(tm.getSnapshot().activeId).toBe(a);
     expect(b).not.toBe(a);
+  });
+
+  it("a background-requested tab that only became active (zero tabs) does not take keyboard focus", () => {
+    const views: ReturnType<typeof makeFakeView>[] = [];
+    const tm = new TabManager({
+      createView: () => {
+        const v = makeFakeView();
+        views.push(v);
+        return v;
+      },
+      editorUrl: "u",
+      lastTabPolicy: "stay-empty",
+      onStateChanged: () => {},
+    });
+    const a = tm.newTab("editor", undefined, { activate: false });
+    expect(tm.getSnapshot().activeId).toBe(a);
+    expect(views[0].setVisible).toHaveBeenLastCalledWith(true);
+    expect(views[0].focus).not.toHaveBeenCalled();
+    // A default open (or an explicit activation) still focuses.
+    tm.newTab();
+    expect(views[1].focus).toHaveBeenCalledTimes(1);
+    tm.activate(a);
+    expect(views[0].focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("decideActivationFocus: only an explicit activate:false skips focus", () => {
+    expect(decideActivationFocus(false)).toBe(false);
+    expect(decideActivationFocus(true)).toBe(true);
+    expect(decideActivationFocus(undefined)).toBe(true);
   });
 
   it("an isolated session tab never becomes active, even from zero tabs", () => {

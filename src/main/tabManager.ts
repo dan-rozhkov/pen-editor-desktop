@@ -1,5 +1,21 @@
 import type { BrowserTabInfo } from "@sideform/browser-agent/controller";
+import type { LastTabPolicy } from "./config";
 export type UITheme = "light" | "dark";
+
+/** How a tab becomes the active one. `focus: false` shows it without moving keyboard focus into it. */
+export interface ActivationOptions {
+  focus?: boolean;
+}
+
+/**
+ * Whether a newly active tab takes keyboard focus. Only an explicit
+ * `activate: false` request (a background open that became active solely
+ * because the window had no active tab) must not: the person is typing in the
+ * agent panel. Every other activation is something the person asked to look at.
+ */
+export function decideActivationFocus(requestedActivate: boolean | undefined): boolean {
+  return requestedActivate !== false;
+}
 
 // Mirrors src/main/mcp/service.ts's McpStatus — defined here (rather than
 // imported from mcp/service.ts) so this module stays free of any dependency
@@ -398,7 +414,7 @@ export class TabManager {
       editorUrl: string;
       onStateChanged: (s: TabsSnapshot) => void;
       /** What closing the last tab does (config.ts `onLastTabClosed`); default respawns an editor tab. */
-      onLastTabClosed?: "respawn-editor" | "stay-empty";
+      lastTabPolicy?: LastTabPolicy;
     },
   ) {}
 
@@ -409,6 +425,7 @@ export class TabManager {
    * Exception: with NO active tab (the zero-tab state), a non-session tab
    * becomes active even when requested in the background, so the window never
    * holds tabs with none active (keyboard cycling, close and MCP need one).
+   * That tab is shown without taking keyboard focus (`ActivationOptions`).
    */
   newTab(kind: TabKind = "editor", session?: string, opts: { activate?: boolean } = {}): number {
     const id = this.nextId++;
@@ -466,7 +483,10 @@ export class TabManager {
       view.setVisible(false);
       this.emit();
     } else {
-      this.setActive(id);
+      // A background request that only became active because the window had no
+      // active tab is shown WITHOUT taking keyboard focus: the person is
+      // typing in the agent panel (see decideActivationFocus).
+      this.setActive(id, { focus: decideActivationFocus(opts.activate) });
     }
     return id;
   }
@@ -491,12 +511,12 @@ export class TabManager {
     const isSession = (t: TabEntry) => t.kind === "browser" && t.session !== undefined;
     // "Last tab closed" also covers: only background session tabs remain, which
     // are never auto-activated. An editor tab is respawned instead (flag off;
-    // with `onLastTabClosed: "stay-empty"` the window keeps zero active tabs).
+    // with `lastTabPolicy: "stay-empty"` the window keeps zero active tabs).
     if (this.tabs.length === 0 || (this.activeId === id && this.tabs.every(isSession))) {
       this.activeId = null;
       // newTab emits — closing the last tab respawns an editor tab, unless the
       // agent layout asked to stay empty (zero tabs; then emit ourselves).
-      if (this.opts.onLastTabClosed === "stay-empty") this.emit();
+      if (this.opts.lastTabPolicy === "stay-empty") this.emit();
       else this.newTab("editor");
     } else if (this.activeId === id) {
       // Never auto-activate a session tab (they live in the background).
@@ -771,7 +791,7 @@ export class TabManager {
 
   /**
    * Destroys every tab view without respawning a replacement — unlike
-   * closeTab(), which keeps at least one tab open (unless `onLastTabClosed` is "stay-empty"). Intended for
+   * closeTab(), which keeps at least one tab open (unless `lastTabPolicy` is "stay-empty"). Intended for
    * window teardown (win.on("closed", ...)).
    */
   destroyAll(): void {
@@ -811,11 +831,11 @@ export class TabManager {
     if (next.kind === "browser" && next.session === undefined) this.pinAgentTab(undefined, next.id);
   }
 
-  private setActive(id: number): void {
+  private setActive(id: number, opts: ActivationOptions = {}): void {
     this.activeId = id;
     for (const tab of this.tabs) tab.view.setVisible(tab.id === id);
     const active = this.tabs.find((t) => t.id === id);
-    active?.view.focus();
+    if (opts.focus !== false) active?.view.focus();
     if (active?.kind === "editor") this.lastEditorWebContentsId = active.view.getWebContentsId();
     this.emit();
   }

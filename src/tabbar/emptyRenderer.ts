@@ -7,12 +7,14 @@
     penEmpty: {
       newCanvasTab(): void;
       newBrowserTab(): void;
-      onTheme(cb: (theme: "light" | "dark") => void): void;
+      onState(cb: (state: { theme: "light" | "dark"; sessionTabs: number }) => void): void;
     };
   }).penEmpty;
   document.getElementById("new-canvas")!.addEventListener("click", () => bridge.newCanvasTab());
   document.getElementById("new-browser")!.addEventListener("click", () => bridge.newBrowserTab());
-  bridge.onTheme((theme) => {
+  const note = document.getElementById("sessions-note")!;
+  bridge.onState(({ theme, sessionTabs }) => {
     document.documentElement.dataset.theme = theme;
+    note.hidden = !(sessionTabs > 0);
   });
 })();

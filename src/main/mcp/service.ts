@@ -38,6 +38,7 @@ import {
   type ToolCallResult,
 } from "./dispatcher";
 import type { ToolManifestEntry } from "./jsonRpc";
+import { ensureEditorTab, needsOnDemandTab, ON_DEMAND_TAB_TIMEOUT_MS } from "./onDemandTab";
 
 export type { McpStatus };
 
@@ -102,6 +103,8 @@ export interface McpServiceDeps {
   generateToken(): string;
   toolManifest: ToolManifestEntry[];
   log: WarnLogger;
+  /** How long a call waits for an on-demand canvas tab to register (default 20 s). */
+  onDemandTabTimeoutMs?: number;
 }
 
 function defaultLogger(): WarnLogger {
@@ -214,7 +217,18 @@ export class McpService implements TabRegistry {
   private readonly onRegisterListener = (senderId: number, payload: unknown) => this.handleRegister(senderId, payload);
   private readonly onResultListener = (senderId: number, payload: unknown) => this.handleResult(senderId, payload);
 
+  // Agent layout only: opens a canvas tab in the background when a call arrives
+  // with no editor tab (window.ts installs it per window). Null = unchanged behaviour.
+  private openEditorTab: (() => void) | null = null;
+  private onDemandInFlight: Promise<boolean> | null = null;
+  private readonly registrationListeners = new Set<() => void>();
+
   constructor(private readonly deps: McpServiceDeps) {}
+
+  /** window.ts (agent layout): the opener for calls that arrive with no editor tab; null removes it. */
+  setOnDemandTabOpener(open: (() => void) | null): void {
+    this.openEditorTab = open;
+  }
 
   /**
    * Registers the two app-scoped `mcp:*` ipcMain listeners exactly once for
@@ -309,6 +323,7 @@ export class McpService implements TabRegistry {
     }
     if (!isRegisterPayload(payload)) return;
     rec.isRegistered = true;
+    for (const cb of [...this.registrationListeners]) cb();
   }
 
   handleResult(senderId: number, payload: unknown): void {
@@ -337,13 +352,46 @@ export class McpService implements TabRegistry {
    * this class at all, so list_editor_tabs and tabId routing cannot
    * diverge into two different id spaces by construction.
    */
-  private callTool(tool: string, args: Record<string, unknown>): Promise<ToolCallResult> {
-    if (tool === "list_editor_tabs") {
-      return Promise.resolve({ content: [{ type: "text", text: JSON.stringify({ tabs: this.listTabs() }) }] });
-    }
+  private async callTool(tool: string, args: Record<string, unknown>): Promise<ToolCallResult> {
     const { tabId, ...rest } = args;
     const requestedTabId = typeof tabId === "number" ? tabId : undefined;
+    // Agent layout: a window with zero tabs opens a canvas tab in the background
+    // for the call (also for list_editor_tabs, whose answer would otherwise be
+    // an empty list the client cannot act on). A failed or slow open falls
+    // through to the usual "No editor tab" / upgrade error below.
+    if (
+      needsOnDemandTab({
+        enabled: this.openEditorTab !== null,
+        requestedTabId,
+        hasActiveTab: this.getActiveTab() !== null,
+        inFlight: this.onDemandInFlight !== null,
+      })
+    ) {
+      await this.ensureOnDemandTab();
+    }
+    if (tool === "list_editor_tabs") {
+      return { content: [{ type: "text", text: JSON.stringify({ tabs: this.listTabs() }) }] };
+    }
     return this.dispatcher.callTool(tool, rest, requestedTabId);
+  }
+
+  private ensureOnDemandTab(): Promise<boolean> {
+    if (this.onDemandInFlight) return this.onDemandInFlight;
+    const open = this.openEditorTab;
+    const pending = ensureEditorTab({
+      open: () => open?.(),
+      hasActiveTab: () => this.getActiveTab() !== null,
+      isReady: () => this.getActiveTab()?.isRegistered === true,
+      subscribe: (cb) => {
+        this.registrationListeners.add(cb);
+        return () => this.registrationListeners.delete(cb);
+      },
+      timeoutMs: this.deps.onDemandTabTimeoutMs ?? ON_DEMAND_TAB_TIMEOUT_MS,
+    }).finally(() => {
+      this.onDemandInFlight = null;
+    });
+    this.onDemandInFlight = pending;
+    return pending;
   }
 
   private listTabs(): { tabId: number; title: string; active: boolean; mcpReady: boolean }[] {

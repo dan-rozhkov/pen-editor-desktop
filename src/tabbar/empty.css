@@ -23,6 +23,16 @@ body {
   margin: 0;
 }
 
+.note {
+  margin: -8px 0 0;
+  color: var(--text);
+  opacity: 0.8;
+}
+
+.note[hidden] {
+  display: none;
+}
+
 .actions {
   display: flex;
   gap: 8px;

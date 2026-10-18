@@ -55,7 +55,8 @@ import type { FaviconCache } from "./browser/faviconCache";
 import type { PasswordsWindow } from "./passwordsWindow";
 import { createTabAgentActivity, isAgentPageCommand } from "./agentActivity";
 import { decideCloseTarget, guardMenuActions } from "./closeTarget";
-import { emptyViewVisible, isTabCreationSender, planEmptyViewUpdate, shouldPushInitialSnapshot } from "./emptyView";
+import { isTabCreationSender, planEmptyViewUpdate, type EmptyViewState } from "./emptyView";
+import { resolveWindowTheme } from "./windowTheme";
 import { denyAllPermissions } from "./browser/permissions";
 import {
   BrowserSessions,
@@ -280,7 +281,24 @@ export function createMainWindow(
   // return to zero (onLastTabClosed). A local page (no remote content) with its
   // OWN minimal preload (preload/empty.ts): its two buttons send the same events
   // as the "+" menu. Added after the panel, hidden until pushState sees no active tab.
-  let emptyState = { visible: false, theme: systemTheme() };
+  let emptyState: EmptyViewState = { visible: false, theme: systemTheme(), sessionTabs: 0 };
+  // The placeholder's one state message: it carries the theme and the count of
+  // background session tabs (the page shows a note when the count is above 0).
+  const sendEmptyState = (wc: Electron.WebContents) =>
+    wc.send("tabbar:theme", { theme: emptyState.theme, sessionTabs: emptyState.sessionTabs });
+  // True only while a tab the PERSON closed (close button, Cmd/Ctrl+W, menu)
+  // is being closed: it decides where focus goes when the placeholder appears.
+  let userClosingTab = false;
+  const closeTabByUser = (id: number) => {
+    userClosingTab = true;
+    try {
+      tabs.closeTab(id);
+    } finally {
+      userClosingTab = false;
+    }
+  };
+  // The last editor theme any tab reported: keeps the chrome stable at zero tabs.
+  let rememberedEditorTheme: UITheme | null = null;
   const emptyView = agentLayout
     ? new WebContentsView({
         webPreferences: secureWebPreferences(path.join(__dirname, "../preload/empty.js")),
@@ -293,7 +311,11 @@ export function createMainWindow(
     emptyView.setVisible(false);
     void emptyView.webContents.loadFile(path.join(__dirname, "../tabbar/empty.html"));
     // The page may finish loading after the first pushState: hand it the latest theme.
-    emptyView.webContents.on("did-finish-load", () => emptyView.webContents.send("tabbar:theme", emptyState.theme));
+    emptyView.webContents.on("did-finish-load", () => sendEmptyState(emptyView.webContents));
+    // A crashed placeholder renderer would leave the tab area blank: reload the local page.
+    emptyView.webContents.on("render-process-gone", () => {
+      if (!emptyView.webContents.isDestroyed()) void emptyView.webContents.loadFile(path.join(__dirname, "../tabbar/empty.html"));
+    });
   }
   // --- canvas link (flag): panel <-> canvas tabs, see canvasLink.ts ---
   // Pure router; this adapts Electron (sender checks, sends, tab actions). The
@@ -360,22 +382,26 @@ export function createMainWindow(
     const focusAddressBar = shouldFocusAddressBar(previousSnapshot, s);
     previousSnapshot = s;
     tabbarView.webContents.send("tabbar:state", { ...s, focusAddressBar, tabStripLeft });
-    const resolvedTheme = s.activeTheme ?? systemTheme();
-    // Keep in sync with tabbar.css's --window-rim.
+    const themed = resolveWindowTheme({ activeTheme: s.activeTheme, remembered: rememberedEditorTheme, system: systemTheme() });
+    rememberedEditorTheme = themed.remembered;
+    const resolvedTheme = themed.theme;
+    // Keep in sync with tokens.css's --window-rim.
     windowRim?.setBackgroundColor(resolvedTheme === "dark" ? "#4d4d4d" : "#ececec");
     tabbarView.webContents.send("tabbar:theme", resolvedTheme);
     agentPanelView?.setBackgroundColor(backgroundColorForTheme(resolvedTheme));
     if (emptyView && !emptyView.webContents.isDestroyed()) {
-      const nextEmpty = { visible: emptyViewVisible(s), theme: resolvedTheme };
-      const plan = planEmptyViewUpdate(emptyState, nextEmpty);
+      // No active tab: every tab left is a background session tab (never auto-activated).
+      const noActiveTab = s.activeId === null;
+      const nextEmpty: EmptyViewState = { visible: noActiveTab, theme: resolvedTheme, sessionTabs: noActiveTab ? s.tabs.length : 0 };
+      const plan = planEmptyViewUpdate(emptyState, nextEmpty, userClosingTab);
       emptyState = nextEmpty;
-      if (plan.theme) {
-        emptyView.setBackgroundColor(backgroundColorForTheme(plan.theme));
-        emptyView.webContents.send("tabbar:theme", plan.theme);
-      }
+      if (plan.theme) emptyView.setBackgroundColor(backgroundColorForTheme(plan.theme));
+      if (plan.theme || plan.sessionTabs !== undefined) sendEmptyState(emptyView.webContents);
       if (plan.visible !== undefined) emptyView.setVisible(plan.visible);
-      // Back at zero tabs: the keyboard must reach the placeholder's buttons.
-      if (plan.focus) emptyView.webContents.focus();
+      // The user closed the last tab: the keyboard reaches the placeholder's
+      // buttons. Otherwise (agent close, window startup) the chat keeps it.
+      if (plan.focus === "empty") emptyView.webContents.focus();
+      else if (plan.focus === "panel" && agentPanelView && !agentPanelView.webContents.isDestroyed()) agentPanelView.webContents.focus();
     }
     loginServices.passwordsWindow.setTheme(themeKey, resolvedTheme);
     if (focusAddressBar) tabbarView.webContents.focus();
@@ -483,7 +509,7 @@ export function createMainWindow(
   let closeSessionsOwnedBy: (owner: number, gone?: boolean) => void = () => {};
   const tabs = new TabManager({
     editorUrl: tabEditorUrl,
-    onLastTabClosed: onLastTabClosed(agentLayout),
+    lastTabPolicy: onLastTabClosed(agentLayout),
     onStateChanged: pushState,
     createView: (kind: TabKind, sessionId?: string): TabViewHandle => {
       // An isolated session's tab: its own in-memory partition, its own router.
@@ -1936,7 +1962,7 @@ export function createMainWindow(
   const onTabbarActivate = (e: Electron.IpcMainEvent, id: number) =>
     fromOurTabbar(e) && tabs.activate(id);
   const onTabbarClose = (e: Electron.IpcMainEvent, id: number) =>
-    fromOurTabbar(e) && tabs.closeTab(id);
+    fromOurTabbar(e) && closeTabByUser(id);
   const onTabbarNavigate = (e: Electron.IpcMainEvent, payload: unknown) => {
     if (!fromOurTabbar(e)) return;
     if (!isRecord(payload)) return;
@@ -1962,7 +1988,7 @@ export function createMainWindow(
   // snapshots emitted before its DOM was ready.
   tabbarView.webContents.on("did-finish-load", () => pushState(tabs.getSnapshot()));
   const onSystemThemeChanged = () => {
-    if (tabs.getSnapshot().activeTheme === null) pushState(tabs.getSnapshot());
+    if (tabs.getSnapshot().activeTheme === null && rememberedEditorTheme === null) pushState(tabs.getSnapshot());
   };
   nativeTheme.on("updated", onSystemThemeChanged);
 
@@ -1998,6 +2024,7 @@ export function createMainWindow(
     nativeTheme.removeListener("updated", onSystemThemeChanged);
     loginServices.passwordsWindow.setTheme(themeKey, null);
     unsubscribeMcpStatus();
+    mcpService.setOnDemandTabOpener(null);
     agentActivity.dispose();
     tabs.destroyAll();
     tabbarView.webContents.close();
@@ -2029,7 +2056,7 @@ export function createMainWindow(
                 tabCount: tabs.count(),
                 agentLayout,
               });
-              if (target.kind === "tab") tabs.closeTab(target.id);
+              if (target.kind === "tab") closeTabByUser(target.id);
               else if (target.kind === "window") win.close();
             },
             nextTab: () => tabs.nextTab(),
@@ -2062,8 +2089,12 @@ export function createMainWindow(
     rebuildMenu();
   });
 
+  // Agent layout: an MCP call that finds no editor tab opens a canvas tab in the
+  // background (becomes active from zero tabs without taking focus), then waits for it.
+  if (agentLayout) mcpService.setOnDemandTabOpener(() => void tabs.newTab("editor", undefined, { activate: false }));
   for (const kind of initialTabs(agentLayout)) tabs.newTab(kind);
-  // Zero initial tabs emit nothing: send the first snapshot so the empty state shows.
-  if (shouldPushInitialSnapshot(tabs.count())) pushState(tabs.getSnapshot());
+  // Zero initial tabs emit nothing: push the first snapshot so the empty state
+  // shows (and the panel takes focus). With initial tabs this repeats the last push; pushState diffs.
+  pushState(tabs.getSnapshot());
   return win;
 }

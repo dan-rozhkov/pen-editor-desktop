@@ -18,6 +18,7 @@ describe("decideCloseTarget (global Close Tab)", () => {
   });
   it("does nothing with no active tab (flag off, or only background tabs)", () => {
     expect(decideCloseTarget({ passwordsFocused: false, activeTabId: null, tabCount: 0, agentLayout: false })).toEqual({ kind: "none" });
+    // Background isolated-session tabs only: closing the window would kill running QA sessions.
     expect(decideCloseTarget({ passwordsFocused: false, activeTabId: null, tabCount: 2, agentLayout: true })).toEqual({ kind: "none" });
   });
   it("closes the window when the agent layout has zero tabs (like a browser)", () => {

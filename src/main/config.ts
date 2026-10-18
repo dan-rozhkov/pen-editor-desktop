@@ -166,9 +166,12 @@ export function initialTabs(agentLayout: boolean): ("editor" | "browser")[] {
   return agentLayout ? [] : ["editor"];
 }
 
+/** What closing the last tab does: `respawn-editor` opens a fresh editor tab, `stay-empty` leaves zero tabs. */
+export type LastTabPolicy = "respawn-editor" | "stay-empty";
+
 /** What closing the LAST tab does. Flag off: a fresh editor tab replaces it
  * (the window never has zero tabs). Agent layout: the window stays open with
  * zero tabs and shows the empty state next to the panel. */
-export function onLastTabClosed(agentLayout: boolean): "respawn-editor" | "stay-empty" {
+export function onLastTabClosed(agentLayout: boolean): LastTabPolicy {
   return agentLayout ? "stay-empty" : "respawn-editor";
 }

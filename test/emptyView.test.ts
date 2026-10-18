@@ -1,29 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { emptyViewVisible, isTabCreationSender, planEmptyViewUpdate, shouldPushInitialSnapshot } from "../src/main/emptyView";
+import { decideEmptyFocus, isTabCreationSender, planEmptyViewUpdate } from "../src/main/emptyView";
 
 describe("emptyView decisions", () => {
-  it("is visible only while no tab is active", () => {
-    expect(emptyViewVisible({ activeId: null })).toBe(true);
-    expect(emptyViewVisible({ activeId: 4 })).toBe(false);
-  });
-
-  it("pushes the first snapshot only when the window opens with zero tabs", () => {
-    expect(shouldPushInitialSnapshot(0)).toBe(true);
-    expect(shouldPushInitialSnapshot(1)).toBe(false);
-  });
-
-  it("applies visibility and theme only on change, and focuses when the view appears", () => {
-    const hidden = { visible: false, theme: "light" as const };
-    expect(planEmptyViewUpdate(hidden, hidden)).toEqual({ focus: false });
-    expect(planEmptyViewUpdate(hidden, { visible: true, theme: "light" })).toEqual({ focus: true, visible: true });
-    expect(planEmptyViewUpdate({ visible: true, theme: "light" }, { visible: true, theme: "dark" })).toEqual({
-      focus: false,
+  it("applies visibility, theme and session count only on change", () => {
+    const hidden = { visible: false, theme: "light" as const, sessionTabs: 0 };
+    expect(planEmptyViewUpdate(hidden, hidden, false)).toEqual({ focus: "none" });
+    expect(planEmptyViewUpdate(hidden, { ...hidden, visible: true }, false)).toEqual({ focus: "panel", visible: true });
+    expect(planEmptyViewUpdate({ ...hidden, visible: true }, { visible: true, theme: "dark", sessionTabs: 0 }, true)).toEqual({
+      focus: "none",
       theme: "dark",
     });
-    expect(planEmptyViewUpdate({ visible: true, theme: "dark" }, { visible: false, theme: "dark" })).toEqual({
-      focus: false,
+    expect(planEmptyViewUpdate({ ...hidden, visible: true }, { ...hidden, visible: false }, false)).toEqual({
+      focus: "none",
       visible: false,
     });
+    expect(planEmptyViewUpdate({ ...hidden, visible: true }, { ...hidden, visible: true, sessionTabs: 2 }, false)).toEqual({
+      focus: "none",
+      sessionTabs: 2,
+    });
+  });
+
+  it("focuses the placeholder only when the user closed the last tab", () => {
+    expect(decideEmptyFocus(true, true)).toBe("empty");
+    // Agent closes, fixture resets and the window's startup push go to the panel.
+    expect(decideEmptyFocus(true, false)).toBe("panel");
+    expect(decideEmptyFocus(false, true)).toBe("none");
+    expect(decideEmptyFocus(false, false)).toBe("none");
   });
 
   it("accepts tab creation from the tab bar or the empty view only", () => {

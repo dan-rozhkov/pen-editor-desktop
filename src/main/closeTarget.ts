@@ -17,6 +17,9 @@ export function decideCloseTarget(input: {
   if (input.passwordsFocused) return { kind: "passwords" };
   if (input.activeTabId !== null) return { kind: "tab", id: input.activeTabId };
   // Like a browser: with the window empty (agent layout) Cmd/Ctrl+W closes the window.
+  // With only background isolated-session tabs left (tabCount > 0, nothing
+  // active) it is a deliberate no-op: closing the window would kill the
+  // running QA sessions, and those tabs are closed by their own run or by a click.
   return input.agentLayout && input.tabCount === 0 ? { kind: "window" } : { kind: "none" };
 }
 

@@ -12,7 +12,7 @@
   --border: light-dark(#e0e0e0, #404040);
   --text: light-dark(#666666, #888888);
   --text-active: light-dark(rgba(0, 0, 0, 0.87), rgba(255, 255, 255, 0.87));
-  /* Glass tab bar (macOS only, `:root[data-macos]` below) — a translucent
+  /* Glass tab bar (macOS only, `:root[data-macos]` in tabbar.css) — a translucent
      tint over the native `vibrancy: "under-window"` blur set in window.ts,
      rather than the opaque --bar-bg. Alpha is tuned, not just "light" values
      with transparency, because the OS vibrancy material's own appearance
