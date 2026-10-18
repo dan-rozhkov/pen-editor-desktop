@@ -10,7 +10,8 @@ import { randomUUID } from "node:crypto";
 export const CALL_TIMEOUT_MS = 30_000;
 
 // Verbatim from the plan (§1) — a client-visible contract string, not
-// prose to be reworded.
+// prose to be reworded. It is matched by pen-editor-plugin's skill and
+// plans/desktop-mcp-bridge.md: it must NOT change with product branding.
 export const UPGRADE_ERROR_MESSAGE =
   "The Pen Editor tab is running an older build that does not support the desktop MCP bridge (needs bridge protocol >= 1, tab reported none). Restart the app to pick up the current deployed editor.";
 

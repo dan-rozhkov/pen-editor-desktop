@@ -525,6 +525,31 @@ a temp dir that is fresh per Playwright RUN and shared by that run's launches
 keep a developer's saved cursor settings out of e2e. `e2e/globalTeardown.ts`
 deletes the dir afterwards (only one the helper created; an explicitly set
 `PEN_DESKTOP_USER_DATA_DIR` is left alone).
+**Rename "Pineapple Editor" -> "Sideform Desktop" (2026-10-18) and data
+continuity.** The visible name is `DISPLAY_APP_NAME` (`config.ts`), applied with
+`app.setName` AFTER ready (app menu labels) plus `app.setAboutPanelOptions({ applicationName })` for the About box. The `appId`
+(`com.peneditor.desktop`), `PEN_DESKTOP_*` env vars and `~/.pen-editor` stay.
+Two things derive from the app name and hold user data, so
+`resolveStorageIdentity` (`config.ts`, pure, injected fs, tested) picks them once
+BEFORE ready: (1) `userData`: env `PEN_DESKTOP_USER_DATA_DIR`, else the new
+`<appData>/Sideform Desktop` dir if it exists, else the legacy
+`<appData>/Pineapple Editor` if it exists as a directory, else the new dir;
+(2) the safeStorage Keychain item `"<name> Safe Storage"`, sticky and tied to
+the directory in use: `storage-identity.json` (`{ storageName }`) in userData
+wins; else the legacy name when the dir is the legacy dir; else the new name.
+`index.ts` writes that file once (best effort) after resolving.
+Verified by experiment on Electron 43.8: the Keychain name is fixed at ready
+from a `setName` called before ready (it beats the bundle's CFBundleName;
+without one it is the package.json `name`); a `setName` after ready does NOT
+change it. So `index.ts` calls `app.setName(storageName)` first and the display
+name only after ready. Never call `setName` with a different value BEFORE ready
+on an existing install. If the key ever does not match, the credentials file
+is kept untouched: `list()` still shows the entries, `findForOrigin` returns
+`undecryptable`, and re-saving a login re-encrypts just that entry.
+`index.ts` also takes `app.requestSingleInstanceLock()` (a second launch quits
+and focuses the existing window); the old "Pineapple Editor.app" does not take
+this lock, so the two builds can run side by side. `UPGRADE_ERROR_MESSAGE`
+(dispatcher.ts) is a contract string and keeps the "Pen Editor" wording.
 **`tabs({ action, tabId?, url? })`.** `list` returns every open browser tab
 (`{ tabId, url, title, current }[]`) plus which one is current; `switch`
 makes a given tab the agent's current tab (and activates it in the strip);

@@ -1,7 +1,7 @@
 {
   "name": "pen-editor-desktop",
   "version": "0.7.0",
-  "description": "Pineapple Editor desktop app",
+  "description": "Sideform Desktop app",
   "main": "dist/main/index.js",
   "private": true,
   "scripts": {
@@ -27,7 +27,7 @@
   },
   "build": {
     "appId": "com.peneditor.desktop",
-    "productName": "Pineapple Editor",
+    "productName": "Sideform Desktop",
     "directories": {
       "output": "release"
     },

@@ -184,6 +184,34 @@ describe("credentialStore", () => {
     expect(store.findForOrigin("example.com")).toEqual({ ok: false, reason: "undecryptable" });
   });
 
+  it("a file written with another key (wrong-key cipher) stays listed, untouched, and never breaks reads", () => {
+    const seed = makeStore();
+    seed.store.add({ site: "example.com", username: "u", password: "p" });
+    const original = seed.mem.files.get("/db.json")!;
+    const mem = memoryFs(original);
+    // Same file, new "Keychain key": every decrypt throws, like safeStorage would.
+    const wrongKey: CredentialCipher = {
+      isAvailable: () => true,
+      encrypt: fakeCipher().encrypt,
+      decrypt: () => {
+        throw new Error("Error while decrypting the ciphertext provided to safeStorage.decryptString.");
+      },
+    };
+    const store = createCredentialStore({ filePath: "/db.json", cipher: wrongKey, fs: mem.fs, newId: () => "n1" });
+    // The Passwords window path: list() never decrypts, so nothing throws.
+    expect(store.list()).toMatchObject([{ origin: "https://example.com", username: "u" }]);
+    expect(store.findForOrigin("example.com")).toEqual({ ok: false, reason: "undecryptable" });
+    expect(store.classify("example.com", "u", "p")).toBe("update");
+    expect(store.isNever("example.com")).toBe(false);
+    // Reads write nothing and never set the file aside.
+    expect(mem.files.get("/db.json")).toBe(original);
+    expect([...mem.files.keys()]).toEqual(["/db.json"]);
+    // Re-saving the login with the current key repairs just that entry.
+    store.add({ site: "example.com", username: "u", password: "p2" });
+    expect(JSON.parse(mem.files.get("/db.json")!).entries).toHaveLength(1);
+    expect([...mem.files.keys()]).toEqual(["/db.json"]);
+  });
+
   it("remove deletes by id", () => {
     const { store } = makeStore();
     const { id } = store.add({ site: "example.com", username: "u", password: "p" });
