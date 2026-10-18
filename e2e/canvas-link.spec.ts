@@ -60,8 +60,13 @@ async function launch(): Promise<{ app: ElectronApplication; panel: Page; editor
   const find = async (pred: (u: string) => boolean) =>
     app.windows().find((p) => pred(p.url())) ?? (await app.waitForEvent("window", { predicate: (p) => pred(p.url()) }));
   const panel = await find((u) => u.startsWith(`${baseUrl}/agent`));
-  const editor = await find((u) => u.startsWith(`${baseUrl}/app`));
-  const tabbar = await find((u) => u.endsWith("/tabbar/tabbar.html"));
+  // Empty start: the window opens with the panel only. Open the canvas tab explicitly;
+  // Promise.all makes an early openTab rejection fail the test with its own error.
+  const [, editor, tabbar] = await Promise.all([
+    panel.evaluate(() => (window as never as { penAgentPanel: Panel }).penAgentPanel.canvas.openTab({ activate: true })),
+    find((u) => u.startsWith(`${baseUrl}/app`)),
+    find((u) => u.endsWith("/tabbar/tabbar.html")),
+  ]);
   await expect(panel.locator("#ready")).toHaveText("stub-agent");
   await expect(editor.locator("#ready")).toHaveText("stub-editor");
   // Collect everything the panel hears.

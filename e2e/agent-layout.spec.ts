@@ -39,6 +39,14 @@ test("agent layout flag adds a left /agent panel; tabs still work", async () => 
   expect(await agentPage.evaluate(() => Object.keys((window as never as { penAgentPanel: object }).penAgentPanel).sort())).toEqual(["browser", "canvas", "version"]);
   expect(await agentPage.evaluate(() => typeof (window as never as { penDesktop?: unknown }).penDesktop)).toBe("undefined");
 
+  // Empty start: no canvas tab until one is opened (here: the tab bar's newTab, as the "+" menu does).
+  const tabbarPage =
+    app.windows().find((p) => p.url().endsWith("/tabbar/tabbar.html")) ??
+    (await app.waitForEvent("window", { predicate: (p) => p.url().endsWith("/tabbar/tabbar.html") }));
+  await expect(tabbarPage.locator(".tab")).toHaveCount(0);
+  expect(app.windows().some((p) => p.url().startsWith(`${baseUrl}/app`))).toBe(false);
+  await tabbarPage.evaluate(() => (window as unknown as { penTabbar: { newTab(): void } }).penTabbar.newTab());
+
   const editorPage =
     app.windows().find((p) => p.url().startsWith(`${baseUrl}/app`)) ??
     (await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(`${baseUrl}/app`) }));
@@ -72,9 +80,6 @@ test("agent layout flag adds a left /agent panel; tabs still work", async () => 
   expect(bounds.agent.height).toBe(bounds.editor.height);
 
   // The panel is not a tab: only the editor tab is in the strip.
-  const tabbarPage =
-    app.windows().find((p) => p.url().endsWith("/tabbar/tabbar.html")) ??
-    (await app.waitForEvent("window", { predicate: (p) => p.url().endsWith("/tabbar/tabbar.html") }));
   await expect(tabbarPage.locator(".tab")).toHaveCount(1);
   // The tab strip starts at the panel's right edge (or later, past the macOS traffic lights).
   const panelRight = bounds.agent.x + bounds.agent.width;

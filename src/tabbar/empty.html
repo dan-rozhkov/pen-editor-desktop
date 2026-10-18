@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self'; script-src 'self'"
+    />
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="empty.css" />
+  </head>
+  <body>
+    <main class="empty" id="empty-state">
+      <p class="hint">Canvas and browser tabs open here.</p>
+      <div class="actions">
+        <button id="new-canvas" class="action">New Canvas Tab</button>
+        <button id="new-browser" class="action">New Browser Tab</button>
+      </div>
+    </main>
+    <script src="emptyRenderer.js"></script>
+  </body>
+</html>

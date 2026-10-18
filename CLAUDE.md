@@ -100,6 +100,33 @@ panel URL is still derived from the plain `editorUrl`. The "+" menu item reads
 only) and the sandboxed preload reads it from `process.argv`. Flag off: the
 property is absent. e2e: `agent-layout.spec.ts` / `smoke.spec.ts`. The canvas-link channels (`docs/canvas-link.md`) are described in "Canvas link" below.
 
+**Empty start (zero tabs).** With the flag the window opens with ONLY the agent
+panel: no initial canvas tab. Decisions are pure functions in `config.ts`:
+`initialTabs(agentLayout)` (`[]` with the flag, `["editor"]` off) and
+`onLastTabClosed(agentLayout)` (`"stay-empty"` with the flag, `"respawn-editor"`
+off, the historical behavior); `window.ts` feeds the latter to `TabManager`'s
+`onLastTabClosed` option, so closing the last tab (or the active tab when only
+background session tabs remain) leaves zero tabs and the window open. A tab
+opens when the panel calls `canvas:open` or the user opens one ("+" menu,
+Cmd+T, placeholder). Zero-tab safety: snapshot has `tabs: []`, `activeId` and
+`activeKind` null, `mcpActiveWebContentsId` null (the MCP dispatcher answers its
+existing "No editor tab is open."), `editorTabsInfo()` empty (the router's
+`syncTabs` clears the list), `nextTab`/`prevTab`/`closeTab`/`activate` no-op. Menu
+commands that target the active editor tab (`forwardToActiveTab`: File Open,
+Export..., Import/Export Design Tokens) are a **no-op** with no tab (they do NOT
+open a canvas tab: the editor must be loaded before it can handle a command);
+Close Tab is `decideCloseTarget` "window" with zero tabs (closes the window, like a browser; "none" when only background session tabs remain). A new non-session tab becomes active when none is active, even if requested in the background (`activate:false`). macOS dock `activate` reopens a window
+the same way (panel only). **Placeholder:** while `activeId === null` with the
+flag, a local view (`src/tabbar/empty.html` + `empty.css` + `emptyRenderer.ts`,
+same CSP as the tab bar, light/dark tokens shared via `tokens.css`, no remote content) covers the tab
+area with "Canvas and browser tabs open here." and two buttons, "New Canvas Tab"
+and "New Browser Tab". It has its OWN minimal preload (`src/preload/empty.ts`: `newCanvasTab`,
+`newBrowserTab`, `onTheme`); its buttons send `tabbar:new` / `tabbar:new-browser`
+(the same actions as the "+" menu; main accepts them from the tab bar or this
+view via `isTabCreationSender`). Visibility, theme and focus decisions are pure
+(`emptyView.ts`, applied on change only); bounds (`tabArea`) follow `layout`.
+e2e: `e2e/empty-start.spec.ts` (`EMPTY_START_SHOT=<png>` saves a composite screenshot).
+
 ## Canvas link (agent layout flag)
 
 Protocol, roles and message rules: `docs/canvas-link.md` (a copy; the source is pen-editor `docs/canvas-link.md` and `src/lib/canvasLink/protocol.ts`). Everything here exists only with `PEN_DESKTOP_AGENT_LAYOUT=1`; flag off creates no router, registers none of the `canvas:*` channels and the preloads expose nothing new on editor tabs.
@@ -173,7 +200,8 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `tabbar:state` main→tabbar (`TabsSnapshot`, now including `mcpStatus`), re-sent on tabbar `did-finish-load`
 - `tabbar:theme` main→tabbar (`light` | `dark`, active editor theme or system fallback)
 - `tabbar:new` / `tabbar:activate` / `tabbar:close` tabbar→main (sender-checked)
-- `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Editor Tab / New Browser Tab; "New Canvas Tab" instead of "New Editor Tab" with the agent-layout flag), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` has no UI caller any more; e2e drives it through `penTabbar.newTab()`, which a native menu can't be clicked through
+- `tabbar:new-browser` tabbar/empty-state→main (sender-checked) — a user-driven browser tab (`newUserBrowserTab`); sent by the empty-state placeholder only (agent layout, `preload/empty.ts`)
+- `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Editor Tab / New Browser Tab; "New Canvas Tab" instead of "New Editor Tab" with the agent-layout flag), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` is sent by the empty-state placeholder's "New Canvas Tab" button (agent layout); e2e also drives it through `penTabbar.newTab()`, which a native menu can't be clicked through
 - `tabbar:tools-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the browser chrome row's gear button: native menu (Viewport emulation via CDP, Open/Close Developer Tools, Zoom) for the active browser tab; builder in `src/main/browserToolsMenu.ts`
 - `tabbar:navigate` tabbar→main (sender-checked; `{action: "url" | "back" | "forward" | "reload", url?}`) — the address row driving the active browser tab, see "Built-in browser tab" below
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below
@@ -935,7 +963,7 @@ without sharing cookies, tabs, fixtures or mocks. The shared browser
   activate/focus). A user click or tab-cycle on a session tab does not repoint the
   session's agent tab (only shared tabs follow the user's focus). Closing the active
   tab never auto-activates a session tab: with only session tabs left an editor tab
-  is respawned.
+  is respawned (agent layout flag: the window stays at zero active tabs instead).
 - **Background tabs.** A session tab never becomes active and gets no address-bar
   focus (`setVisible(false)`); the editor keeps focus. The user clicks it to
   watch. A hidden session tab still screenshots. Shared tabs behave as before.

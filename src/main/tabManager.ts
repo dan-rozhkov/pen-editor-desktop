@@ -397,6 +397,8 @@ export class TabManager {
       createView: (kind: TabKind, session?: string) => TabViewHandle;
       editorUrl: string;
       onStateChanged: (s: TabsSnapshot) => void;
+      /** What closing the last tab does (config.ts `onLastTabClosed`); default respawns an editor tab. */
+      onLastTabClosed?: "respawn-editor" | "stay-empty";
     },
   ) {}
 
@@ -404,6 +406,9 @@ export class TabManager {
    * `opts.activate: false` creates the tab in the background: it is hidden and
    * never becomes active, the agent's pin is untouched (the canvas link's
    * background `canvas:open`). Isolated session tabs always open that way.
+   * Exception: with NO active tab (the zero-tab state), a non-session tab
+   * becomes active even when requested in the background, so the window never
+   * holds tabs with none active (keyboard cycling, close and MCP need one).
    */
   newTab(kind: TabKind = "editor", session?: string, opts: { activate?: boolean } = {}): number {
     const id = this.nextId++;
@@ -453,7 +458,9 @@ export class TabManager {
     }
     this.tabs.push(entry);
     if (this.lastLayout) this.applyLayout(entry);
-    if ((kind === "browser" && session !== undefined) || opts.activate === false) {
+    const isSessionTab = kind === "browser" && session !== undefined;
+    const background = isSessionTab || (opts.activate === false && this.activeId !== null);
+    if (background) {
       // An isolated session's tab (or an explicit background open) opens in the
       // BACKGROUND: the editor keeps focus and the active tab. The user can click it to watch.
       view.setVisible(false);
@@ -483,10 +490,14 @@ export class TabManager {
     this.agentWorkingTabs.delete(id);
     const isSession = (t: TabEntry) => t.kind === "browser" && t.session !== undefined;
     // "Last tab closed" also covers: only background session tabs remain, which
-    // are never auto-activated. An editor tab is respawned instead.
+    // are never auto-activated. An editor tab is respawned instead (flag off;
+    // with `onLastTabClosed: "stay-empty"` the window keeps zero active tabs).
     if (this.tabs.length === 0 || (this.activeId === id && this.tabs.every(isSession))) {
       this.activeId = null;
-      this.newTab("editor"); // newTab emits — closing the last tab always respawns an editor tab.
+      // newTab emits — closing the last tab respawns an editor tab, unless the
+      // agent layout asked to stay empty (zero tabs; then emit ourselves).
+      if (this.opts.onLastTabClosed === "stay-empty") this.emit();
+      else this.newTab("editor");
     } else if (this.activeId === id) {
       // Never auto-activate a session tab (they live in the background).
       const before = this.tabs.slice(0, idx).reverse();
@@ -760,7 +771,7 @@ export class TabManager {
 
   /**
    * Destroys every tab view without respawning a replacement — unlike
-   * closeTab(), which always keeps at least one tab open. Intended for
+   * closeTab(), which keeps at least one tab open (unless `onLastTabClosed` is "stay-empty"). Intended for
    * window teardown (win.on("closed", ...)).
    */
   destroyAll(): void {

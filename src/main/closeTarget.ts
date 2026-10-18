@@ -5,11 +5,19 @@ import type { MenuActions } from "./menu";
  * app-wide, so it fires whichever window has focus; the Passwords window must
  * close itself, never a tab of the main window behind it.
  */
-export type CloseTarget = { kind: "passwords" } | { kind: "tab"; id: number } | { kind: "none" };
+export type CloseTarget = { kind: "passwords" } | { kind: "tab"; id: number } | { kind: "window" } | { kind: "none" };
 
-export function decideCloseTarget(input: { passwordsFocused: boolean; activeTabId: number | null }): CloseTarget {
+export function decideCloseTarget(input: {
+  passwordsFocused: boolean;
+  activeTabId: number | null;
+  /** Tabs of the main window (any kind, active or not). */
+  tabCount: number;
+  agentLayout: boolean;
+}): CloseTarget {
   if (input.passwordsFocused) return { kind: "passwords" };
-  return input.activeTabId === null ? { kind: "none" } : { kind: "tab", id: input.activeTabId };
+  if (input.activeTabId !== null) return { kind: "tab", id: input.activeTabId };
+  // Like a browser: with the window empty (agent layout) Cmd/Ctrl+W closes the window.
+  return input.agentLayout && input.tabCount === 0 ? { kind: "window" } : { kind: "none" };
 }
 
 /**

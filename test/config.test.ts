@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveBrowserCursorMotion, resetCursorMotionWarningForTests, resolveUserDataDir, resolveAgentLayoutEnabled, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveTabEditorUrl, editorPreloadArguments, AGENT_LAYOUT_ARG } from "../src/main/config";
+import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveBrowserCursorMotion, resetCursorMotionWarningForTests, resolveUserDataDir, resolveAgentLayoutEnabled, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveTabEditorUrl, editorPreloadArguments, AGENT_LAYOUT_ARG, initialTabs, onLastTabClosed } from "../src/main/config";
 
 describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
@@ -164,5 +164,16 @@ describe("editorPreloadArguments", () => {
     expect(editorPreloadArguments(true)).toEqual([AGENT_LAYOUT_ARG]);
     expect(editorPreloadArguments(false)).toEqual([]);
     expect(AGENT_LAYOUT_ARG).toBe("--pen-agent-layout");
+  });
+});
+
+describe("empty start decisions", () => {
+  it("agent layout opens no initial tab and stays empty after the last close", () => {
+    expect(initialTabs(true)).toEqual([]);
+    expect(onLastTabClosed(true)).toBe("stay-empty");
+  });
+  it("flag off keeps one editor tab and respawns on last close", () => {
+    expect(initialTabs(false)).toEqual(["editor"]);
+    expect(onLastTabClosed(false)).toBe("respawn-editor");
   });
 });

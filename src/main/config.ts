@@ -158,3 +158,17 @@ export const AGENT_LAYOUT_ARG = "--pen-agent-layout";
 export function editorPreloadArguments(agentLayout: boolean): string[] {
   return agentLayout ? [AGENT_LAYOUT_ARG] : [];
 }
+
+/** Tabs a new main window opens. The agent layout starts EMPTY (only the agent
+ * panel; a canvas tab opens when the agent or the user asks for one); flag off
+ * keeps the historical single editor tab. */
+export function initialTabs(agentLayout: boolean): ("editor" | "browser")[] {
+  return agentLayout ? [] : ["editor"];
+}
+
+/** What closing the LAST tab does. Flag off: a fresh editor tab replaces it
+ * (the window never has zero tabs). Agent layout: the window stays open with
+ * zero tabs and shows the empty state next to the panel. */
+export function onLastTabClosed(agentLayout: boolean): "respawn-editor" | "stay-empty" {
+  return agentLayout ? "stay-empty" : "respawn-editor";
+}

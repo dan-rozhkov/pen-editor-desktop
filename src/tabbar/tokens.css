@@ -1,0 +1,44 @@
+/* Shared theme tokens of the local pages (tabbar.html, empty.html). Each token
+   is defined ONCE with light-dark(light, dark): `color-scheme` picks the side —
+   both by default (follows the OS), pinned by the editor theme that the pages
+   put in `data-theme` (tabManager.ts's resolveActiveTheme). */
+:root {
+  color-scheme: light dark;
+  --bar-bg: light-dark(#f5f5f5, #1a1a1a);
+  --content-bg: light-dark(#ffffff, #1a1a1a);
+  --tab-active-bg: light-dark(#ffffff, #2a2a2a);
+  --control-hover-bg: light-dark(#e5e5e5, #383838);
+  --field-hover-bg: light-dark(#f2f2f2, #333333);
+  --border: light-dark(#e0e0e0, #404040);
+  --text: light-dark(#666666, #888888);
+  --text-active: light-dark(rgba(0, 0, 0, 0.87), rgba(255, 255, 255, 0.87));
+  /* Glass tab bar (macOS only, `:root[data-macos]` below) — a translucent
+     tint over the native `vibrancy: "under-window"` blur set in window.ts,
+     rather than the opaque --bar-bg. Alpha is tuned, not just "light" values
+     with transparency, because the OS vibrancy material's own appearance
+     follows the *system* light/dark setting while `data-theme` here follows
+     the editor's theme (tabManager.ts's `resolveActiveTheme`) — the two can
+     disagree (a dark-theme editor tab on a Mac set to light appearance, or
+     vice versa). A low-alpha dark tint over light vibrancy would read as
+     washed-out grey, not "dark bar" — so --bar-glass uses a
+     high enough alpha to read as their own theme's color regardless of
+     which appearance the vibrancy blur underneath happens to be.
+     The active tab and the address row stay on the opaque --tab-active-bg:
+     one solid surface flowing into the content below, glass everywhere else
+     — Codex's split (glass chrome, solid content). */
+  --bar-glass: light-dark(rgba(246, 246, 246, 0.78), rgba(26, 26, 26, 0.85));
+  --window-rim: light-dark(#ececec, #4d4d4d);
+  /* Brand pair is theme-independent; only the idle (background-tab) pair differs. */
+  --agent-cursor: #0d99ff;
+  --agent-cursor-rim: #ffffff;
+  --agent-cursor-idle: light-dark(#c4c4c4, #5e5e5e);
+  --agent-cursor-idle-rim: light-dark(#ffffff, #2a2a2a);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}

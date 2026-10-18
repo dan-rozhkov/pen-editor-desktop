@@ -948,3 +948,81 @@ describe("TabManager scopes (isolated browser sessions)", () => {
     expect(tm.currentBrowserTabId("a")).toBe(a2);
   });
 });
+
+describe("TabManager with zero tabs (agent layout: onLastTabClosed stay-empty)", () => {
+  const make = () => {
+    const states: TabsSnapshot[] = [];
+    let wc = 1;
+    const tm = new TabManager({
+      createView: () => {
+        const v = makeFakeView();
+        v.getWebContentsId.mockReturnValue(wc++);
+        return v;
+      },
+      editorUrl: "https://x/app?chat=off",
+      onLastTabClosed: "stay-empty",
+      onStateChanged: (s) => states.push(s),
+    });
+    return { tm, states };
+  };
+
+  it("a fresh manager is safe with no tabs", () => {
+    const { tm } = make();
+    expect(tm.count()).toBe(0);
+    const snap = tm.getSnapshot();
+    expect(snap).toMatchObject({ tabs: [], activeId: null, activeKind: null, mcpActiveWebContentsId: null, agentTabIds: [] });
+    expect(tm.activeHandle()).toBeNull();
+    expect(tm.activeBrowserHandle()).toBeNull();
+    expect(tm.editorTabsInfo()).toEqual({ tabs: [], activeWebContentsId: null });
+    expect(() => {
+      tm.nextTab();
+      tm.prevTab();
+      tm.layout({ x: 0, y: 0, width: 10, height: 10 });
+      tm.closeTab(99);
+      tm.activate(99);
+      tm.destroyAll();
+    }).not.toThrow();
+  });
+
+  it("closing the last tab leaves zero tabs and emits an empty snapshot", () => {
+    const { tm, states } = make();
+    const a = tm.newTab();
+    tm.closeTab(a);
+    expect(tm.count()).toBe(0);
+    expect(states[states.length - 1]).toMatchObject({ tabs: [], activeId: null, activeKind: null, mcpActiveWebContentsId: null });
+    // A tab can still be opened afterwards.
+    const b = tm.newTab();
+    expect(tm.getSnapshot().activeId).toBe(b);
+  });
+
+  it("closing the active tab with only background session tabs left leaves no active tab", () => {
+    const { tm } = make();
+    const a = tm.newTab();
+    const s = tm.newTab("browser", "sess", { activate: false });
+    tm.closeTab(a);
+    expect(tm.count()).toBe(1);
+    expect(tm.getSnapshot().activeId).toBeNull();
+    expect(s).toBeGreaterThan(0);
+  });
+
+  it("a background-requested tab becomes active from the zero-tab state; later ones stay in the background", () => {
+    const { tm } = make();
+    const a = tm.newTab("editor", undefined, { activate: false });
+    expect(tm.getSnapshot().activeId).toBe(a);
+    const b = tm.newTab("editor", undefined, { activate: false });
+    expect(tm.getSnapshot().activeId).toBe(a);
+    expect(b).not.toBe(a);
+  });
+
+  it("an isolated session tab never becomes active, even from zero tabs", () => {
+    const { tm } = make();
+    tm.newTab("browser", "sess");
+    expect(tm.getSnapshot().activeId).toBeNull();
+  });
+
+  it("default (no option) still respawns an editor tab", () => {
+    const tm = new TabManager({ createView: () => makeFakeView(), editorUrl: "u", onStateChanged: () => {} });
+    tm.closeTab(tm.newTab());
+    expect(tm.count()).toBe(1);
+  });
+});

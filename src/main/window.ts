@@ -35,7 +35,7 @@ import {
   type BrowserPageHandle,
   isFetchableStylesheetUrl,
 } from "@sideform/browser-agent/controller";
-import { resolveAgentPanelUrl, resolveTabEditorUrl, editorPreloadArguments } from "./config";
+import { resolveAgentPanelUrl, resolveTabEditorUrl, editorPreloadArguments, initialTabs, onLastTabClosed } from "./config";
 import { secureWebPreferences } from "./webPreferences";
 import { AGENT_PANEL_DEFAULT_WIDTH, computeWindowLayout } from "./layout";
 import { isRecord, parseJournalOrigins, parseToken, rawToken } from "./checkpointArgs";
@@ -55,6 +55,7 @@ import type { FaviconCache } from "./browser/faviconCache";
 import type { PasswordsWindow } from "./passwordsWindow";
 import { createTabAgentActivity, isAgentPageCommand } from "./agentActivity";
 import { decideCloseTarget, guardMenuActions } from "./closeTarget";
+import { emptyViewVisible, isTabCreationSender, planEmptyViewUpdate, shouldPushInitialSnapshot } from "./emptyView";
 import { denyAllPermissions } from "./browser/permissions";
 import {
   BrowserSessions,
@@ -274,6 +275,26 @@ export function createMainWindow(
     attachOfflineFallback(agentPanelView.webContents, offlineFile);
     void agentPanelView.webContents.loadURL(panelUrl);
   }
+  // --- empty state (flag): shown in the tab area while the window has no tab ---
+  // The agent layout starts with zero tabs (config.ts initialTabs) and may
+  // return to zero (onLastTabClosed). A local page (no remote content) with its
+  // OWN minimal preload (preload/empty.ts): its two buttons send the same events
+  // as the "+" menu. Added after the panel, hidden until pushState sees no active tab.
+  let emptyState = { visible: false, theme: systemTheme() };
+  const emptyView = agentLayout
+    ? new WebContentsView({
+        webPreferences: secureWebPreferences(path.join(__dirname, "../preload/empty.js")),
+      })
+    : null;
+  if (emptyView) {
+    win.contentView.addChildView(emptyView);
+    attachLocalOnlyPolicy(emptyView.webContents);
+    emptyView.setBackgroundColor(backgroundColorForTheme(systemTheme()));
+    emptyView.setVisible(false);
+    void emptyView.webContents.loadFile(path.join(__dirname, "../tabbar/empty.html"));
+    // The page may finish loading after the first pushState: hand it the latest theme.
+    emptyView.webContents.on("did-finish-load", () => emptyView.webContents.send("tabbar:theme", emptyState.theme));
+  }
   // --- canvas link (flag): panel <-> canvas tabs, see canvasLink.ts ---
   // Pure router; this adapts Electron (sender checks, sends, tab actions). The
   // sends sit here, with literal channel names, for test/ipcContract.test.ts.
@@ -344,6 +365,18 @@ export function createMainWindow(
     windowRim?.setBackgroundColor(resolvedTheme === "dark" ? "#4d4d4d" : "#ececec");
     tabbarView.webContents.send("tabbar:theme", resolvedTheme);
     agentPanelView?.setBackgroundColor(backgroundColorForTheme(resolvedTheme));
+    if (emptyView && !emptyView.webContents.isDestroyed()) {
+      const nextEmpty = { visible: emptyViewVisible(s), theme: resolvedTheme };
+      const plan = planEmptyViewUpdate(emptyState, nextEmpty);
+      emptyState = nextEmpty;
+      if (plan.theme) {
+        emptyView.setBackgroundColor(backgroundColorForTheme(plan.theme));
+        emptyView.webContents.send("tabbar:theme", plan.theme);
+      }
+      if (plan.visible !== undefined) emptyView.setVisible(plan.visible);
+      // Back at zero tabs: the keyboard must reach the placeholder's buttons.
+      if (plan.focus) emptyView.webContents.focus();
+    }
     loginServices.passwordsWindow.setTheme(themeKey, resolvedTheme);
     if (focusAddressBar) tabbarView.webContents.focus();
     // Keep a visible browser tab's own blank-canvas background matching the
@@ -450,6 +483,7 @@ export function createMainWindow(
   let closeSessionsOwnedBy: (owner: number, gone?: boolean) => void = () => {};
   const tabs = new TabManager({
     editorUrl: tabEditorUrl,
+    onLastTabClosed: onLastTabClosed(agentLayout),
     onStateChanged: pushState,
     createView: (kind: TabKind, sessionId?: string): TabViewHandle => {
       // An isolated session's tab: its own in-memory partition, its own router.
@@ -1790,6 +1824,7 @@ export function createMainWindow(
     if (agentPanelView && l.panel) agentPanelView.setBounds(l.panel);
     tabbarView.setBounds(l.tabbar);
     windowRim?.setBounds(l.rim);
+    emptyView?.setBounds(l.tabArea);
     tabs.layout(l.tabArea);
   };
   win.on("resize", layout);
@@ -1798,7 +1833,10 @@ export function createMainWindow(
   // --- tab bar IPC (scoped to this window's tabbar webContents) ---
   const tabbarId = tabbarView.webContents.id;
   const fromOurTabbar = (event: Electron.IpcMainEvent) => event.sender.id === tabbarId;
-  const onTabbarNew = (e: Electron.IpcMainEvent) => fromOurTabbar(e) && tabs.newTab("editor");
+  // The empty-state view (own preload) may only create tabs.
+  const emptyId = emptyView?.webContents.id;
+  const fromTabbarOrEmpty = (event: Electron.IpcMainEvent) => isTabCreationSender(event.sender.id, tabbarId, emptyId);
+  const onTabbarNew = (e: Electron.IpcMainEvent) => fromTabbarOrEmpty(e) && tabs.newTab("editor");
   // Second-pass review finding 3: a user-driven "New Browser Tab" pins the
   // agent to it, the same as any other explicit user action that lands on a
   // browser tab (activate()'s tab-strip click, nextTab/prevTab's cycle) —
@@ -1806,6 +1844,7 @@ export function createMainWindow(
   // automatic tab creation, which must NOT repoint the agent) leaves
   // agentBrowserTabId untouched.
   const newUserBrowserTab = () => tabs.setAgentBrowserTabId(tabs.newTab("browser"));
+  const onTabbarNewBrowser = (e: Electron.IpcMainEvent) => fromTabbarOrEmpty(e) && newUserBrowserTab();
   // The "+" button's popup. `anchor` is the button's bottom-left corner in
   // tabbar CSS px, which is window content coordinates too: the tabbar view
   // sits at (0, 0) at zoom 1.
@@ -1913,6 +1952,7 @@ export function createMainWindow(
     }
   };
   ipcMain.on("tabbar:new", onTabbarNew);
+  ipcMain.on("tabbar:new-browser", onTabbarNewBrowser);
   ipcMain.on("tabbar:new-menu", onTabbarNewMenu);
   ipcMain.on("tabbar:tools-menu", onTabbarToolsMenu);
   ipcMain.on("tabbar:activate", onTabbarActivate);
@@ -1936,6 +1976,7 @@ export function createMainWindow(
   win.on("focus", () => loginServices.passwordsWindow.focusMain(themeKey));
   win.on("closed", () => {
     ipcMain.removeListener("tabbar:new", onTabbarNew);
+    ipcMain.removeListener("tabbar:new-browser", onTabbarNewBrowser);
     ipcMain.removeListener("tabbar:new-menu", onTabbarNewMenu);
     ipcMain.removeListener("tabbar:tools-menu", onTabbarToolsMenu);
     ipcMain.removeListener("tabbar:activate", onTabbarActivate);
@@ -1961,6 +2002,7 @@ export function createMainWindow(
     tabs.destroyAll();
     tabbarView.webContents.close();
     agentPanelView?.webContents.close();
+    emptyView?.webContents.close();
   });
 
   // --- menu ---
@@ -1981,8 +2023,14 @@ export function createMainWindow(
             newBrowserTab: newUserBrowserTab,
             openPasswords: () => loginServices.passwordsWindow.open(),
             closeTab: () => {
-              const target = decideCloseTarget({ passwordsFocused: false, activeTabId: tabs.getSnapshot().activeId });
+              const target = decideCloseTarget({
+                passwordsFocused: false,
+                activeTabId: tabs.getSnapshot().activeId,
+                tabCount: tabs.count(),
+                agentLayout,
+              });
               if (target.kind === "tab") tabs.closeTab(target.id);
+              else if (target.kind === "window") win.close();
             },
             nextTab: () => tabs.nextTab(),
             prevTab: () => tabs.prevTab(),
@@ -2014,6 +2062,8 @@ export function createMainWindow(
     rebuildMenu();
   });
 
-  tabs.newTab("editor");
+  for (const kind of initialTabs(agentLayout)) tabs.newTab(kind);
+  // Zero initial tabs emit nothing: send the first snapshot so the empty state shows.
+  if (shouldPushInitialSnapshot(tabs.count())) pushState(tabs.getSnapshot());
   return win;
 }
