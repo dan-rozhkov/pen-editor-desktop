@@ -8,7 +8,8 @@
 // the menu the app really builds is recorded, its popup is a no-op, and the
 // test clicks the recorded MenuItem (the same `click` the user would reach).
 
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
+import { test, expect, type ElectronApplication, type Page } from "@playwright/test";
+import { launchShell } from "./launch";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -92,8 +93,8 @@ function cmd(editor: Page, method: string, ...args: unknown[]): Promise<Res> {
 interface Env { app: ElectronApplication; editor: Page; tabbar: Page; site: Page }
 
 async function launch(): Promise<Env> {
-  const app = await electron.launch({ args: ["."], env: { ...process.env, PEN_DESKTOP_URL: editorBaseUrl } });
-  const editor = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(editorBaseUrl) });
+  const app = await launchShell({ args: ["."], env: { ...process.env, PEN_DESKTOP_URL: editorBaseUrl } });
+  const editor = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(editorBaseUrl) && !p.url().startsWith(`${editorBaseUrl}/agent`) });
   await expect(editor.locator("#ready")).toHaveText("stub-editor");
   const tabbar =
     app.windows().find((p) => p.url().endsWith("/tabbar/tabbar.html")) ??
@@ -417,8 +418,9 @@ test("fixture emulate iphone-15: width, screenshot aspect, release clears and re
 
     // A colour-scheme-only fixture never touches the menu's record.
     await clickMenu(env, "Viewport", "Desktop — 1440");
-    // The 1440 preset is wider than the window, so it is scaled to fit; innerWidth lands within a few px of 1440.
-    await expect.poll(async () => Math.abs((await readInfo(env.site)).w - 1440)).toBeLessThanOrEqual(3);
+    // The 1440 preset is wider than the tab area (the agent panel takes the left side), so it is scaled to fit.
+    // Observed: the scale is visual only, innerWidth stays at the tab area's width (within a few px of the base width).
+    await expect.poll(async () => Math.abs((await readInfo(env.site)).w - baseW)).toBeLessThanOrEqual(3);
     const applied2 = await cmd(env.editor, "applyFixture", { version: 1, url: `${site}/info`, emulate: { colorScheme: "dark" } });
     expect(applied2.ok, JSON.stringify(applied2)).toBe(true);
     await cmd(env.editor, "releaseFixture");

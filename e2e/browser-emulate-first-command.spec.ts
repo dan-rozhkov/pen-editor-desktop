@@ -6,7 +6,8 @@
 // Browser tools menu viewport on a brand-new empty browser tab. window.ts's
 // the commit gate (commitGate.ts) holds Emulation.* back until the tab has a document.
 // Hermetic: local servers only, no backend, no LLM.
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
+import { test, expect, type ElectronApplication, type Page } from "@playwright/test";
+import { launchShell } from "./launch";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -33,6 +34,7 @@ test.beforeAll(async () => {
       res.setHeader("content-type", "text/html");
       return void res.end(`<!doctype html><title>popup</title><pre id="who">popup=real</pre>`);
     }
+    if (req.url === "/favicon.ico") return void res.writeHead(404).end(); // the tab-strip icon fetch (session UA, not emulated) is not a page load
     if (req.url === "/nocontent") return void res.writeHead(204).end();
     if (req.url === "/api/hello") return void res.writeHead(200, { "content-type": "application/json" }).end('{"msg":"real"}');
     if (req.url === "/mock") {
@@ -57,10 +59,10 @@ test.afterAll(async () => {
 interface Env { app: ElectronApplication; editor: Page; exits: string[] }
 
 async function launch(): Promise<Env> {
-  const app = await electron.launch({ args: ["."], env: { ...process.env, PEN_DESKTOP_URL: editorBaseUrl } });
+  const app = await launchShell({ args: ["."], env: { ...process.env, PEN_DESKTOP_URL: editorBaseUrl } });
   const exits: string[] = [];
   app.process().on("exit", (code, signal) => exits.push(`${code} ${signal}`));
-  const editor = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(editorBaseUrl) });
+  const editor = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(editorBaseUrl) && !p.url().startsWith(`${editorBaseUrl}/agent`) });
   await expect(editor.locator("#ready")).toHaveText("stub-editor");
   return { app, editor, exits };
 }

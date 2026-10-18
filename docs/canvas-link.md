@@ -1,6 +1,6 @@
 # Canvas link: agent panel ↔ canvas tab (desktop agent layout)
 
-Status: protocol for the desktop agent layout (flag `PEN_DESKTOP_AGENT_LAYOUT=1`).
+Status: protocol for the desktop agent layout (the only desktop layout).
 Types: `src/lib/canvasLink/protocol.ts` (pen-editor). Measured basis:
 `docs/spike-ipc-streaming-report.md` on branch `spike/ipc-streaming`.
 
@@ -101,5 +101,5 @@ See `protocol.ts`. Rules:
   update. Future work.
 - **Chatless robustness**: `isChatDisabled()` is also true when
   `window.penDesktop?.agentLayout === true` (exposed by the editor-tab preload
-  when the agent layout flag is on), so a reload that dropped `?chat=off` stays
+  in every desktop editor tab), so a reload that dropped `?chat=off` stays
   chatless.

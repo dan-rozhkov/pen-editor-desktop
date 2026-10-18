@@ -54,7 +54,7 @@ test("sidebar toggle collapses and expands the agent panel and persists across a
   const launch = () =>
     electron.launch({
       args: ["."],
-      env: { ...process.env, PEN_DESKTOP_URL: `${baseUrl}/app`, PEN_DESKTOP_AGENT_LAYOUT: "1", PEN_DESKTOP_USER_DATA_DIR: userData },
+      env: { ...process.env, PEN_DESKTOP_URL: `${baseUrl}/app`, PEN_DESKTOP_USER_DATA_DIR: userData },
     });
   const tabbarOf = async (app: ElectronApplication) =>
     app.windows().find((p) => p.url().endsWith("/tabbar/tabbar.html")) ??

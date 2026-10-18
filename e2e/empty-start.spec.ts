@@ -33,7 +33,7 @@ test.afterAll(() => new Promise<void>((r) => server.close(() => r())));
 test("agent layout opens with the panel only; the placeholder opens and returns from canvas tabs", async () => {
   const app = await electron.launch({
     args: ["."],
-    env: { ...process.env, PEN_DESKTOP_URL: `${baseUrl}/app`, PEN_DESKTOP_AGENT_LAYOUT: "1" },
+    env: { ...process.env, PEN_DESKTOP_URL: `${baseUrl}/app` },
   });
   try {
     const find = async (pred: (u: string) => boolean): Promise<Page> =>

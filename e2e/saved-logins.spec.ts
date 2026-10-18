@@ -8,7 +8,8 @@
 // The native dialog is replaced with a recorder, so the run never blocks and
 // never touches the Keychain (the answer is "Not Now").
 
-import { test, expect, _electron as electron } from "@playwright/test";
+import { test, expect } from "@playwright/test";
+import { launchShell } from "./launch";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -57,13 +58,13 @@ test.beforeAll(async () => {
 test.afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
 test("saved logins: fillLogin error path and the save prompt via the isolated-world binding", async () => {
-  const app = await electron.launch({
+  const app = await launchShell({
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
   });
 
   try {
-    const editorPage = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(baseUrl) });
+    const editorPage = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) });
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     // Record (and answer "Not Now" to) every native dialog.

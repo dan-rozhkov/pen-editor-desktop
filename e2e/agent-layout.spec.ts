@@ -4,8 +4,8 @@ import path from "node:path";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 
-// PEN_DESKTOP_AGENT_LAYOUT=1: an extra view loading /agent sits below the tab
-// bar, left of the tab views; the tab bar itself stays full width. The flag-off geometry is covered by smoke.spec.ts.
+// The agent panel: a view loading /agent sits below the tab bar, left of the
+// tab views; the tab bar itself stays full width.
 
 let server: http.Server;
 let baseUrl: string;
@@ -23,10 +23,10 @@ test.beforeAll(async () => {
 
 test.afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
-test("agent layout flag adds a left /agent panel; tabs still work", async () => {
+test("the window has a left /agent panel; tabs still work", async () => {
   const app = await electron.launch({
     args: ["."],
-    env: { ...process.env, PEN_DESKTOP_URL: `${baseUrl}/app?q=1`, PEN_DESKTOP_AGENT_LAYOUT: "1" },
+    env: { ...process.env, PEN_DESKTOP_URL: `${baseUrl}/app?q=1` },
   });
 
   const agentPage =

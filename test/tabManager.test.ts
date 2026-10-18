@@ -138,21 +138,6 @@ describe("TabManager", () => {
     expect(tm.count()).toBe(1);
   });
 
-  it("closing the last tab opens a fresh one", () => {
-    const a = tm.newTab();
-    tm.closeTab(a);
-    expect(tm.count()).toBe(1);
-    expect(tm.getSnapshot().activeId).not.toBe(a);
-  });
-
-  it("closing the last tab always respawns an EDITOR tab, even if the last tab was a browser tab", () => {
-    const a = tm.newTab("browser");
-    tm.closeTab(a);
-    expect(tm.count()).toBe(1);
-    expect(tm.getSnapshot().tabs[0].kind).toBe("editor");
-    expect(tm.getSnapshot().activeKind).toBe("editor");
-  });
-
   it("closeTab does not corrupt state when destroy() throws", () => {
     const a = tm.newTab();
     const b = tm.newTab();
@@ -919,17 +904,6 @@ describe("TabManager scopes (isolated browser sessions)", () => {
     expect(tm.currentBrowserTabId("a")).toBe(a2);
   });
 
-  it("when only session tabs would remain, closing the active tab respawns an editor tab instead of activating one", () => {
-    // [editor, session a] with the editor active: close the editor.
-    const editor = tm.getSnapshot().activeId!;
-    const a = tm.newTab("browser", "a");
-    tm.closeTab(editor);
-    const snap = tm.getSnapshot();
-    expect(snap.activeKind).toBe("editor");
-    expect(snap.activeId).not.toBe(a);
-    expect(snap.tabs.filter((t) => t.kind === "editor")).toHaveLength(1);
-  });
-
   it("closeSessionTabs closes only that session's tabs", () => {
     const shared = tm.newTab("browser");
     tm.newTab("browser", "a");
@@ -950,7 +924,7 @@ describe("TabManager scopes (isolated browser sessions)", () => {
   });
 });
 
-describe("TabManager with zero tabs (agent layout: lastTabPolicy stay-empty)", () => {
+describe("TabManager with zero tabs (closing the last tab leaves the window empty)", () => {
   const make = () => {
     const states: TabsSnapshot[] = [];
     let wc = 1;
@@ -961,7 +935,6 @@ describe("TabManager with zero tabs (agent layout: lastTabPolicy stay-empty)", (
         return v;
       },
       editorUrl: "https://x/app?chat=off",
-      lastTabPolicy: "stay-empty",
       onStateChanged: (s) => states.push(s),
     });
     return { tm, states };
@@ -1024,7 +997,6 @@ describe("TabManager with zero tabs (agent layout: lastTabPolicy stay-empty)", (
         return v;
       },
       editorUrl: "u",
-      lastTabPolicy: "stay-empty",
       onStateChanged: () => {},
     });
     const a = tm.newTab("editor", undefined, { activate: false });
@@ -1048,11 +1020,5 @@ describe("TabManager with zero tabs (agent layout: lastTabPolicy stay-empty)", (
     const { tm } = make();
     tm.newTab("browser", "sess");
     expect(tm.getSnapshot().activeId).toBeNull();
-  });
-
-  it("default (no option) still respawns an editor tab", () => {
-    const tm = new TabManager({ createView: () => makeFakeView(), editorUrl: "u", onStateChanged: () => {} });
-    tm.closeTab(tm.newTab());
-    expect(tm.count()).toBe(1);
   });
 });

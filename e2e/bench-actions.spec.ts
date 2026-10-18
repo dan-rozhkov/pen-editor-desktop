@@ -33,7 +33,8 @@
 // only hard failures are harness malfunctions (the stub editor never
 // loading, the shop/hard servers never starting).
 
-import { test, expect, _electron as electron, type Page } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+import { launchShell } from "./launch";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -451,14 +452,14 @@ async function runCaseWithTimeout(editorPage: Page, name: string, run: (p: Page)
 // --- the test --------------------------------------------------------------
 
 test("bench-actions: bridge speed and reliability", async () => {
-  const app = await electron.launch({
+  const app = await launchShell({
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: editorBaseUrl },
   });
 
   try {
     const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(editorBaseUrl),
+      predicate: (p) => p.url().startsWith(editorBaseUrl) && !p.url().startsWith(`${editorBaseUrl}/agent`),
     });
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 

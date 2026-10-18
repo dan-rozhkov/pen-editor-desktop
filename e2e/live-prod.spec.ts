@@ -17,7 +17,8 @@
 // HOME is redirected per launch so the app can never touch the developer's
 // real ~/.pen-editor/mcp.json (same rule as mcp.spec.ts).
 
-import { test, expect, _electron as electron, type Page } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+import { launchShell } from "./launch";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
@@ -42,7 +43,7 @@ test.setTimeout(300_000);
 
 test("live: the deployed bundle answers the shell's menu, MCP and backend contracts", async ({}, testInfo) => {
   const home = testInfo.outputPath("home");
-  const app = await electron.launch({
+  const app = await launchShell({
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: PROD_EDITOR, HOME: home, USERPROFILE: home },
   });

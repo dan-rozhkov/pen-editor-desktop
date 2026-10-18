@@ -6,7 +6,8 @@
 // the developer's saved logins are never touched.
 // Screenshots (light and dark) are written only when PW_SHOTS_DIR is set.
 
-import { test, expect, _electron as electron, type Page } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+import { launchShell } from "./launch";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -73,13 +74,13 @@ test.afterAll(async () => {
 
 test("passwords window: add, list, detail, search, edit, delete; light and dark", async () => {
   mkdirSync(userData, { recursive: true });
-  const app = await electron.launch({
+  const app = await launchShell({
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: baseUrl, PEN_DESKTOP_USER_DATA_DIR: userData },
   });
   const pageErrors: string[] = [];
   try {
-    const editorPage = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(baseUrl) });
+    const editorPage = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) });
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
     await app.evaluate(({ safeStorage }) => {

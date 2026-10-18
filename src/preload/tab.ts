@@ -191,8 +191,7 @@ const browser = {
     ipcRenderer.invoke("browser:command", { command: "closeSession", session: sessionId }),
 };
 
-// Canvas link (agent layout only; docs/canvas-link.md): this tab as a canvas the
-// agent panel may drive. Absent without the flag, so a flag-off tab is unchanged.
+// Canvas link (docs/canvas-link.md): this tab as a canvas the agent panel may drive.
 const canvasHost = {
   register(): void {
     ipcRenderer.send("canvas:register");
@@ -222,10 +221,8 @@ const api = {
   },
   registerMcpBridge,
   browser,
-  // Agent layout (main adds this argv marker to editor tabs only; the literal
-  // repeats config.ts AGENT_LAYOUT_ARG, a sandboxed preload cannot import it).
-  // Absent otherwise: the page cannot set argv, so this survives URL changes.
-  ...(process.argv.includes("--pen-agent-layout") ? { agentLayout: true as const, canvasHost } : {}),
+  agentLayout: true as const,
+  canvasHost,
 };
 
 contextBridge.exposeInMainWorld("penDesktop", api);

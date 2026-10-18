@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveBrowserCursorMotion, resetCursorMotionWarningForTests, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentLayoutEnabled, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveTabEditorUrl, editorPreloadArguments, AGENT_LAYOUT_ARG, initialTabs, onLastTabClosed } from "../src/main/config";
+import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveBrowserCursorMotion, resetCursorMotionWarningForTests, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, INITIAL_TABS } from "../src/main/config";
 
 describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
@@ -123,21 +123,6 @@ describe("resolveStorageIdentity", () => {
   });
 });
 
-describe("resolveAgentLayoutEnabled", () => {
-  it("is off by default and for empty/other values", () => {
-    expect(resolveAgentLayoutEnabled({})).toBe(false);
-    expect(resolveAgentLayoutEnabled({ PEN_DESKTOP_AGENT_LAYOUT: "" })).toBe(false);
-    expect(resolveAgentLayoutEnabled({ PEN_DESKTOP_AGENT_LAYOUT: "0" })).toBe(false);
-    expect(resolveAgentLayoutEnabled({ PEN_DESKTOP_AGENT_LAYOUT: "off" })).toBe(false);
-    expect(resolveAgentLayoutEnabled({ PEN_DESKTOP_AGENT_LAYOUT: "yes" })).toBe(false);
-  });
-  it("is on for 1/true/on, trimmed and case-insensitive", () => {
-    expect(resolveAgentLayoutEnabled({ PEN_DESKTOP_AGENT_LAYOUT: "1" })).toBe(true);
-    expect(resolveAgentLayoutEnabled({ PEN_DESKTOP_AGENT_LAYOUT: " TRUE " })).toBe(true);
-    expect(resolveAgentLayoutEnabled({ PEN_DESKTOP_AGENT_LAYOUT: "On" })).toBe(true);
-  });
-});
-
 describe("resolveAgentPanelUrl", () => {
   it("replaces /app with /agent on the default URL", () => {
     expect(resolveAgentPanelUrl(DEFAULT_EDITOR_URL)).toBe("https://pen-editor.onrender.com/agent");
@@ -196,30 +181,8 @@ describe("resolveCanvasTabUrl", () => {
   });
 });
 
-describe("resolveTabEditorUrl", () => {
-  it("flag on: the canvas-tab URL", () => {
-    expect(resolveTabEditorUrl("http://h/app?q=1", true)).toBe("http://h/app?q=1&chat=off");
-  });
-  it("flag off: the editor URL verbatim", () => {
-    expect(resolveTabEditorUrl("http://h/app?q=1&chat=on", false)).toBe("http://h/app?q=1&chat=on");
-  });
-});
-
-describe("editorPreloadArguments", () => {
-  it("passes the marker only with the flag on", () => {
-    expect(editorPreloadArguments(true)).toEqual([AGENT_LAYOUT_ARG]);
-    expect(editorPreloadArguments(false)).toEqual([]);
-    expect(AGENT_LAYOUT_ARG).toBe("--pen-agent-layout");
-  });
-});
-
-describe("empty start decisions", () => {
-  it("agent layout opens no initial tab and stays empty after the last close", () => {
-    expect(initialTabs(true)).toEqual([]);
-    expect(onLastTabClosed(true)).toBe("stay-empty");
-  });
-  it("flag off keeps one editor tab and respawns on last close", () => {
-    expect(initialTabs(false)).toEqual(["editor"]);
-    expect(onLastTabClosed(false)).toBe("respawn-editor");
+describe("empty start", () => {
+  it("opens no initial tab", () => {
+    expect(INITIAL_TABS).toEqual([]);
   });
 });

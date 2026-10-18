@@ -18,7 +18,7 @@ describe("resolveWindowTheme", () => {
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { adoptPanelTheme, contentBackground, fallbackTheme, glassTint, isPanelDocument, ISLAND_BG, GLASS_ALPHA_DIFFERENT, GLASS_ALPHA_SAME } from "../src/main/windowTheme";
+import { adoptPanelTheme, contentBackground, FALLBACK_THEME, glassTint, isPanelDocument, ISLAND_BG, GLASS_ALPHA_DIFFERENT, GLASS_ALPHA_SAME } from "../src/main/windowTheme";
 
 describe("adoptPanelTheme", () => {
   it("adopts the panel theme until an editor reported", () => {
@@ -34,17 +34,13 @@ describe("adoptPanelTheme", () => {
   });
 });
 
-describe("agent layout colours", () => {
-  it("dark island = frontend panel surface; flag-off dark content is unchanged", () => {
-    expect(contentBackground("dark", true)).toBe("#2a2a2a");
-    expect(contentBackground("dark", false)).toBe("#1a1a1a");
-    expect(contentBackground("light", true)).toBe("#ffffff");
-    expect(contentBackground("light", false)).toBe("#ffffff");
+describe("window colours", () => {
+  it("content background = the island colour (frontend panel surface)", () => {
+    expect(contentBackground("dark")).toBe("#2a2a2a");
+    expect(contentBackground("light")).toBe("#ffffff");
   });
-  it("falls back to light in the agent layout regardless of the OS", () => {
-    expect(fallbackTheme(true, true)).toBe("light");
-    expect(fallbackTheme(false, true)).toBe("dark");
-    expect(fallbackTheme(false, false)).toBe("light");
+  it("falls back to light regardless of the OS", () => {
+    expect(FALLBACK_THEME).toBe("light");
   });
   it("tokens.css --island-bg equals the TS constants", () => {
     const css = readFileSync(path.join(__dirname, "../src/tabbar/tokens.css"), "utf8");

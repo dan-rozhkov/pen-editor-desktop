@@ -55,7 +55,8 @@
 // bench-*.spec.ts) — run explicitly via `npm run test:e2e:bench`. It spends
 // real tokens on a real chat turn per run.
 
-import { test, expect, _electron as electron, type Page, type Request } from "@playwright/test";
+import { test, expect, type Page, type Request } from "@playwright/test";
+import { launchShell } from "./launch";
 import fs from "node:fs";
 import path from "node:path";
 import { startBenchShopServer, type OrderRecord } from "./fixtures/bench-shop/server";
@@ -354,7 +355,7 @@ async function runOnce(runIndex: number, sharedHome?: string): Promise<RunMetric
     path.join(process.cwd(), "test-results", "bench", `home-${BENCH_MODE}-${Date.now()}-${runIndex}`);
   fs.mkdirSync(home, { recursive: true });
 
-  const app = await electron.launch({
+  const app = await launchShell({
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: PROD_EDITOR, HOME: home, USERPROFILE: home },
   });

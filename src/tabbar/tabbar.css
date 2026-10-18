@@ -205,7 +205,7 @@ body {
 /* --- glass + islands (agent layout; `data-layout="agent"` from the tabbar:state
    snapshot). The tab bar view is transparent: tabs sit directly on the window
    glass (macOS vibrancy; a solid neutral window colour elsewhere). No rim, no
-   hairlines, no opaque fills. Everything above is untouched with the flag off. --- */
+   hairlines, no opaque fills.  --- */
 :root[data-layout="agent"] body,
 :root[data-layout="agent"][data-macos] body { background: transparent; color: var(--glass-text); }
 :root[data-layout="agent"] body::after { display: none; }

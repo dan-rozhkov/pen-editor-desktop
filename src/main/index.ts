@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { app, BaseWindow, safeStorage, session } from "electron";
-import { resolveAgentLayoutEnabled, DISPLAY_APP_NAME, STORAGE_IDENTITY_FILE, resolveEditorUrl, resolveStorageIdentity, storageIdentityFileText } from "./config";
+import { DISPLAY_APP_NAME, STORAGE_IDENTITY_FILE, resolveEditorUrl, resolveStorageIdentity, storageIdentityFileText } from "./config";
 import { createMainWindow } from "./window";
 import { createMcpService } from "./mcp/service";
 import { denyAllPermissions } from "./browser/permissions";
@@ -12,8 +12,6 @@ import { createPasswordsWindow } from "./passwordsWindow";
 import { shouldReopenMainWindow } from "./closeTarget";
 
 const editorUrl = resolveEditorUrl(process.env);
-// PEN_DESKTOP_AGENT_LAYOUT: flag-gated left agent panel (see CLAUDE.md "Agent layout").
-const agentLayout = resolveAgentLayoutEnabled(process.env);
 
 // Storage identity (config.ts resolveStorageIdentity). The app was renamed from
 // "Pineapple Editor" to "Sideform Desktop". An existing install keeps its
@@ -130,11 +128,11 @@ app.whenReady().then(async () => {
   // here rather than inside TabManager's per-tab createView.
   denyAllPermissions(session.fromPartition("persist:penbrowser"));
 
-  createMainWindow(editorUrl, mcpService, loginServices, agentLayout);
+  createMainWindow(editorUrl, mcpService, loginServices);
 
   app.on("activate", () => {
     // The Passwords window is not a main window: it must not count here.
-    if (shouldReopenMainWindow(BaseWindow.getAllWindows(), (w) => loginServices.passwordsWindow.owns(w))) createMainWindow(editorUrl, mcpService, loginServices, agentLayout);
+    if (shouldReopenMainWindow(BaseWindow.getAllWindows(), (w) => loginServices.passwordsWindow.owns(w))) createMainWindow(editorUrl, mcpService, loginServices);
   });
 
   try {

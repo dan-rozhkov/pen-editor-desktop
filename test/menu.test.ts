@@ -39,15 +39,8 @@ describe("buildMenuTemplate", () => {
     expect(buildMenuTemplate(actions, { isMac: false })[0].label).toBe("File");
   });
 
-  it("New Tab triggers newTab with CmdOrCtrl+T", () => {
-    const i = item("New Tab");
-    expect(i.accelerator).toBe("CmdOrCtrl+T");
-    (i.click as () => void)();
-    expect(actions.newTab).toHaveBeenCalled();
-  });
-
-  it("reads New Canvas Tab with canvasTabs, same action and accelerator", () => {
-    const t = buildMenuTemplate(actions, { isMac: false, canvasTabs: true });
+  it("reads New Canvas Tab, same action and accelerator", () => {
+    const t = buildMenuTemplate(actions, { isMac: false });
     const i = flatten(t).find((x) => x.label === "New Canvas Tab")!;
     expect(i.accelerator).toBe("CmdOrCtrl+T");
     (i.click as () => void)();
@@ -228,7 +221,7 @@ describe("buildNewTabMenuTemplate", () => {
     const actions = { newTab: vi.fn(), newBrowserTab: vi.fn() };
     const [editor, browser] = buildNewTabMenuTemplate(actions);
 
-    expect(editor.label).toBe("New Editor Tab");
+    expect(editor.label).toBe("New Canvas Tab");
     // Display-only: the application menu already owns ⌘T.
     expect(editor.accelerator).toBe("CmdOrCtrl+T");
     expect(editor.registerAccelerator).toBe(false);
@@ -238,16 +231,6 @@ describe("buildNewTabMenuTemplate", () => {
     expect(browser.label).toBe("New Browser Tab");
     (browser.click as () => void)();
     expect(actions.newBrowserTab).toHaveBeenCalledOnce();
-  });
-
-  it("labels the editor item as a canvas tab in the agent layout, same action", () => {
-    const actions = { newTab: vi.fn(), newBrowserTab: vi.fn() };
-    const [editor, browser] = buildNewTabMenuTemplate(actions, { canvasTabs: true });
-    expect(editor.label).toBe("New Canvas Tab");
-    expect(browser.label).toBe("New Browser Tab");
-    (editor.click as () => void)();
-    expect(actions.newTab).toHaveBeenCalledOnce();
-    expect(buildNewTabMenuTemplate(actions, { canvasTabs: false })[0].label).toBe("New Editor Tab");
   });
 });
 

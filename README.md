@@ -8,6 +8,13 @@ first launch. macOS only, unsigned (v1).
 
 - `npm start` — run against production
 - `npm run dev` — run against a local `pen-editor` dev server (:5173)
+
+The window is the agent layout: a chat agent panel on the left, canvas and
+browser tabs on the right. The window opens with no tab (an empty state); open a
+canvas tab with **New Canvas Tab** (Cmd/Ctrl+T). The old single-tab "classic"
+layout and its `PEN_DESKTOP_AGENT_LAYOUT` opt-out were removed; both
+`npm start` and `npm run dev` always show the agent layout.
+
 - `npm run dist` — build the .app/.dmg into `release/`
 
 ## MCP: let an agent drive the editor

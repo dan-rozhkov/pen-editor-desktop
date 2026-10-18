@@ -55,7 +55,7 @@ type Panel = {
 async function launch(): Promise<{ app: ElectronApplication; panel: Page; editor: Page; tabbar: Page }> {
   const app = await electron.launch({
     args: ["."],
-    env: { ...process.env, PEN_DESKTOP_URL: `${baseUrl}/app`, PEN_DESKTOP_AGENT_LAYOUT: "1" },
+    env: { ...process.env, PEN_DESKTOP_URL: `${baseUrl}/app` },
   });
   const find = async (pred: (u: string) => boolean) =>
     app.windows().find((p) => pred(p.url())) ?? (await app.waitForEvent("window", { predicate: (p) => pred(p.url()) }));

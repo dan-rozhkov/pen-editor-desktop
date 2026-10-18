@@ -82,24 +82,18 @@ export function glassTint(theme: UITheme, osDark: boolean): GlassTint {
   return { color: `rgba(${r}, ${g}, ${b}, ${alpha})`, alpha };
 }
 
-// --- agent layout colours: the ONE TS place (the CSS twin is tokens.css `--island-bg`,
+// --- window colours: the ONE TS place (the CSS twin is tokens.css `--island-bg`,
 // pinned equal by test/windowTheme.test.ts) ---
 
 /** Island surface = the frontend's `--color-surface-panel` (pen-editor index.css). Also the agent panel / tab content / empty view background. */
 export const ISLAND_BG: Record<UITheme, string> = { light: "#ffffff", dark: "#2a2a2a" };
-/** Flag-off tab content background in dark (unchanged historical value). */
-const LEGACY_DARK_CONTENT_BG = "#1a1a1a";
 /** Non-macOS stand-in for the glass behind the islands. */
 export const GLASS_SOLID: Record<UITheme, string> = { light: "#e4e6ea", dark: "#2b2b2e" };
 
 /** Opaque background of tab content views / panel / placeholder (never flashes white in dark). */
-export function contentBackground(theme: UITheme, agentLayout: boolean): string {
-  if (theme === "light") return ISLAND_BG.light;
-  return agentLayout ? ISLAND_BG.dark : LEGACY_DARK_CONTENT_BG;
+export function contentBackground(theme: UITheme): string {
+  return ISLAND_BG[theme];
 }
 
-/** The theme assumed before any editor or the panel reported: the agent layout's frontend ignores the OS (stored `ui-theme`, default light). */
-export function fallbackTheme(agentLayout: boolean, osDark: boolean): UITheme {
-  if (agentLayout) return "light";
-  return osDark ? "dark" : "light";
-}
+/** The theme assumed before any editor or the panel reported: the frontend ignores the OS (stored `ui-theme`, default light). */
+export const FALLBACK_THEME: UITheme = "light";

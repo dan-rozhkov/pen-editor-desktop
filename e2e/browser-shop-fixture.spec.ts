@@ -10,7 +10,8 @@
 // over real IPC into a real WebContentsView pointed at the shop server — no
 // LLM, no chat, no network beyond localhost.
 
-import { test, expect, _electron as electron, type Page } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+import { launchShell } from "./launch";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { startBenchShopServer, type BenchShopServer } from "./fixtures/bench-shop/server";
@@ -60,14 +61,14 @@ function callBrowser<K extends keyof BrowserBridge>(
 }
 
 test("bench-shop fixture: consent gate, search, hover menu, filters, checkout validation, and order recording", async () => {
-  const app = await electron.launch({
+  const app = await launchShell({
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: editorBaseUrl },
   });
 
   try {
     const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(editorBaseUrl),
+      predicate: (p) => p.url().startsWith(editorBaseUrl) && !p.url().startsWith(`${editorBaseUrl}/agent`),
     });
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 

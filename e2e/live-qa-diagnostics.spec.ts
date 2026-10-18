@@ -1,7 +1,8 @@
 // Scratch live QA scenario: real LLM, built Electron shell, deployed prod
 // frontend+backend. Local fixture site returns 500 on signup. Run with
 // `npx playwright test --config playwright.live.config.ts e2e/live-qa-diagnostics.spec.ts`.
-import { test, expect, _electron as electron, type Page } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+import { launchShell } from "./launch";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { writeFileSync } from "node:fs";
@@ -48,7 +49,7 @@ test("live: QA mode diagnostics against a failing signup form", async ({}, testI
   const base = `http://127.0.0.1:${port}`;
 
   const home = testInfo.outputPath("home");
-  const app = await electron.launch({
+  const app = await launchShell({
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: PROD_EDITOR, HOME: home, USERPROFILE: home },
   });

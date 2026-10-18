@@ -67,12 +67,10 @@ function mcpStatusLabel(status: McpStatus): string {
  */
 export function buildNewTabMenuTemplate(
   actions: Pick<MenuActions, "newTab" | "newBrowserTab">,
-  // Agent layout (flag): editor tabs are canvas tabs (chat is in the left panel).
-  opts: { canvasTabs?: boolean } = {},
 ): MenuItemConstructorOptions[] {
   return [
     {
-      label: opts.canvasTabs ? "New Canvas Tab" : "New Editor Tab",
+      label: "New Canvas Tab",
       accelerator: "CmdOrCtrl+T",
       registerAccelerator: false,
       click: () => actions.newTab(),
@@ -91,14 +89,14 @@ export function buildNewTabMenuTemplate(
  */
 export function buildMenuTemplate(
   actions: MenuActions,
-  opts: { isMac: boolean; canvasTabs?: boolean; agentPanel?: { collapsed: boolean } },
+  opts: { isMac: boolean; agentPanel?: { collapsed: boolean } },
   mcpStatus: McpStatus = "off",
   cursor: CursorMenuState = { ...defaultCursorSettings(), motionLocked: false, enabledLocked: false },
 ): MenuItemConstructorOptions[] {
   const fileMenu: MenuItemConstructorOptions = {
     label: "File",
     submenu: [
-      { label: opts.canvasTabs ? "New Canvas Tab" : "New Tab", accelerator: "CmdOrCtrl+T", click: () => actions.newTab() },
+      { label: "New Canvas Tab", accelerator: "CmdOrCtrl+T", click: () => actions.newTab() },
       { label: "New Browser Tab", click: () => actions.newBrowserTab() },
       { label: "Passwords…", click: () => actions.openPasswords() },
       {

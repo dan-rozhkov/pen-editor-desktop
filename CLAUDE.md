@@ -13,7 +13,7 @@ used verbatim. The AI backend stays remote. Design spec: `docs/superpowers/specs
 ```bash
 npm run build     # tsc + copy static files → dist/
 npm start         # build + launch Electron
-npm run dev       # same, against http://localhost:5173
+npm run dev       # same, against http://localhost:5173 (agent layout, like every launch)
 npm test          # Vitest unit tests (test/)
 npm run test:e2e  # build + Playwright _electron smoke (stub HTTP server, no network)
 npm run test:e2e:live  # opt-in: same shell against the DEPLOYED frontend/backend (network)
@@ -37,27 +37,23 @@ as CommonJS (sandboxed preloads can't be ESM) — no `.js` import-extension
 rule here. `src/tabbar/renderer.ts` must compile to a plain script (no
 `exports`/`require` in the output — it runs in a CSP'd `<script src>`).
 
-## Agent layout (flag)
+## Agent layout (the only layout)
 
-One step of the agent-layout feature (a chat agent docked beside the tabs).
-`PEN_DESKTOP_AGENT_LAYOUT=1` (`config.ts` `resolveAgentLayoutEnabled`; also
-`true`/`on`) adds a left panel to the main window. The flag is resolved once in
-`index.ts` (like `editorUrl`) and passed to `createMainWindow`; `window.ts`
-reads no env. The panel is a separate `WebContentsView` loading the frontend's
+The desktop window is a chat agent docked beside the tabs. There is ONE layout:
+the former classic layout (single editor tab, rim, no panel) and its flag
+`PEN_DESKTOP_AGENT_LAYOUT` were removed; nothing reads that variable any more.
+The main window has a left panel, a separate `WebContentsView` loading the frontend's
 `/agent` page (`resolveAgentPanelUrl`: the LAST path segment `app` becomes
 `agent`, base path prefix kept, `/app/` -> `/agent`; a path not ending in
 `app` gets `agent` beside its last segment; the editor's query and hash are
-dropped). Flag off: no panel and the geometry is byte-for-byte the old one.
+dropped).
 
-Geometry is the pure `src/main/layout.ts` (`computeWindowLayout`). The tab bar
-view and the macOS rim span the FULL window width as before, so the traffic
-lights stay where they are. The panel sits BELOW the tab bar on the left (top =
-tab-bar height incl. the browser address row, inset by the 1px rim left and
-bottom like tab views; flag-off geometry, the agent layout below differs); tab views get `tabArea`, to the right of the panel
-(one rim-width gap between them). `TabManager.layout(rect)` just applies that
-rect; it computes nothing. Panel width is a parameter (`clampAgentPanelWidth`:
-min 300, max 50% of the window; default 380); drag-resize is not built; collapse
-is the sidebar toggle below.
+Geometry is the pure `src/main/layout.ts` (`computeWindowLayout`, always in islands mode).
+The tab bar view spans the FULL window width, so the traffic lights stay where they are. The panel
+sits BELOW the tab bar on the left; tab views get `tabArea`, to the right of the panel.
+`TabManager.layout(rect)` just applies that rect; it computes nothing. Panel width is a
+parameter (`clampAgentPanelWidth`: min 300, max 50% of the window; default 380); drag-resize
+is not built; collapse is the sidebar toggle below.
 
 Inside the tab bar the strip starts at the panel's right edge: `window.ts`
 adds `tabStripLeft` to the existing `tabbar:state` snapshot (no new channel);
@@ -68,9 +64,9 @@ the bar above the panel is an empty draggable title area. Popup anchors (new
 tab, browser tools) are tab-bar CSS px = window coords (tab bar at x=0): no
 offset.
 
-**Glass + islands (agent layout look).** With the flag `computeWindowLayout` gets
-`islands: { gap: ISLAND_GAP (8), radius: ISLAND_RADIUS (12) }` (`layout.ts`, unit-tested)
-and the flag-off geometry above is replaced by: the tab bar full width at the top (it
+**Glass + islands.** `computeWindowLayout` gets
+`islands: { gap: ISLAND_GAP (8), radius: ISLAND_RADIUS (12) }` (`layout.ts`, unit-tested):
+the tab bar full width at the top (it
 also holds the traffic lights); below it two rounded islands, the panel at `x = gap`, then
 `gap`, then the tab area (active tab view + empty-state view), then `gap` to the right
 edge and `gap` to the bottom edge. The panel island starts at the tab ROW height (38,
@@ -78,22 +74,23 @@ edge and `gap` to the bottom edge. The panel island starts at the tab ROW height
 row. Default 1440x900: panel `{x:8, y:38, w:380}`, tab area `{x:396, w:1036}` (y 38, or 70
 with an address row). `tabStripLeft` = the tab area's left edge. Radius: `ISLAND_RADIUS`
 (12) is set ONCE per view with `WebContentsView.setBorderRadius` (Electron 43) at creation
-(panel, empty view, every tab view); `layout()` only places views. `rim` is `null` in this
-mode: no `windowRim` view, `WINDOW_EDGE = 0` (the 1px rim stays for flag off).
+(panel, empty view, every tab view); `layout()` only places views. There is no window rim
+view and no 1px edge (`WINDOW_EDGE` and `WindowLayout.rim` are gone).
 
 *Glass.* macOS `vibrancy: "under-window"` + `visualEffectState: "active"` on the BaseWindow;
 the tab bar view is `#00000000` and `[data-layout="agent"]` (tabbar.css) makes body/rows
-transparent. Non-macOS: no vibrancy, `win.setBackgroundColor(GLASS_SOLID[theme])`. The
-snapshot carries `layout: "agent"` (`tabbarLayoutKind`); `renderer.ts` writes it to
-`data-layout` on `<html>`, and all agent styling lives under that selector (flag-off CSS is
-untouched).
+transparent. Non-macOS: no vibrancy, `win.setBackgroundColor(GLASS_SOLID[theme])`. `tabbar.html`
+carries a static `data-layout="agent"` on `<html>` (no longer sent in the snapshot), and the
+glass styling in `tabbar.css` hangs off that selector. The CSS rules written for the removed
+classic layout (rim shadow, opaque body fill) are still in `tabbar.css`/`tokens.css`, overridden
+by the agent block; delete them in a follow-up once the tab-icon work in the other worktree has merged.
 
 *Colours: one place each.* TS: `windowTheme.ts` (`ISLAND_BG` light `#ffffff` / dark
 `#2a2a2a` = the frontend's `--color-surface-panel`, `GLASS_SOLID`, `contentBackground`,
-`fallbackTheme`, `glassTint`). CSS: `tokens.css` (`--island-bg`, same values, pinned equal by
+`FALLBACK_THEME`, `glassTint`). CSS: `tokens.css` (`--island-bg`, same values, pinned equal by
 `test/windowTheme.test.ts`; `--tab-active-bg` is an alias of it). Islands (panel, tab views,
 empty view, address row) use the island colour, so in dark the chat and the tab island match.
-The flag-off dark content colour stays `#1a1a1a` (`contentBackground(theme, false)`). The active
+The active
 tab pill keeps its own translucent `--glass-tab-active` (unchanged).
 
 *Address row.* Painted in the island colour as the top of the tab island: inset to the tab
@@ -114,7 +111,7 @@ runs). The vibrancy follows the OS; a plain `View` (`glassTintView`, bottom-most
 no page/IPC) paints `glassTint(theme, osDark)` over it: `rgba(244,245,248,a)` light /
 `rgba(28,28,30,a)` dark, `a = 0.35` when the editor theme matches the OS appearance and `0.85`
 when it differs; re-applied on each `pushState` and on `nativeTheme` `updated`. The frontend
-ignores the OS (stored `ui-theme`, default light): fallback "light". The panel page paints its
+ignores the OS (stored `ui-theme`, default light): fallback "light" (`FALLBACK_THEME`). The panel page paints its
 theme as the class `dark` on `<html>`; its preload (`preload/agentPanel.ts`) reads it on
 DOMContentLoaded and observes the class with a MutationObserver, sending `panel:theme`
 ("light" | "dark") on change (no polling). Main (`onPanelTheme`) accepts it only from the panel's
@@ -125,7 +122,7 @@ editor tab exists. Vibrancy material stays `under-window` (`sidebar` renders
 identically; `menu` ~3 levels darker; `header` near opaque); `screencapture -l` does not include
 the blurred wallpaper, so that effect needs a real-screen check.
 
-**Sidebar toggle (agent layout).** A button right after the traffic lights (before the tab
+**Sidebar toggle.** A button right after the traffic lights (before the tab
 strip) hides/shows the agent panel; also View > "Show/Hide Agent Panel" with
 `CmdOrCtrl+Alt+B` (free in the editor: Cmd+\ is "hide UI", Cmd+Alt+S is boolean subtract).
 State: `panelCollapsed` in `window.ts`, persisted in `agent-panel-settings.json` in userData
@@ -144,13 +141,13 @@ placeholder or the active tab, and collapsing while the panel has focus hands it
 or a launch never auto-expands a collapsed panel: only the user's toggle changes it.
 Tests: `layout.test.ts`, `agentPanelSettings.test.ts`, `menu.test.ts`, `e2e/agent-panel-toggle.spec.ts`.
 
-**Tab icons (agent layout).** Every tab has a leading icon (`tabIcons.ts`, pure, tested):
+**Tab icons.** Every tab has a leading icon (`tabIcons.ts`, pure, tested):
 canvas (editor) tabs a canvas glyph in a tinted rounded square, browser tabs the page favicon,
 globe until one arrives. The favicon comes from `page-favicon-updated`: a valid `data:` icon is used
 as is, the first http(s) URL is fetched through THAT tab's own session (`createIconFetcher` +
 `toIconDataUrl`, 64 KB cap, image types only), memoized by favicon URL (`createFaviconMemo`), and
-aborted when the tab is destroyed. Only the shared browser's tabs and only with the agent layout
-(flag off and isolated QA-session tabs make no extra request). A per-tab navigation generation
+aborted when the tab is destroyed. Only the shared browser's tabs
+(isolated QA-session tabs make no extra request). A per-tab navigation generation
 (`createGeneration`) drops a fetch that finishes after a new document began; the icon is cleared
 only when the origin changes (`shouldClearFavicon`). It is validated ONCE when stored on the tab
 (`acceptFavicon`, the single icon validator `isIconDataUrl` of `passwords/helpers.ts`) and travels
@@ -181,27 +178,20 @@ screenshot of the views).
 **Canvas tabs.** With the chat in the left panel, editor tabs load the editor
 chatless: `resolveCanvasTabUrl(editorUrl)` (`config.ts`) adds `chat=off` to the
 RAW query string (existing `chat` params removed, every other param kept
-byte-for-byte; path and hash kept), so the tab is `/app?chat=off`. The
-decision is `resolveTabEditorUrl(editorUrl, agentLayout)` (`config.ts`),
+byte-for-byte; path and hash kept), so the tab is `/app?chat=off`. It is
 called ONCE in `window.ts` (`tabEditorUrl`, handed to `TabManager`), so every path
-that creates an editor tab (initial, "+" menu, Cmd+T, the panel-navigation
-fallback, macOS reopen) gets it; flag off passes the plain editor URL. The
-panel URL is still derived from the plain `editorUrl`. The "+" menu item reads
-"New Canvas Tab" with the flag on ("New Editor Tab" off), and so does File
-"New Tab" (Cmd+T); no command id changes. The frontend router may drop
+that creates an editor tab ("+" menu, Cmd+T, the panel-navigation
+fallback, macOS reopen) gets it. The
+panel URL is still derived from the plain `editorUrl`. The "+" menu item and File
+"New Tab" (Cmd+T) both read "New Canvas Tab"; no command id changes. The frontend router may drop
 `?chat=off` on a reload, so editor tabs also get `window.penDesktop.agentLayout
-= true` from `preload/tab.ts`: main passes `--pen-agent-layout`
-(`editorPreloadArguments`, `webPreferences.additionalArguments`, editor tabs
-only) and the sandboxed preload reads it from `process.argv`. Flag off: the
-property is absent. e2e: `agent-layout.spec.ts` / `smoke.spec.ts`. The canvas-link channels (`docs/canvas-link.md`) are described in "Canvas link" below.
+= true` and `canvasHost` from `preload/tab.ts` (the preload is loaded by editor tabs
+only; browser tabs have no preload). e2e: `agent-layout.spec.ts` / `smoke.spec.ts`. The canvas-link channels (`docs/canvas-link.md`) are described in "Canvas link" below.
 
-**Empty start (zero tabs).** With the flag the window opens with ONLY the agent
-panel: no initial canvas tab. Decisions are pure functions in `config.ts`:
-`initialTabs(agentLayout)` (`[]` with the flag, `["editor"]` off) and
-`onLastTabClosed(agentLayout)` (`"stay-empty"` with the flag, `"respawn-editor"`
-off, the historical behavior); `window.ts` feeds the latter to `TabManager`'s
-`onLastTabClosed` option, so closing the last tab (or the active tab when only
-background session tabs remain) leaves zero tabs and the window open. A tab
+**Empty start (zero tabs).** The window opens with ONLY the agent
+panel: no initial canvas tab (`INITIAL_TABS` is `[]` in `config.ts`). Closing the last tab (or the
+active tab when only background session tabs remain) leaves zero tabs and the window open;
+`TabManager` never respawns a tab. A tab
 opens when the panel calls `canvas:open` or the user opens one ("+" menu,
 Cmd+T, placeholder). Zero-tab safety: snapshot has `tabs: []`, `activeId` and
 `activeKind` null, `mcpActiveWebContentsId` null (the MCP dispatcher answers its
@@ -211,8 +201,7 @@ commands that target the active editor tab (`forwardToActiveTab`: File Open,
 Export..., Import/Export Design Tokens) are a **no-op** with no tab (they do NOT
 open a canvas tab: the editor must be loaded before it can handle a command);
 Close Tab is `decideCloseTarget` "window" with zero tabs (closes the window, like a browser; "none" when only background session tabs remain). A new non-session tab becomes active when none is active, even if requested in the background (`activate:false`). macOS dock `activate` reopens a window
-the same way (panel only). **Placeholder:** while `activeId === null` with the
-flag, a local view (`src/tabbar/empty.html` + `empty.css` + `emptyRenderer.ts`,
+the same way (panel only). **Placeholder:** while `activeId === null`, a local view (`src/tabbar/empty.html` + `empty.css` + `emptyRenderer.ts`,
 same CSP as the tab bar, light/dark tokens shared via `tokens.css`, no remote content) covers the tab
 area with "Canvas and browser tabs open here." and two buttons, "New Canvas Tab"
 and "New Browser Tab". It has its OWN minimal preload (`src/preload/empty.ts`: `newCanvasTab`,
@@ -222,15 +211,15 @@ view via `isTabCreationSender`). Visibility, theme and focus decisions are pure
 (`emptyView.ts`, applied on change only); bounds (`tabArea`) follow `layout`.
 e2e: `e2e/empty-start.spec.ts` (`EMPTY_START_SHOT=<png>` saves a composite screenshot).
 
-## Canvas link (agent layout flag)
+## Canvas link
 
-Protocol, roles and message rules: `docs/canvas-link.md` (a copy; the source is pen-editor `docs/canvas-link.md` and `src/lib/canvasLink/protocol.ts`). Everything here exists only with `PEN_DESKTOP_AGENT_LAYOUT=1`; flag off creates no router, registers none of the `canvas:*` channels and the preloads expose nothing new on editor tabs.
+Protocol, roles and message rules: `docs/canvas-link.md` (a copy; the source is pen-editor `docs/canvas-link.md` and `src/lib/canvasLink/protocol.ts`). The router and the `canvas:*` channels exist in every window.
 
 - **Router** — `src/main/canvasLink.ts` (`CanvasLinkRouter`, pure; Electron injected like `tabManager.ts`; one per window, created in `window.ts`). The tab id on the wire is the tab's **webContents id** (like MCP `tabId`). Registry: per tab a `registrationId` (counter kept per tab, +1 on every `canvas:register`, so a reload gets a new one; a second register without a gone first sends `tab-gone` for the old one), the title and the activation order. `listTabs()` is ordered most recently active canvas tab first (never-activated tabs: latest registered first); `active` marks the tab active in the strip. `window.ts` feeds `syncTabs()` from `pushState` (`TabManager.editorTabsInfo()`; the router ignores a call that changed no tab, title or activation), and `canvas:tabs` is pushed only when the serialized list changed (register, gone, title, activation).
 - **Routing** — panel→tab `canvas:to-tab {tabId, env}` only to registered tabs, else `{kind:"error", refId: env.id}` comes back to the panel (as `canvas:from-tab`); tab→panel `canvas:to-panel env` is forwarded as `canvas:from-tab {tabId, env}` (main adds the sender). Payloads are never interpreted: only the envelope is checked (object, string `id`, finite number `sentAt`, object `msg` with string `kind`); malformed envelopes and the main-only kinds `error` / `tab-gone` coming from a renderer are dropped. Order is kept, nothing is batched. `tab-gone {registrationId}` goes to the panel when a registered tab is destroyed, navigates its main frame (a COMMITTED non-same-document `did-navigate`; not `did-start-navigation`, which also fires for denied navigations, 204s and downloads), sends `canvas:unregister`, or its renderer dies. A registered id that `syncTabs` no longer sees as an editor tab (a closing tab) is dropped the same way, so `canvas:tabs` never lists it as "Untitled". Main-made kinds: `error`, `tab-gone` (to the panel) and `panel-gone` (to every registered tab, `docs/canvas-link.md`).
 - **Open** — `canvas:open {activate?}` calls `TabManager.newTab("editor", undefined, { activate })` (editor tabs are canvas tabs in this layout; `activate !== true` creates the tab hidden in the background: no activation, no agent pin change, no strip flash) and resolves `{tabId, registrationId}` (the registration that resolved it) when THAT tab calls `canvas:register`; it rejects after 20 s (`OPEN_TIMEOUT_MS`, timer injectable) or when the tab is destroyed or its renderer dies first. A navigation of the new tab (its first load) does not reject it.
 - **Sender checks** — `canvas:register` / `canvas:unregister` / `canvas:to-panel`: this window's editor tabs only (`TabManager.isEditorTab`; `unregister` and `to-panel` only when registered); `canvas:list|open|activate|to-tab`: this window's agent panel webContents only (others get `[]`, a rejection or silence). Listeners are added per window and removed in the window's `closed` handler.
-- **Preloads** — editor tab: `window.penDesktop.canvasHost = { register, unregister, post, onMessage }`, exposed only when the `--pen-agent-layout` argument is present (same mechanism as `agentLayout`). Panel: `window.penAgentPanel = { version: 2, canvas: { listTabs, openTab, activateTab, post, onMessage, onTabsChanged }, browser }`.
+- **Preloads** — editor tab: `window.penDesktop.canvasHost = { register, unregister, post, onMessage }`, exposed on every editor tab (next to `agentLayout: true`). Panel: `window.penAgentPanel = { version: 2, canvas: { listTabs, openTab, activateTab, post, onMessage, onTabsChanged }, browser }`.
 - **Panel browser access** — the panel's browser tools run in the panel, with or without a canvas tab. `penAgentPanel.browser` has the same shape as `penDesktop.browser` (incl. `isolated(id)` and `closeSession(id)`) over the same `browser:command` invoke. A sandboxed preload cannot import `tab.ts`, so the code is a copy; `test/ipcContract.test.ts` pins both to the same command set. Main accepts the sender if it is an editor tab OR the panel (`isBrowserOwner` in `window.ts`). The panel's identity is its **webContents id**, used exactly like an editor tab's: it owns isolated sessions (`BrowserSessions` owner), checkpoint journals (`JournalOwners`, `isBrowserOwner` as the liveness check) and the shared fixture. When the panel reloads (a COMMITTED main-frame navigation: `did-frame-navigate` with `isMainFrame`; never `did-start-navigation`, which also fires for denied navigations, 204s and downloads) or its renderer dies, main releases the shared fixture, stops its journals and closes its sessions (`closeSessionsOwnedBy`), tells every registered canvas tab `{kind:"panel-gone"}` (main-made, on `canvas:from-panel`; the tab cancels in-flight work and abandons open streams) and resets the router's `canvas:tabs` dedupe (the reloaded panel gets a fresh push at `did-finish-load` and on `canvas:list`); on window close its sessions are closed and forgotten. Nothing else widens: no MCP for the panel (`mcpService.registerTab` is never called for it), and a browser/panel id is never a canvas tab.
 - Tests: `test/canvasLink.test.ts` (router), `test/preloadCanvasLink.test.ts`, the channel table and command-set checks in `test/ipcContract.test.ts`, `e2e/canvas-link.spec.ts` (list, both directions, openTab, tab-gone on close/reload, panel browser) and `e2e/agent-layout.spec.ts`.
 
@@ -295,17 +284,17 @@ CI of its own. Adding or renaming a forwarded id means touching four places:
 - `tabbar:state` main→tabbar (`TabsSnapshot`, now including `mcpStatus`), re-sent on tabbar `did-finish-load`
 - `tabbar:theme` main→tabbar (`light` | `dark`, active editor theme or system fallback)
 - `tabbar:new` / `tabbar:activate` / `tabbar:close` tabbar→main (sender-checked)
-- `panel:theme` agent panel preload→main (`light` | `dark`, agent layout only; accepted only from the panel's webContents and page) — the theme the panel paints, see "Theme and tint"
-- `tabbar:toggle-panel` tabbar→main (sender-checked) — the agent-layout sidebar button: show/hide the agent panel (see "Sidebar toggle"); the new state returns as `panelCollapsed` on `tabbar:state`
-- `tabbar:new-browser` tabbar/empty-state→main (sender-checked) — a user-driven browser tab (`newUserBrowserTab`); sent by the empty-state placeholder only (agent layout, `preload/empty.ts`)
-- `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Editor Tab / New Browser Tab; "New Canvas Tab" instead of "New Editor Tab" with the agent-layout flag), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` is sent by the empty-state placeholder's "New Canvas Tab" button (agent layout); e2e also drives it through `penTabbar.newTab()`, which a native menu can't be clicked through
+- `panel:theme` agent panel preload→main (`light` | `dark`; accepted only from the panel's webContents and page) — the theme the panel paints, see "Theme and tint"
+- `tabbar:toggle-panel` tabbar→main (sender-checked) — the sidebar button: show/hide the agent panel (see "Sidebar toggle"); the new state returns as `panelCollapsed` on `tabbar:state`
+- `tabbar:new-browser` tabbar/empty-state→main (sender-checked) — a user-driven browser tab (`newUserBrowserTab`); sent by the empty-state placeholder only (`preload/empty.ts`)
+- `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Canvas Tab / New Browser Tab), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` is sent by the empty-state placeholder's "New Canvas Tab" button; e2e also drives it through `penTabbar.newTab()`, which a native menu can't be clicked through
 - `tabbar:tools-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the browser chrome row's gear button: native menu (Viewport emulation via CDP, Open/Close Developer Tools, Zoom) for the active browser tab; builder in `src/main/browserToolsMenu.ts`
 - `tabbar:navigate` tabbar→main (sender-checked; `{action: "url" | "back" | "forward" | "reload", url?}`) — the address row driving the active browser tab, see "Built-in browser tab" below
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below
 - `mcp:call` main→tab only (`{callId, tool, args}`)
 - `mcp:result` tab→main (`{callId, type: "tool_result" | "tool_error", result?, error?}`)
-- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture" | "applyFixture" | "releaseFixture" | "clearActEmulation" | "fillLogin" | "startJournal" | "stopJournal" | "captureCheckpoint" | "assert" | "closeSession", args, session?}`, sent only by an *editor* tab's preload (or, with the agent layout flag, the agent panel's: `window.penAgentPanel.browser`) and verified against the registered editor tabs / the panel's webContents before acting; `session` (optional) routes to an isolated session, `closeSession` ends one (no new channel); see "Built-in browser tab" and "Isolated sessions" below
-- Canvas link (agent layout flag only; section "Canvas link"): `canvas:list` / `canvas:open` panel→main, **invoke/handle**; `canvas:activate` / `canvas:to-tab` panel→main (sender: the panel); `canvas:register` / `canvas:unregister` / `canvas:to-panel` tab→main (sender: an editor tab; `unregister` and `to-panel` only when registered); `canvas:from-tab` main→panel (`{tabId, env}`), `canvas:tabs` main→panel (`CanvasTabInfo[]`), `canvas:from-panel` main→tab (`env`; also the main-made `panel-gone` message)
+- `browser:command` tab→main, **invoke/handle** (request-response, unlike every other channel above) — `{command: "open" | "act" | "findImages" | "snapshot" | "perform" | "read" | "screenshot" | "tabs" | "capture" | "applyFixture" | "releaseFixture" | "clearActEmulation" | "fillLogin" | "startJournal" | "stopJournal" | "captureCheckpoint" | "assert" | "closeSession", args, session?}`, sent only by an *editor* tab's preload (or the agent panel's: `window.penAgentPanel.browser`) and verified against the registered editor tabs / the panel's webContents before acting; `session` (optional) routes to an isolated session, `closeSession` ends one (no new channel); see "Built-in browser tab" and "Isolated sessions" below
+- Canvas link (section "Canvas link"): `canvas:list` / `canvas:open` panel→main, **invoke/handle**; `canvas:activate` / `canvas:to-tab` panel→main (sender: the panel); `canvas:register` / `canvas:unregister` / `canvas:to-panel` tab→main (sender: an editor tab; `unregister` and `to-panel` only when registered); `canvas:from-tab` main→panel (`{tabId, env}`), `canvas:tabs` main→panel (`CanvasTabInfo[]`), `canvas:from-panel` main→tab (`env`; also the main-made `panel-gone` message)
 - `passwords:list` / `passwords:add` / `passwords:update` / `passwords:remove` / `passwords:never-remove` Passwords window→main, **invoke/handle**, each sender-checked against that window's own webContents; handlers are registered when the window opens and removed when it closes. No reply ever holds a password — see "Saved logins" below
 - `passwords:theme` main→Passwords window, payload `{ theme: "light" | "dark", vibrancyMatches: boolean }`. `theme` is the tab-bar theme (`tabbar:theme`) of the main window the user focused last (BaseWindow `focus`; each window's push is kept under its own key in `themeSource.ts`). If that window is closed or none was focused yet, the latest push of any open main window applies; with none left it follows `nativeTheme` again. `vibrancyMatches` is false when `theme` differs from the OS appearance: macOS sidebar vibrancy follows the OS, so the renderer then paints the sidebar opaque (`data-opaque-sidebar`). Pushed on window load and whenever the effective `{theme, vibrancyMatches}` changes (an unchanged value is not re-sent)
 - `passwords:changed` main→Passwords window, no payload. Sent when a site icon was stored (favicon fetched). The renderer re-reads `passwords:list` and refreshes the sidebar, rows and, in view mode only, the detail pane; an open Add/Edit form is never rebuilt
@@ -453,7 +442,7 @@ The `browser:command` `ipcMain.handle` in `window.ts` checks the sender
 against `isBrowserOwner` (`orphanRelease.ts`): `TabManager.isEditorTab()` — the
 single source of truth for "which webContents id is an editor tab" (there used
 to be a second, ad hoc `Set` kept in `window.ts` alongside it; the two could
-drift, so it was deleted) — OR, with the agent layout flag, the agent panel's
+drift, so it was deleted) — OR the agent panel's
 webContents id (its preload carries a copy of the same bridge; the copy is
 pinned identical by `test/preloadBrowserBridge.test.ts`).
 
@@ -1084,8 +1073,8 @@ without sharing cookies, tabs, fixtures or mocks. The shared browser
   browser). `tabs switch` in a session only repoints that session's agent tab (no
   activate/focus). A user click or tab-cycle on a session tab does not repoint the
   session's agent tab (only shared tabs follow the user's focus). Closing the active
-  tab never auto-activates a session tab: with only session tabs left an editor tab
-  is respawned (agent layout flag: the window stays at zero active tabs instead).
+  tab never auto-activates a session tab: with only session tabs left no editor tab
+  is respawned: the window stays at zero active tabs.
 - **Background tabs.** A session tab never becomes active and gets no address-bar
   focus (`setVisible(false)`); the editor keeps focus. The user clicks it to
   watch. A hidden session tab still screenshots. Shared tabs behave as before.

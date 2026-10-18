@@ -11,7 +11,8 @@
 // throwaway HOME so `os.homedir()` inside the app process can never resolve
 // to this machine's real home directory.
 
-import { test, expect, _electron as electron } from "@playwright/test";
+import { test, expect } from "@playwright/test";
+import { launchShell } from "./launch";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
@@ -88,14 +89,14 @@ test("desktop MCP bridge: install-the-.app-and-the-plugin claim, end to end", as
   // Playwright-managed temp dir (cleaned up with the rest of the test's
   // output), never the real $HOME.
   const home = testInfo.outputPath("home");
-  const app = await electron.launch({
+  const app = await launchShell({
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: baseUrl, HOME: home, USERPROFILE: home },
   });
 
   try {
     const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl),
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`),
     });
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
@@ -207,14 +208,14 @@ test("desktop MCP bridge: install-the-.app-and-the-plugin claim, end to end", as
 
 test("desktop MCP bridge: the real pen-editor-plugin proxy discovers the endpoint with zero configuration", async ({}, testInfo) => {
   const home = testInfo.outputPath("home-plugin");
-  const app = await electron.launch({
+  const app = await launchShell({
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: baseUrl, HOME: home, USERPROFILE: home },
   });
 
   try {
     const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl),
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`),
     });
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
@@ -329,14 +330,14 @@ test("desktop MCP bridge: the real pen-editor-plugin proxy discovers the endpoin
 // navigation must still drop it.
 test("desktop MCP bridge: same-document (SPA) navigation keeps the bridge alive; a real navigation still drops it", async ({}, testInfo) => {
   const home = testInfo.outputPath("home-spa-nav");
-  const app = await electron.launch({
+  const app = await launchShell({
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: baseUrl, HOME: home, USERPROFILE: home },
   });
 
   try {
     const editorPage = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl),
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`),
     });
     await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
 
@@ -390,14 +391,14 @@ test("desktop MCP bridge: same-document (SPA) navigation keeps the bridge alive;
 // focused (finding 2).
 test("desktop MCP bridge: list_editor_tabs discovers ids that explicit tabId routing actually reaches", async ({}, testInfo) => {
   const home = testInfo.outputPath("home-list-tabs");
-  const app = await electron.launch({
+  const app = await launchShell({
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: baseUrl, HOME: home, USERPROFILE: home },
   });
 
   try {
     const editorPage1 = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl),
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`),
     });
     await expect(editorPage1.locator("#ready")).toHaveText("stub-editor");
 
@@ -438,7 +439,7 @@ test("desktop MCP bridge: list_editor_tabs discovers ids that explicit tabId rou
     // is the same `tabbar:new` IPC its "New Editor Tab" item ends up in.
     await tabbarPage.evaluate(() => (window as unknown as { penTabbar: { newTab(): void } }).penTabbar.newTab());
     const editorPage2 = await app.waitForEvent("window", {
-      predicate: (p) => p.url().startsWith(baseUrl) && p !== editorPage1,
+      predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`) && p !== editorPage1,
     });
     await expect(editorPage2.locator("#ready")).toHaveText("stub-editor");
 

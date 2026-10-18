@@ -1,4 +1,5 @@
-import { test, expect, _electron as electron } from "@playwright/test";
+import { test, expect } from "@playwright/test";
+import { launchShell } from "./launch";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -24,8 +25,8 @@ test.beforeAll(async () => {
 
 test.afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
-test("launches, opens a tab with the editor, exposes the menu bridge", async () => {
-  const app = await electron.launch({
+test("launches, opens a canvas tab with the editor, exposes the menu bridge", async () => {
+  const app = await launchShell({
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
   });
@@ -33,7 +34,7 @@ test("launches, opens a tab with the editor, exposes the menu bridge", async () 
 
   // Windows: the tab bar view and the first tab view each surface as a page.
   const editorPage = await app.waitForEvent("window", {
-    predicate: (p) => p.url().startsWith(baseUrl),
+    predicate: (p) => p.url().startsWith(baseUrl) && !p.url().startsWith(`${baseUrl}/agent`),
   });
   const tabbarPage =
     app.windows().find((page) => page.url().endsWith("/tabbar/tabbar.html")) ??
@@ -41,11 +42,9 @@ test("launches, opens a tab with the editor, exposes the menu bridge", async () 
       predicate: (page) => page.url().endsWith("/tabbar/tabbar.html"),
     }));
   await expect(editorPage.locator("#ready")).toHaveText("stub-editor");
-  // Flag off: the plain editor URL (no canvas-tab chat=off).
-  expect(new URL(editorPage.url()).searchParams.has("chat")).toBe(false);
-
-  // Flag off: no agentLayout marker.
-  expect(await editorPage.evaluate(() => (window as never as { penDesktop?: { agentLayout?: boolean } }).penDesktop?.agentLayout)).toBeUndefined();
+  // Canvas tab: the chatless editor URL, and the agentLayout marker from the preload.
+  expect(new URL(editorPage.url()).searchParams.get("chat")).toBe("off");
+  expect(await editorPage.evaluate(() => (window as never as { penDesktop?: { agentLayout?: boolean } }).penDesktop?.agentLayout)).toBe(true);
 
   // The preload bridge is present in the editor page.
   expect(await editorPage.evaluate(() => typeof (window as never as { penDesktop?: unknown }).penDesktop)).toBe(

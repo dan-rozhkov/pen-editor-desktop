@@ -145,16 +145,6 @@ export function resolveStorageIdentity(
 /** The identity file text to persist; written once so the name sticks. */
 export const storageIdentityFileText = (id: StorageIdentity): string => JSON.stringify({ storageName: id.storageName });
 
-/** `PEN_DESKTOP_AGENT_LAYOUT=1` turns on the left agent chat panel (see
- * layout.ts / window.ts). Off unless the value is exactly "1", "true" or "on"
- * (trimmed, case-insensitive). */
-export function resolveAgentLayoutEnabled(env: NodeJS.ProcessEnv): boolean {
-  const raw = env.PEN_DESKTOP_AGENT_LAYOUT;
-  if (!isEnvValueSet(raw)) return false;
-  const normalized = (raw as string).trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "on";
-}
-
 /** The agent panel page, derived from the editor URL (same origin):
  * - the LAST path segment `app` becomes `agent`, keeping any base path prefix
  *   (`https://host/pen/app` -> `https://host/pen/agent`); a trailing slash is
@@ -203,34 +193,6 @@ function decodeURIComponent_safe(s: string): string {
   }
 }
 
-/** THE URL every new editor tab loads: the canvas-tab URL in the agent layout
- * (the chat is in the left panel), the plain editor URL otherwise. */
-export function resolveTabEditorUrl(editorUrl: string, agentLayout: boolean): string {
-  return agentLayout ? resolveCanvasTabUrl(editorUrl) : editorUrl;
-}
-
-/** Marker passed to editor-tab preloads (`webPreferences.additionalArguments`,
- * read from `process.argv` in `preload/tab.ts`, which repeats the literal: a
- * sandboxed preload cannot require local modules). Only the agent layout adds it. */
-export const AGENT_LAYOUT_ARG = "--pen-agent-layout";
-
-export function editorPreloadArguments(agentLayout: boolean): string[] {
-  return agentLayout ? [AGENT_LAYOUT_ARG] : [];
-}
-
-/** Tabs a new main window opens. The agent layout starts EMPTY (only the agent
- * panel; a canvas tab opens when the agent or the user asks for one); flag off
- * keeps the historical single editor tab. */
-export function initialTabs(agentLayout: boolean): ("editor" | "browser")[] {
-  return agentLayout ? [] : ["editor"];
-}
-
-/** What closing the last tab does: `respawn-editor` opens a fresh editor tab, `stay-empty` leaves zero tabs. */
-export type LastTabPolicy = "respawn-editor" | "stay-empty";
-
-/** What closing the LAST tab does. Flag off: a fresh editor tab replaces it
- * (the window never has zero tabs). Agent layout: the window stays open with
- * zero tabs and shows the empty state next to the panel. */
-export function onLastTabClosed(agentLayout: boolean): LastTabPolicy {
-  return agentLayout ? "stay-empty" : "respawn-editor";
-}
+/** Tabs a new main window opens: none. The window starts EMPTY (only the agent
+ * panel); a canvas tab opens when the agent or the user asks for one. */
+export const INITIAL_TABS: readonly ("editor" | "browser")[] = [];

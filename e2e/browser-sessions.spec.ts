@@ -3,7 +3,8 @@
 // a private partition + its own BrowserController. Stub servers on localhost
 // only, no backend, no LLM.
 
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
+import { test, expect, type ElectronApplication, type Page } from "@playwright/test";
+import { launchShell } from "./launch";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -76,8 +77,8 @@ const livePages = (app: ElectronApplication) => app.windows().filter((p) => !p.i
 const pagesAt = (app: ElectronApplication, prefix: string) => livePages(app).filter((p) => p.url().startsWith(prefix));
 
 async function launch(env: Record<string, string> = {}): Promise<{ app: ElectronApplication; editor: Page }> {
-  const app = await electron.launch({ args: ["."], env: { ...process.env, PEN_DESKTOP_URL: editorBaseUrl, ...env } });
-  const editor = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(editorBaseUrl) });
+  const app = await launchShell({ args: ["."], env: { ...process.env, PEN_DESKTOP_URL: editorBaseUrl, ...env } });
+  const editor = await app.waitForEvent("window", { predicate: (p) => p.url().startsWith(editorBaseUrl) && !p.url().startsWith(`${editorBaseUrl}/agent`) });
   await expect(editor.locator("#ready")).toHaveText("stub-editor");
   return { app, editor };
 }

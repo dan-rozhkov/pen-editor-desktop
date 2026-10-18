@@ -1,5 +1,4 @@
 import type { BrowserTabInfo } from "@sideform/browser-agent/controller";
-import type { LastTabPolicy } from "./config";
 import { acceptFavicon, tabIcon, type TabIcon } from "./tabIcons";
 export type UITheme = "light" | "dark";
 
@@ -349,9 +348,7 @@ export interface TabsSnapshot {
    * window.ts right before sending `tabbar:state` (the layout owns the number).
    */
   tabStripLeft?: number;
-  /** `"agent"` with the agent-layout flag (glass + islands styling hook, `data-layout`); absent otherwise. Filled in by window.ts. */
-  layout?: "agent";
-  /** Agent layout: the agent panel is collapsed (sidebar toggle state). Filled in by window.ts. */
+  /** The agent panel is collapsed (sidebar toggle state). Filled in by window.ts. */
   panelCollapsed?: boolean;
 }
 
@@ -423,8 +420,6 @@ export class TabManager {
       createView: (kind: TabKind, session?: string) => TabViewHandle;
       editorUrl: string;
       onStateChanged: (s: TabsSnapshot) => void;
-      /** What closing the last tab does (config.ts `onLastTabClosed`); default respawns an editor tab. */
-      lastTabPolicy?: LastTabPolicy;
     },
   ) {}
 
@@ -526,14 +521,11 @@ export class TabManager {
     this.agentWorkingTabs.delete(id);
     const isSession = (t: TabEntry) => t.kind === "browser" && t.session !== undefined;
     // "Last tab closed" also covers: only background session tabs remain, which
-    // are never auto-activated. An editor tab is respawned instead (flag off;
-    // with `lastTabPolicy: "stay-empty"` the window keeps zero active tabs).
+    // are never auto-activated. The window then keeps zero active tabs
+    // (the empty state shows next to the agent panel).
     if (this.tabs.length === 0 || (this.activeId === id && this.tabs.every(isSession))) {
       this.activeId = null;
-      // newTab emits — closing the last tab respawns an editor tab, unless the
-      // agent layout asked to stay empty (zero tabs; then emit ourselves).
-      if (this.opts.lastTabPolicy === "stay-empty") this.emit();
-      else this.newTab("editor");
+      this.emit();
     } else if (this.activeId === id) {
       // Never auto-activate a session tab (they live in the background).
       const before = this.tabs.slice(0, idx).reverse();
@@ -808,7 +800,7 @@ export class TabManager {
 
   /**
    * Destroys every tab view without respawning a replacement — unlike
-   * closeTab(), which keeps at least one tab open (unless `lastTabPolicy` is "stay-empty"). Intended for
+   * closeTab(). Intended for
    * window teardown (win.on("closed", ...)).
    */
   destroyAll(): void {

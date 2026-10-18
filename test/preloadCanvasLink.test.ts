@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 
 // The canvas-link halves of the two preloads, driven through a mocked "electron".
 
@@ -21,7 +21,6 @@ vi.mock("electron", () => ({
 (globalThis as unknown as { window: unknown }).window = { addEventListener: vi.fn() };
 
 describe("editor tab preload: canvasHost", () => {
-  const argv = process.argv;
   beforeEach(() => {
     vi.resetModules();
     exposed = {};
@@ -29,19 +28,14 @@ describe("editor tab preload: canvasHost", () => {
     on.mockClear();
     removeListener.mockClear();
   });
-  afterEach(() => {
-    process.argv = argv;
-  });
 
-  it("is absent without the agent layout flag", async () => {
-    process.argv = argv.filter((a) => a !== "--pen-agent-layout");
+  it("exposes the agent layout markers on every editor tab", async () => {
     await import("../src/preload/tab");
-    expect(exposed.penDesktop.canvasHost).toBeUndefined();
-    expect(exposed.penDesktop.agentLayout).toBeUndefined();
+    expect(exposed.penDesktop.agentLayout).toBe(true);
+    expect(exposed.penDesktop.canvasHost).toBeDefined();
   });
 
   it("register/post/onMessage use the canvas channels; onMessage unsubscribes", async () => {
-    process.argv = [...argv, "--pen-agent-layout"];
     await import("../src/preload/tab");
     const host = exposed.penDesktop.canvasHost;
     host.register();

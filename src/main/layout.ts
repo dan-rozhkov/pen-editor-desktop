@@ -1,10 +1,8 @@
 // Pure window geometry. window.ts only feeds it sizes and applies the result.
 //
-// Flag off (`panelWidth` null): the layout is exactly the historical one — tab
-// bar across the full width at the top, tab views below it, no panel.
-// Flag on: the tab bar (and the macOS rim) still span the FULL window width, so
-// the traffic lights stay put; an agent chat panel sits below the tab bar on
-// the left, and the tab views fill the area right of it.
+// The tab bar spans the FULL window width, so the traffic lights stay put; the
+// agent chat panel and the tab area are rounded "islands" on the translucent
+// window glass below it (panel on the left, tab views right of it).
 
 export interface Rect {
   x: number;
@@ -44,37 +42,31 @@ export interface WindowLayoutInput {
    * Defaults to `tabbarHeight`.
    */
   tabRowHeight?: number;
-  /** 1px rim on macOS, else 0. */
-  edge: number;
-  /** Requested panel width, or null for no panel (flag off). */
-  panelWidth: number | null;
+  /** Requested panel width; 0 = collapsed. */
+  panelWidth: number;
   /**
-   * Glass + islands (agent layout): the panel and the tab area become rounded
-   * "islands" on the translucent window, `gap` px apart and `gap` px from the
-   * left/right/bottom window edges. Ignored without a panel. `edge` is not
-   * used in this mode (no rim).
+   * The panel and the tab area are rounded "islands" on the translucent
+   * window, `gap` px apart and `gap` px from the left/right/bottom window edges.
    */
-  islands?: { gap: number; radius: number } | null;
+  islands: { gap: number; radius: number };
 }
 
 export interface WindowLayout {
-  /** Null when there is no panel. Below the tab bar, inset by `edge` left and bottom. */
-  panel: Rect | null;
+  /** Below the tab row, inset by `gap` left and bottom. */
+  panel: Rect;
   /** Always the full window width at the top. */
   tabbar: Rect;
-  /** The backing view that paints the macOS rim, below the tab bar, full width. */
-  rim: Rect | null;
   /** False when the panel is collapsed (islands mode, panelWidth 0): the panel view must be hidden. */
   panelVisible: boolean;
-  /** Island gap (px); 0 when not in islands mode. Sent to the tab bar (CSS `--island-gap`). */
+  /** Island gap (px). Sent to the tab bar (CSS `--island-gap`). */
   gap: number;
   /** Height of the island-colour tail the tab bar page paints under the address row (0 without a row). */
   tabTail: number;
-  /** Corner radius of the panel / tab-area islands; 0 when not in glass mode. */
+  /** Corner radius of the panel / tab-area islands. */
   radius: number;
-  /** Where tab views go: right of the panel, below the tab bar, inset by `edge` left/right/bottom. */
+  /** Where tab views go: right of the panel, below the tab bar, inset by `gap` left/right/bottom. */
   tabArea: Rect;
-  /** Window x where the tab strip starts inside the tab bar (the panel's right edge; 0 without a panel). */
+  /** Window x where the tab strip starts inside the tab bar (the panel's right edge). */
   tabStripLeft: number;
 }
 
@@ -88,7 +80,7 @@ function computeIslandLayout(input: WindowLayoutInput, gapIn: number, radiusIn: 
   // Collapsed panel: width 0 (the view is hidden, not destroyed); the tab island then keeps only the left gap.
   const collapsed = input.panelWidth === 0;
   const avail = Math.max(0, width - 3 * gap);
-  const panelW = collapsed ? 0 : Math.min(clampAgentPanelWidth(input.panelWidth as number, width), avail);
+  const panelW = collapsed ? 0 : Math.min(clampAgentPanelWidth(input.panelWidth, width), avail);
   const panelX = Math.min(gap, width);
   const tabX = collapsed ? panelX : Math.min(width, panelX + panelW + gap);
   const tabW = Math.max(0, width - tabX - gap);
@@ -102,7 +94,6 @@ function computeIslandLayout(input: WindowLayoutInput, gapIn: number, radiusIn: 
     panel: { x: panelX, y: rowHeight, width: panelW, height: Math.max(0, height - rowHeight - gap) },
     panelVisible: panelW > 0,
     tabbar: { x: 0, y: 0, width, height: tabbarHeight + tail },
-    rim: null,
     radius,
     gap,
     tabTail: tail,
@@ -112,39 +103,7 @@ function computeIslandLayout(input: WindowLayoutInput, gapIn: number, radiusIn: 
 }
 
 export function computeWindowLayout(input: WindowLayoutInput): WindowLayout {
-  if (input.panelWidth !== null && input.islands) return computeIslandLayout(input, input.islands.gap, input.islands.radius);
-  const width = Math.max(0, input.width);
-  const height = Math.max(0, input.height);
-  const panelW = input.panelWidth === null ? 0 : clampAgentPanelWidth(input.panelWidth, width);
-  const tabbarHeight = Math.min(Math.max(0, input.tabbarHeight), height);
-  const edge = Math.max(0, input.edge);
-  const belowBar = Math.max(0, height - tabbarHeight);
-  const bodyHeight = Math.max(0, belowBar - edge);
-  // The panel's own left inset is the rim; its right side ends at `panelW`.
-  const panelX = Math.min(edge, panelW);
-  // Tab views start one rim-width right of the panel (the gap shows the rim
-  // colour as a divider); with no panel that is just the left inset.
-  const tabX = Math.min(width, panelW + edge);
-  const tabArea = { x: tabX, y: tabbarHeight, width: Math.max(0, width - tabX - edge), height: bodyHeight };
-  return {
-    panel:
-      input.panelWidth === null
-        ? null
-        : { x: panelX, y: tabbarHeight, width: Math.max(0, panelW - panelX), height: bodyHeight },
-    tabbar: { x: 0, y: 0, width, height: tabbarHeight },
-    panelVisible: input.panelWidth !== null,
-    rim: { x: 0, y: tabbarHeight, width, height: belowBar },
-    radius: 0,
-    tabArea: tabArea,
-    gap: 0,
-    tabTail: 0,
-    tabStripLeft: panelW,
-  };
-}
-
-/** Value of the tab bar's `data-layout` attribute (carried by the `tabbar:state` snapshot); absent with the flag off. */
-export function tabbarLayoutKind(agentLayout: boolean): "agent" | undefined {
-  return agentLayout ? "agent" : undefined;
+  return computeIslandLayout(input, input.islands.gap, input.islands.radius);
 }
 
 /**

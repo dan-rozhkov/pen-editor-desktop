@@ -1,4 +1,4 @@
-// Opt-in live check of the agent layout (PEN_DESKTOP_AGENT_LAYOUT=1) with full-window screenshots.
+// Opt-in live check of the agent layout with full-window screenshots.
 //
 //   cd ../wt-f5   # pen-editor with the /agent route + canvas link
 //   VITE_AI_API_URL=http://127.0.0.1:5195/api/chat NODE_OPTIONS=--no-experimental-webstorage \
@@ -267,7 +267,6 @@ async function launch(opts: { dark?: boolean; tag: string; emptyShot?: string })
     env: {
       ...process.env,
       PEN_DESKTOP_URL: EDITOR_URL,
-      PEN_DESKTOP_AGENT_LAYOUT: "1",
       HOME: home,
       USERPROFILE: home,
       PEN_DESKTOP_USER_DATA_DIR: path.join(home, "userData"),
