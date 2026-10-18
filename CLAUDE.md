@@ -78,12 +78,8 @@ with an address row). `tabStripLeft` = the tab area's left edge. Radius: `ISLAND
 view and no 1px edge (`WINDOW_EDGE` and `WindowLayout.rim` are gone).
 
 *Glass.* macOS `vibrancy: "under-window"` + `visualEffectState: "active"` on the BaseWindow;
-the tab bar view is `#00000000` and `[data-layout="agent"]` (tabbar.css) makes body/rows
-transparent. Non-macOS: no vibrancy, `win.setBackgroundColor(GLASS_SOLID[theme])`. `tabbar.html`
-carries a static `data-layout="agent"` on `<html>` (no longer sent in the snapshot), and the
-glass styling in `tabbar.css` hangs off that selector. The CSS rules written for the removed
-classic layout (rim shadow, opaque body fill) are still in `tabbar.css`/`tokens.css`, overridden
-by the agent block; delete them in a follow-up once the tab-icon work in the other worktree has merged.
+the tab bar view is `#00000000` and `tabbar.css` makes body/rows
+transparent. Non-macOS: no vibrancy, `win.setBackgroundColor(GLASS_SOLID[theme])`. `tabbar.css` has plain selectors (one layout): a transparent body, tabs on the glass, the address row as the island top.
 
 *Colours: one place each.* TS: `windowTheme.ts` (`ISLAND_BG` light `#ffffff` / dark
 `#2a2a2a` = the frontend's `--color-surface-panel`, `GLASS_SOLID`, `contentBackground`,
@@ -141,17 +137,12 @@ placeholder or the active tab, and collapsing while the panel has focus hands it
 or a launch never auto-expands a collapsed panel: only the user's toggle changes it.
 Tests: `layout.test.ts`, `agentPanelSettings.test.ts`, `menu.test.ts`, `e2e/agent-panel-toggle.spec.ts`.
 
-**Tab icons.** Every tab has a leading icon (`tabIcons.ts`, pure, tested):
-canvas (editor) tabs a canvas glyph in a tinted rounded square, browser tabs the page favicon,
-globe until one arrives. The favicon comes from `page-favicon-updated`: a valid `data:` icon is used
-as is, the first http(s) URL is fetched through THAT tab's own session (`createIconFetcher` +
-`toIconDataUrl`, 64 KB cap, image types only), memoized by favicon URL (`createFaviconMemo`), and
-aborted when the tab is destroyed. Only the shared browser's tabs
-(isolated QA-session tabs make no extra request). A per-tab navigation generation
-(`createGeneration`) drops a fetch that finishes after a new document began; the icon is cleared
-only when the origin changes (`shouldClearFavicon`). It is validated ONCE when stored on the tab
-(`acceptFavicon`, the single icon validator `isIconDataUrl` of `passwords/helpers.ts`) and travels
-as a data URL in `TabState.icon` (the tab bar CSP allows `img-src data:` only). The agent's
+**Tab icons.** Every tab has a leading glyph keyed by `TabState.kind` in
+`tabbar/renderer.ts` (one mapping): editor (canvas) tabs a Phosphor "PaintBrush", browser tabs a
+Phosphor "Globe" ALWAYS, never the site favicon. Phosphor is MIT: the notice lives in
+`THIRD_PARTY_NOTICES.md` (shipped via the electron-builder `files` list; keep it there). Just the glyph,
+monochrome `currentColor` (tab text color), no background square. The tab bar CSP has no `img-src`:
+the tab bar draws no images. The agent's
 cursor arrow replaces the icon while the agent drives a browser tab. Compact paddings, no
 separators, the close "x" only on the active tab and on hover.
 
@@ -1114,3 +1105,5 @@ without sharing cookies, tabs, fixtures or mocks. The shared browser
   `test/tabManager.test.ts`, `createTabAgentActivity` in `test/agentActivity.test.ts`,
   the `isolated` block in `test/preloadTab.test.ts`, the command check in
   `test/ipcContract.test.ts`, and `e2e/browser-sessions.spec.ts`.
+
+**e2e launch helper.** The window starts with zero tabs, so specs that need an editor page launch with `launchShell` (`e2e/launch.ts`: waits for the tab bar, then sends `tabbar:new` like the "+" button). Specs about the empty start use `electron.launch` directly. `e2e/bench-browse.spec.ts` (opt-in, network + tokens) drives the chat in the agent panel (`/agent` view) but was rewritten without a live run: the panel selectors are unverified (TODO).

@@ -87,7 +87,6 @@ test("the window has a left /agent panel; tabs still work", async () => {
   await expect(tabbarPage.locator(".tab")).toHaveCount(1);
   // The tab strip starts at the tab island's left edge (or later, past the macOS traffic lights).
   const panelRight = bounds.editor.x;
-  expect(await tabbarPage.evaluate(() => document.documentElement.dataset.layout)).toBe("agent");
   const rowPad = await tabbarPage.evaluate(() => parseFloat(getComputedStyle(document.querySelector(".tab-row")!).paddingLeft));
   expect(rowPad).toBe(process.platform === "darwin" ? Math.max(88, panelRight) : panelRight);
 
@@ -125,9 +124,30 @@ test("the window has a left /agent panel; tabs still work", async () => {
   // Tabs still work: open a second editor tab.
   await tabbarPage.evaluate(() => (window as unknown as { penTabbar: { newTab(): void } }).penTabbar.newTab());
   await expect(tabbarPage.locator(".tab")).toHaveCount(2);
-  // Every tab has a leading icon (canvas glyph for editor tabs).
+  // Every tab has a leading icon (paintbrush for editor tabs, drawn as an inline svg, no favicon image).
   await expect(tabbarPage.locator(".tab .tab-icon")).toHaveCount(2);
-  await expect(tabbarPage.locator('.tab .tab-icon[data-icon="canvas"]')).toHaveCount(2);
+  await expect(tabbarPage.locator('.tab .tab-icon[data-icon="editor"]')).toHaveCount(2);
+  await expect(tabbarPage.locator(".tab .tab-icon svg.glyph path")).toHaveCount(2);
+  await expect(tabbarPage.locator(".tab .tab-icon img")).toHaveCount(0);
+  // A browser tab (the agent is not driving it) renders the globe glyph, a different path, and no image.
+  const brushPath = await tabbarPage.locator('.tab .tab-icon[data-icon="editor"] path').first().getAttribute("d");
+  await app.evaluate(({ Menu }) => {
+    const find = (items: Electron.MenuItem[]): Electron.MenuItem | undefined => {
+      for (const it of items) {
+        if (it.label === "New Browser Tab" && it.click) return it;
+        const hit = it.submenu ? find(it.submenu.items) : undefined;
+        if (hit) return hit;
+      }
+      return undefined;
+    };
+    find(Menu.getApplicationMenu()!.items)!.click();
+  });
+  await expect(tabbarPage.locator(".tab")).toHaveCount(3);
+  const globe = tabbarPage.locator('.tab .tab-icon[data-icon="browser"]');
+  await expect(globe).toHaveCount(1);
+  await expect(globe.locator("svg.glyph path")).toHaveCount(1);
+  expect(await globe.locator("path").getAttribute("d")).not.toBe(brushPath);
+  await expect(tabbarPage.locator(".tab .tab-icon img")).toHaveCount(0);
   // The new tab is a canvas tab too.
   await expect
     .poll(() => app.windows().filter((p) => p.url().startsWith(`${baseUrl}/app`)).map((p) => new URL(p.url()).searchParams.get("chat")))

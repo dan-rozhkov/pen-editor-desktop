@@ -6,8 +6,6 @@ type TabRow = {
   url?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
-  /** Leading icon: decided by main (tabIcons.ts). */
-  icon?: { kind: "canvas" } | { kind: "favicon"; src: string } | { kind: "globe" };
 };
 type TabsSnapshot = {
   tabs: TabRow[];
@@ -136,52 +134,34 @@ urlInputEl.addEventListener("blur", () => {
   if (latestActiveUrl !== undefined) urlInputEl.value = latestActiveUrl;
 });
 
-// Leading tab icons. Built with createElementNS: the CSP forbids inline markup.
-function svgIcon(cls: string, viewBox: string, draw: (svg: SVGSVGElement, ns: string) => void): SVGSVGElement {
-  const ns = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(ns, "svg");
-  svg.setAttribute("class", cls);
-  svg.setAttribute("viewBox", viewBox);
-  svg.setAttribute("aria-hidden", "true");
-  svg.setAttribute("fill", "none");
-  svg.setAttribute("stroke", "currentColor");
-  svg.setAttribute("stroke-width", "1.4");
-  svg.setAttribute("stroke-linecap", "round");
-  draw(svg, ns);
-  return svg;
-}
-function addPath(svg: SVGSVGElement, ns: string, d: string): void {
-  const p = document.createElementNS(ns, "path");
-  p.setAttribute("d", d);
-  svg.appendChild(p);
+// Leading tab icons, keyed by tab kind: a paintbrush for editor (canvas) tabs, a globe for
+// browser tabs, never a site favicon. The tab bar CSP has no img-src: the tab bar draws no images.
+// Glyph path data: Phosphor Icons "PaintBrush" / "Globe", regular weight, MIT License, Copyright (c) 2020
+// Phosphor Icons (full notice: THIRD_PARTY_NOTICES.md at the repo root, shipped in the packaged app).
+// Monochrome: filled with currentColor, the tab text color.
+const GLYPHS: Record<TabKind, string> = {
+  editor: "M232,32a8,8,0,0,0-8-8c-44.08,0-89.31,49.71-114.43,82.63A60,60,0,0,0,32,164c0,30.88-19.54,44.73-20.47,45.37A8,8,0,0,0,16,224H92a60,60,0,0,0,57.37-77.57C182.3,121.31,232,76.08,232,32ZM92,208H34.63C41.38,198.41,48,183.92,48,164a44,44,0,1,1,44,44Zm32.42-94.45q5.14-6.66,10.09-12.55A76.23,76.23,0,0,1,155,121.49q-5.9,4.94-12.55,10.09A60.54,60.54,0,0,0,124.42,113.55Zm42.7-2.68a92.57,92.57,0,0,0-22-22c31.78-34.53,55.75-45,69.9-47.91C212.17,55.12,201.65,79.09,167.12,110.87Z",
+  browser: "M128,24h0A104,104,0,1,0,232,128,104.12,104.12,0,0,0,128,24Zm88,104a87.61,87.61,0,0,1-3.33,24H174.16a157.44,157.44,0,0,0,0-48h38.51A87.61,87.61,0,0,1,216,128ZM102,168H154a115.11,115.11,0,0,1-26,45A115.27,115.27,0,0,1,102,168Zm-3.9-16a140.84,140.84,0,0,1,0-48h59.88a140.84,140.84,0,0,1,0,48ZM40,128a87.61,87.61,0,0,1,3.33-24H81.84a157.44,157.44,0,0,0,0,48H43.33A87.61,87.61,0,0,1,40,128ZM154,88H102a115.11,115.11,0,0,1,26-45A115.27,115.27,0,0,1,154,88Zm52.33,0H170.71a135.28,135.28,0,0,0-22.3-45.6A88.29,88.29,0,0,1,206.37,88ZM107.59,42.4A135.28,135.28,0,0,0,85.29,88H49.63A88.29,88.29,0,0,1,107.59,42.4ZM49.63,168H85.29a135.28,135.28,0,0,0,22.3,45.6A88.29,88.29,0,0,1,49.63,168Zm98.78,45.6a135.28,135.28,0,0,0,22.3-45.6h35.66A88.29,88.29,0,0,1,148.41,213.6Z",
+};
+const SVG_NS = "http://www.w3.org/2000/svg";
+function svg(cls: string, viewBox: string): SVGSVGElement {
+  const el = document.createElementNS(SVG_NS, "svg");
+  el.setAttribute("class", cls);
+  el.setAttribute("viewBox", viewBox);
+  el.setAttribute("aria-hidden", "true");
+  return el;
 }
 function tabIconEl(tab: TabRow): HTMLElement {
   const box = document.createElement("span");
   box.className = "tab-icon";
-  const icon = tab.icon ?? { kind: tab.kind === "editor" ? "canvas" : "globe" };
-  box.dataset.icon = icon.kind;
-  if (icon.kind === "favicon") {
-    const img = document.createElement("img");
-    img.src = icon.src;
-    img.alt = "";
-    img.draggable = false;
-    box.appendChild(img);
-  } else if (icon.kind === "canvas") {
-    // A frame with a cross-hair grid: the canvas.
-    box.appendChild(svgIcon("glyph", "0 0 16 16", (svg, ns) => {
-      const r = document.createElementNS(ns, "rect");
-      r.setAttribute("x", "2.5"); r.setAttribute("y", "2.5"); r.setAttribute("width", "11"); r.setAttribute("height", "11"); r.setAttribute("rx", "2");
-      svg.appendChild(r);
-      addPath(svg, ns, "M6.2 2.8v10.4M9.8 2.8v10.4M2.8 6.2h10.4M2.8 9.8h10.4");
-    }));
-  } else {
-    box.appendChild(svgIcon("glyph", "0 0 16 16", (svg, ns) => {
-      const c = document.createElementNS(ns, "circle");
-      c.setAttribute("cx", "8"); c.setAttribute("cy", "8"); c.setAttribute("r", "5.8");
-      svg.appendChild(c);
-      addPath(svg, ns, "M2.2 8h11.6M8 2.2c2 1.7 2.9 3.6 2.9 5.8S10 12.1 8 13.8M8 2.2C6 3.9 5.1 5.8 5.1 8S6 12.1 8 13.8");
-    }));
-  }
+  box.dataset.icon = tab.kind;
+  const glyph = svg("glyph", "0 0 256 256");
+  glyph.setAttribute("fill", "currentColor");
+  const d = GLYPHS[tab.kind] ?? GLYPHS.browser; // unknown kind: the globe, never d="undefined"
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", d);
+  glyph.appendChild(path);
+  box.appendChild(glyph);
   return box;
 }
 
@@ -189,21 +169,17 @@ function tabIconEl(tab: TabRow): HTMLElement {
 // ARROW_POINTS). Built with createElementNS: the CSP forbids inline markup
 // tricks and colours come from classes.
 function agentCursorIcon(): SVGSVGElement {
-  const ns = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(ns, "svg");
-  svg.setAttribute("class", "agent-cursor");
-  svg.setAttribute("viewBox", "-2.4 -2.6 24.2 24.4");
-  svg.setAttribute("aria-hidden", "true");
+  const cursor = svg("agent-cursor", "-2.4 -2.6 24.2 24.4");
   for (const [cls, width] of [["rim", "7.8"], ["body", "5.4"]]) {
-    const poly = document.createElementNS(ns, "polygon");
+    const poly = document.createElementNS(SVG_NS, "polygon");
     poly.setAttribute("class", cls);
     poly.setAttribute("points", "2.2,1.6 17.6,8.5 10.8,12.4 6.2,17.7");
     poly.setAttribute("stroke-width", width);
     poly.setAttribute("stroke-linejoin", "round");
     poly.setAttribute("stroke-linecap", "round");
-    svg.appendChild(poly);
+    cursor.appendChild(poly);
   }
-  return svg;
+  return cursor;
 }
 
 window.penTabbar.onState((state) => {
@@ -222,7 +198,7 @@ window.penTabbar.onState((state) => {
     el.addEventListener("mousedown", () => window.penTabbar.activateTab(tab.id));
 
     const agentWorking = tab.kind === "browser" && state.agentTabIds?.includes(tab.id);
-    // Agent layout: every tab has a leading icon; the agent's cursor takes its slot while it drives the tab.
+    // Every tab has a leading icon; the agent's cursor takes its slot while it drives the tab.
     if (!agentWorking) el.appendChild(tabIconEl(tab));
     if (agentWorking) {
       el.appendChild(agentCursorIcon());

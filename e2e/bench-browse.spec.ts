@@ -306,8 +306,10 @@ class LatencyTracker {
 }
 
 async function openChatPanel(page: Page): Promise<void> {
+  // TODO(unverified): written for the agent panel without a live run (needs network and tokens).
+  // The panel shows the chat directly; the old editor-side rail button no longer applies.
   const rail = page.locator('[data-testid="rail-agents"]');
-  await rail.click();
+  if (await rail.isVisible().catch(() => false)) await rail.click();
   const createChatButton = page.locator('[data-testid="create-chat-button"]');
   if (await createChatButton.isVisible().catch(() => false)) {
     await createChatButton.click();
@@ -363,12 +365,13 @@ async function runOnce(runIndex: number, sharedHome?: string): Promise<RunMetric
   const allPages: Page[] = [];
   app.windows().forEach((p) => allPages.push(p));
   app.on("window", (p) => allPages.push(p));
-  const editorPages = () => allPages.filter((p) => p.url().startsWith(editorOrigin));
+  // The chat lives in the agent panel (the /agent view); editor tabs are chatless canvas tabs.
+  const panelPages = () => allPages.filter((p) => p.url().startsWith(`${editorOrigin}/agent`));
 
   try {
-    await expect.poll(() => editorPages().length, { timeout: 60_000 }).toBeGreaterThan(0);
-    const editorPage = editorPages()[0];
-    await editorPage.waitForSelector("canvas", { timeout: 60_000 });
+    await expect.poll(() => panelPages().length, { timeout: 60_000 }).toBeGreaterThan(0);
+    // The agent panel page: chat requests, tool traffic and the transcript all belong to it.
+    const editorPage = panelPages()[0];
 
     const chatRequestBodies: string[] = [];
     let lastChatRequestPayload: string | null = null;

@@ -1,53 +1,35 @@
+/* The tab bar view is transparent: tabs sit directly on the window glass (macOS vibrancy;
+   a solid neutral window colour elsewhere, window.ts). No rim, no hairlines, no opaque fills. */
 body {
   margin: 0;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  background: var(--bar-bg);
-  color: var(--text);
+  background: transparent;
+  color: var(--glass-text);
   font: 12px -apple-system, BlinkMacSystemFont, sans-serif;
   user-select: none;
   overflow: hidden;
-}
-/* macOS: replace the opaque bar with a translucent tint over the window's
-   native vibrancy blur (window.ts's BaseWindow `vibrancy: "under-window"`)
-   — the frosted-glass look, matching the Codex desktop app. Non-macOS keeps
-   the opaque --bar-bg above; there is no vibrancy to show through there. */
-:root[data-macos] body {
-  background: var(--bar-glass);
-}
-/* Top/left/right of the light-grey window rim, over the active tab and the
-   address row too; window.ts's `windowRim` view carries it on down the
-   content area (keep the colours in sync). */
-:root[data-macos] body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  box-shadow: inset 1px 1px 0 var(--window-rim), inset -1px 0 0 var(--window-rim);
 }
 
 /* --- tab strip (row 1, always visible) --- */
 .tab-row {
   height: 38px;
   box-sizing: border-box;
-  background: linear-gradient(
-    to bottom,
-    transparent calc(100% - 1px),
-    var(--border) calc(100% - 1px)
-  );
+  position: relative;
   display: flex;
-  align-items: stretch;
+  align-items: center;
+  gap: 2px;
+  padding: 5px var(--island-gap, 8px) 5px max(var(--controls-end), var(--tab-strip-left, 0px));
   overflow: hidden;
   app-region: drag;
   -webkit-app-region: drag;
 }
-/* Tab strip start: right of the agent panel (--tab-strip-left, set by
-   renderer.ts from the tabbar:state snapshot; 0 without a panel) and, on
-   macOS, never inside the 88px traffic-light zone. The row stays a window
-   drag region, so the part above the panel is an empty draggable title area. */
-.tab-row { padding-left: var(--tab-strip-left, 0px); }
-:root[data-macos] .tab-row { padding-left: max(88px, var(--tab-strip-left, 0px)); }
+/* Tab strip start: right of the sidebar toggle and of the agent panel (--tab-strip-left, set by
+   renderer.ts from the tabbar:state snapshot). The row stays a window drag region, so the part
+   above the panel is an empty draggable title area. */
+:root { --toggle-left: 8px; --controls-end: calc(var(--toggle-left) + 28px + 6px); }
+:root[data-macos] { --toggle-left: 80px; } /* right after the traffic lights */
 /* Edge-to-edge tab strip: tabs fill the row's full 38px height (no 28px
    pill vertically centered by `margin: auto`), touch each other with no
    gap, and #tabs itself carries no left inset — on macOS the row's own
@@ -55,16 +37,13 @@ body {
    traffic lights, so #tabs needn't add its own. `align-items: stretch`
    (rather than `.tab-row`'s inherited default) is what makes each `.tab`
    fill the row's height without an explicit height on `.tab` itself. */
-#tabs { display: flex; align-items: stretch; overflow: hidden; flex: 1; }
+#tabs { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; flex: 1; }
 .tab {
   position: relative;
   display: flex; align-items: center; gap: 6px;
   box-sizing: border-box;
-  padding: 0 4px 0 12px; max-width: 200px; min-width: 60px;
-  /* Tabs are separated by a 1px hairline instead of a gap — a border-radius
-     or per-tab background would look wrong touching edge-to-edge, so
-     neither is set here. */
-  border-right: 1px solid var(--border);
+  height: 28px; padding: 0 4px 0 6px; max-width: 200px; min-width: 60px;
+  border-radius: 8px; color: var(--glass-text);
   cursor: default; white-space: nowrap;
   app-region: no-drag;
   -webkit-app-region: no-drag;
@@ -89,20 +68,8 @@ body {
 }
 .tab:not(.active) .agent-cursor .rim { fill: var(--agent-cursor-idle-rim); stroke: var(--agent-cursor-idle-rim); }
 .tab:not(.active) .agent-cursor .body { fill: var(--agent-cursor-idle); stroke: var(--agent-cursor-idle); }
-.tab:not(.active):hover { background: var(--control-hover-bg); color: var(--text-active); }
-.tab.active {
-  /* No border-color/border-radius override here (unlike the old pill) —
-     the active tab is exactly the same edge-to-edge rectangle as every
-     other tab, just with an opaque background. Because `.tab`
-     already fills `.tab-row`'s full height (including the row's own
-     1px bottom hairline, painted via `.tab-row`'s background gradient
-     underneath), this opaque background paints straight over that hairline
-     for the active tab's width — visually merging it with the content
-     below, with no extra pseudo-element needed. Inactive tabs stay
-     transparent, so the hairline still shows through under them. */
-  background: var(--tab-active-bg);
-  color: var(--text-active);
-}
+.tab:not(.active):hover { background: var(--glass-tab-hover); color: var(--text-active); }
+.tab.active { background: var(--glass-tab-active); color: var(--text-active); }
 .tab .close {
   position: relative; flex: 0 0 20px; width: 20px; height: 20px;
   border: 0; background: none; color: inherit;
@@ -117,21 +84,15 @@ body {
 }
 .tab .close::before { transform: rotate(45deg); }
 .tab .close::after { transform: rotate(-45deg); }
-/* Square and edge-to-edge like the tabs it sits next to (consistent with
-   the tab strip's new no-radius/no-gap look) — full row height instead of
-   a smaller centered 28px control. No margin and no border-left of its own:
-   every `.tab` (including the last one) already carries a `border-right`
-   hairline, which is what separates it from this button — an extra
-   border-left here would double that line. */
 #new-tab {
-  position: relative; flex: 0 0 38px; width: 38px;
-  border: 0; background: none; color: var(--text); cursor: pointer;
+  position: relative; flex: 0 0 28px; width: 28px; height: 28px; border-radius: 8px;
+  border: 0; background: none; color: var(--glass-text); cursor: pointer;
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
-#new-tab:hover { color: var(--text-active); background: var(--control-hover-bg); }
+#new-tab:hover { color: var(--text-active); background: var(--glass-tab-hover); }
 #new-tab::before, #new-tab::after {
-  content: ""; position: absolute; left: 13px; top: 18.5px;
+  content: ""; position: absolute; left: 8px; top: 13.5px;
   width: 12px; height: 1px; border-radius: 1px; background: currentColor;
 }
 #new-tab::after { transform: rotate(90deg); }
@@ -145,12 +106,15 @@ body {
   position: relative;
   height: 32px;
   box-sizing: border-box;
-  background: var(--tab-active-bg);
-  border-bottom: 1px solid var(--border);
+  /* The top of the tab island: island colour and rounded top corners
+     (--island-gap / --island-radius come from layout.ts through the tabbar:state snapshot). */
+  background: var(--island-bg);
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 0 6px 0 max(6px, var(--tab-strip-left, 0px));
+  margin: 0 var(--island-gap, 8px) 0 var(--tab-strip-left, 0px);
+  padding: 0 6px;
+  border-radius: var(--island-radius, 12px) var(--island-radius, 12px) 0 0;
   app-region: drag;
   -webkit-app-region: drag;
 }
@@ -158,14 +122,14 @@ body {
 .nav-btn {
   flex: 0 0 28px; width: 28px; height: 28px;
   display: inline-flex; align-items: center; justify-content: center;
-  border: 0; background: none; color: var(--text); cursor: pointer;
+  border: 0; background: none; color: var(--glass-text); cursor: pointer;
   border-radius: 6px; padding: 0;
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
 .browser-tools-btn { margin-left: auto; }
 .nav-btn svg { width: 16px; height: 16px; }
-.nav-btn:hover:not(:disabled) { color: var(--text-active); background: var(--control-hover-bg); }
+.nav-btn:hover:not(:disabled) { color: var(--text-active); background: var(--glass-tab-hover); }
 .nav-btn:disabled { opacity: 0.35; cursor: default; }
 .nav-btn:focus-visible { outline: 1px solid currentColor; outline-offset: -2px; }
 /* Centered on the whole row, not on the space left of the nav buttons —
@@ -196,80 +160,33 @@ body {
   text-overflow: ellipsis;
   padding: 0 10px;
 }
-.url-input:hover, .url-input:focus { background: var(--field-hover-bg); }
+.url-input:hover, .url-input:focus { background: var(--glass-tab-active); }
 .url-input:focus { outline: none; text-align: left; }
 /* Finding 5: a rejected submission (couldn't be normalized into a
    navigable http(s) URL) stays visible instead of silently doing nothing. */
 .url-input.invalid { box-shadow: inset 0 0 0 1px #d64545; }
 
-/* --- glass + islands (agent layout; `data-layout="agent"` from the tabbar:state
-   snapshot). The tab bar view is transparent: tabs sit directly on the window
-   glass (macOS vibrancy; a solid neutral window colour elsewhere). No rim, no
-   hairlines, no opaque fills.  --- */
-:root[data-layout="agent"] body,
-:root[data-layout="agent"][data-macos] body { background: transparent; color: var(--glass-text); }
-:root[data-layout="agent"] body::after { display: none; }
-:root[data-layout="agent"] .tab-row {
-  background: none;
-  align-items: center;
-  gap: 2px;
-  padding-top: 5px;
-  padding-bottom: 5px;
-}
-:root[data-layout="agent"] #tabs { align-items: center; gap: 2px; min-width: 0; }
-:root[data-layout="agent"] .tab {
-  height: 28px; border-right: 0; border-radius: 8px; color: var(--glass-text);
-}
-:root[data-layout="agent"] .tab:not(.active):hover { background: var(--glass-tab-hover); color: var(--text-active); }
-:root[data-layout="agent"] .tab.active { background: var(--glass-tab-active); color: var(--text-active); }
-:root[data-layout="agent"] #new-tab {
-  flex: 0 0 28px; width: 28px; height: 28px; border-radius: 8px; color: var(--glass-text);
-}
-:root[data-layout="agent"] #new-tab:hover { background: var(--glass-tab-hover); color: var(--text-active); }
-:root[data-layout="agent"] #new-tab::before,
-:root[data-layout="agent"] #new-tab::after { left: 8px; top: 13.5px; }
-/* The address row is the top of the tab island: island colour and rounded top corners
-   (--island-gap / --island-radius come from layout.ts through the tabbar:state snapshot).
-   The tab bar view is `radius` px taller than the row; the ::after tail paints that strip in
-   the island colour, so the notches under the tab view's rounded top corners are not glass.
+/* The tab bar view is `radius` px taller than the address row; the ::after tail paints that strip
+   in the island colour, so the notches under the tab view's rounded top corners are not glass.
    The tab view itself starts exactly below the row: no page content is hidden. */
-:root[data-layout="agent"] .tab-row { padding-right: var(--island-gap, 8px); }
-:root[data-layout="agent"] .chrome-row {
-  background: var(--island-bg); border-bottom: 0;
-  margin: 0 var(--island-gap, 8px) 0 var(--tab-strip-left, 0px); padding: 0 6px;
-  border-radius: var(--island-radius, 12px) var(--island-radius, 12px) 0 0;
-}
-:root[data-layout="agent"] .chrome-row::after {
+.chrome-row::after {
   content: ""; position: absolute; left: 0; right: 0; top: 100%; height: var(--island-radius, 12px); background: var(--island-bg);
 }
-:root[data-layout="agent"] .nav-btn { color: var(--glass-text); }
-:root[data-layout="agent"] .nav-btn:hover:not(:disabled) { background: var(--glass-tab-hover); color: var(--text-active); }
-:root[data-layout="agent"] .url-input:hover,
-:root[data-layout="agent"] .url-input:focus { background: var(--glass-tab-active); }
 
-/* --- agent layout: sidebar toggle, leading tab icons, compact tabs --- */
-:root[data-layout="agent"] { --toggle-left: 8px; --controls-end: calc(var(--toggle-left) + 28px + 6px); }
-:root[data-layout="agent"][data-macos] { --toggle-left: 80px; } /* right after the traffic lights */
-:root[data-layout="agent"] .tab-row { position: relative; padding-left: max(var(--controls-end), var(--tab-strip-left, 0px)); }
-.sidebar-toggle { display: none; }
-:root[data-layout="agent"] .sidebar-toggle {
+/* --- sidebar toggle and leading tab icons --- */
+.sidebar-toggle {
   display: inline-flex; align-items: center; justify-content: center;
   position: absolute; left: var(--toggle-left); top: 5px; width: 28px; height: 28px;
   border: 0; border-radius: 8px; padding: 0; background: none; color: var(--glass-text); cursor: pointer;
   app-region: no-drag; -webkit-app-region: no-drag;
 }
-:root[data-layout="agent"] .sidebar-toggle[hidden] { display: none; }
-:root[data-layout="agent"] .sidebar-toggle:hover { background: var(--glass-tab-hover); color: var(--text-active); }
-:root[data-layout="agent"] .sidebar-toggle[aria-pressed="true"] { color: var(--text-active); }
-:root[data-layout="agent"] .sidebar-toggle:focus-visible { outline: 1px solid currentColor; outline-offset: -2px; }
-:root[data-layout="agent"] .tab { padding: 0 4px 0 6px; gap: 6px; }
-.tab-icon { display: none; }
-:root[data-layout="agent"] .tab-icon {
+.sidebar-toggle[hidden] { display: none; }
+.sidebar-toggle:hover { background: var(--glass-tab-hover); color: var(--text-active); }
+.sidebar-toggle[aria-pressed="true"] { color: var(--text-active); }
+.sidebar-toggle:focus-visible { outline: 1px solid currentColor; outline-offset: -2px; }
+.tab-icon {
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 18px; width: 18px; height: 18px;
-  border-radius: 5px; color: var(--glass-text);
+  color: var(--glass-text);
 }
-:root[data-layout="agent"] .tab-icon[data-icon="canvas"] { background: color-mix(in srgb, currentColor 12%, transparent); }
-:root[data-layout="agent"] .tab.active .tab-icon { color: var(--text-active); }
-:root[data-layout="agent"] .tab-icon .glyph { width: 12px; height: 12px; }
-:root[data-layout="agent"] .tab-icon[data-icon="globe"] .glyph { width: 15px; height: 15px; }
-:root[data-layout="agent"] .tab-icon img { width: 16px; height: 16px; border-radius: 3px; object-fit: contain; }
+.tab.active .tab-icon { color: var(--text-active); }
+.tab-icon .glyph { width: 16px; height: 16px; }

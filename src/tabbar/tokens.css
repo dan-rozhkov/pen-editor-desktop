@@ -4,38 +4,19 @@
    put in `data-theme` (tabManager.ts's resolveActiveTheme). */
 :root {
   color-scheme: light dark;
-  --bar-bg: light-dark(#f5f5f5, #1a1a1a);
-  --content-bg: light-dark(#ffffff, #1a1a1a);
-  /* Agent layout island surface = the frontend's --color-surface-panel (index.css). */
+  /* Island surface = the frontend's --color-surface-panel (index.css). */
   --island-bg: light-dark(#ffffff, #2a2a2a);
   --tab-active-bg: var(--island-bg);
   --control-hover-bg: light-dark(#e5e5e5, #383838);
-  --field-hover-bg: light-dark(#f2f2f2, #333333);
   --border: light-dark(#e0e0e0, #404040);
   --text: light-dark(#666666, #888888);
   --text-active: light-dark(rgba(0, 0, 0, 0.87), rgba(255, 255, 255, 0.87));
-  /* Glass tab bar (macOS only, `:root[data-macos]` in tabbar.css) — a translucent
-     tint over the native `vibrancy: "under-window"` blur set in window.ts,
-     rather than the opaque --bar-bg. Alpha is tuned, not just "light" values
-     with transparency, because the OS vibrancy material's own appearance
-     follows the *system* light/dark setting while `data-theme` here follows
-     the editor's theme (tabManager.ts's `resolveActiveTheme`) — the two can
-     disagree (a dark-theme editor tab on a Mac set to light appearance, or
-     vice versa). A low-alpha dark tint over light vibrancy would read as
-     washed-out grey, not "dark bar" — so --bar-glass uses a
-     high enough alpha to read as their own theme's color regardless of
-     which appearance the vibrancy blur underneath happens to be.
-     The active tab and the address row stay on the opaque --tab-active-bg:
-     one solid surface flowing into the content below, glass everywhere else
-     — Codex's split (glass chrome, solid content). */
-  --bar-glass: light-dark(rgba(246, 246, 246, 0.78), rgba(26, 26, 26, 0.85));
-  /* Glass + islands (agent layout, `data-layout="agent"` in tabbar.css): tabs sit
+  /* Glass + islands (tabbar.css): tabs sit
      directly on the window glass, so no bar fill — only a subtle dark/light
      wash for the active and hovered tab. Hover is slightly lighter than active. */
   --glass-tab-active: light-dark(rgba(0, 0, 0, 0.07), rgba(255, 255, 255, 0.1));
   --glass-tab-hover: light-dark(rgba(0, 0, 0, 0.04), rgba(255, 255, 255, 0.06));
   --glass-text: light-dark(rgba(0, 0, 0, 0.62), rgba(255, 255, 255, 0.62));
-  --window-rim: light-dark(#ececec, #4d4d4d);
   /* Brand pair is theme-independent; only the idle (background-tab) pair differs. */
   --agent-cursor: #0d99ff;
   --agent-cursor-rim: #ffffff;
