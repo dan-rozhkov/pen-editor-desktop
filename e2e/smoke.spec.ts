@@ -29,7 +29,7 @@ test("launches, opens a tab with the editor, exposes the menu bridge", async () 
     args: ["."],
     env: { ...process.env, PEN_DESKTOP_URL: baseUrl },
   });
-  expect(await app.evaluate(({ app: electronApp }) => electronApp.getName())).toBe("Pineapple Editor");
+  expect(await app.evaluate(({ app: electronApp }) => electronApp.getName())).toBe("Sideform Desktop");
 
   // Windows: the tab bar view and the first tab view each surface as a page.
   const editorPage = await app.waitForEvent("window", {

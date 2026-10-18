@@ -86,6 +86,65 @@ export function resolveUserDataDir(env: NodeJS.ProcessEnv): string | undefined {
   return isEnvValueSet(raw) ? (raw as string).trim() : undefined;
 }
 
+/** The product name shown to the user. Applied with `app.setName` AFTER ready. */
+export const DISPLAY_APP_NAME = "Sideform Desktop";
+/** The name the app had before the rename. Its userData directory
+ * (`<appData>/Pineapple Editor`) and its Keychain item
+ * (`Pineapple Editor Safe Storage`) hold the user's cookies, settings and
+ * saved logins, so both stay in use for an existing install. */
+export const LEGACY_APP_NAME = "Pineapple Editor";
+
+export const STORAGE_IDENTITY_FILE = "storage-identity.json";
+
+export interface StorageIdentity {
+  /** Directory for `app.setPath("userData", ...)`. */
+  userDataDir: string;
+  /** Name to give `app.setName` BEFORE ready: Chromium derives the safeStorage
+   * Keychain item ("<name> Safe Storage") from the name at that moment, and
+   * ignores any later `setName`. */
+  storageName: string;
+}
+
+/** Injected file-system reads (sync: runs before `app.ready`). */
+export interface IdentityFs {
+  exists(p: string): boolean;
+  isDirectory(p: string): boolean;
+  /** File text, or null when missing/unreadable. */
+  read(p: string): string | null;
+}
+
+/**
+ * Decides, once and before `app.ready`, which on-disk identity this launch uses.
+ * Directory: env override; else the NEW dir if it exists; else the legacy
+ * `<appData>/Pineapple Editor` dir if it exists AS A DIRECTORY; else the new dir.
+ * Name (the Keychain item): sticky, tied to the directory actually used:
+ * `storage-identity.json` in that dir wins; else the legacy name when the dir is
+ * the legacy dir; else the new name.
+ */
+export function resolveStorageIdentity(
+  env: NodeJS.ProcessEnv,
+  appDataDir: string,
+  fs: IdentityFs,
+  join: (...parts: string[]) => string,
+): StorageIdentity {
+  const legacyDir = join(appDataDir, LEGACY_APP_NAME);
+  const newDir = join(appDataDir, DISPLAY_APP_NAME);
+  const userDataDir =
+    resolveUserDataDir(env) ?? (fs.exists(newDir) ? newDir : fs.isDirectory(legacyDir) ? legacyDir : newDir);
+  let stored: string | undefined;
+  try {
+    const text = fs.read(join(userDataDir, STORAGE_IDENTITY_FILE));
+    const name = text === null ? undefined : (JSON.parse(text) as { storageName?: unknown }).storageName;
+    if (name === LEGACY_APP_NAME || name === DISPLAY_APP_NAME) stored = name;
+  } catch {
+    stored = undefined;
+  }
+  return { userDataDir, storageName: stored ?? (userDataDir === legacyDir ? LEGACY_APP_NAME : DISPLAY_APP_NAME) };
+}
+
+/** The identity file text to persist; written once so the name sticks. */
+export const storageIdentityFileText = (id: StorageIdentity): string => JSON.stringify({ storageName: id.storageName });
+
 /** `PEN_DESKTOP_AGENT_LAYOUT=1` turns on the left agent chat panel (see
  * layout.ts / window.ts). Off unless the value is exactly "1", "true" or "on"
  * (trimmed, case-insensitive). */

@@ -1,6 +1,7 @@
+import fs from "node:fs";
 import path from "node:path";
 import { app, BaseWindow, safeStorage, session } from "electron";
-import { resolveAgentLayoutEnabled, resolveEditorUrl, resolveUserDataDir } from "./config";
+import { resolveAgentLayoutEnabled, DISPLAY_APP_NAME, STORAGE_IDENTITY_FILE, resolveEditorUrl, resolveStorageIdentity, storageIdentityFileText } from "./config";
 import { createMainWindow } from "./window";
 import { createMcpService } from "./mcp/service";
 import { denyAllPermissions } from "./browser/permissions";
@@ -14,14 +15,61 @@ const editorUrl = resolveEditorUrl(process.env);
 // PEN_DESKTOP_AGENT_LAYOUT: flag-gated left agent panel (see CLAUDE.md "Agent layout").
 const agentLayout = resolveAgentLayoutEnabled(process.env);
 
-// `electron .` otherwise appears as "Electron" in the macOS menu bar during
-// development. Packaged builds also use the same user-facing product name.
-app.setName("Pineapple Editor");
+// Storage identity (config.ts resolveStorageIdentity). The app was renamed from
+// "Pineapple Editor" to "Sideform Desktop". An existing install keeps its
+// legacy userData directory AND its legacy name here, BEFORE ready: Chromium
+// takes the safeStorage Keychain item name ("<name> Safe Storage") from the
+// name at ready and ignores later setName calls. A different name would make
+// the saved-logins file undecryptable. The choice is persisted in the userData
+// dir (storage-identity.json) so it stays sticky. The visible name is set
+// after ready, below. e2e overrides the directory (PEN_DESKTOP_USER_DATA_DIR).
+const isDir = (p: string): boolean => {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
+const storage = resolveStorageIdentity(
+  process.env,
+  app.getPath("appData"),
+  {
+    exists: fs.existsSync,
+    isDirectory: isDir,
+    read: (p) => {
+      try {
+        return fs.readFileSync(p, "utf8");
+      } catch {
+        return null;
+      }
+    },
+  },
+  path.join,
+);
+app.setName(storage.storageName);
+app.setPath("userData", storage.userDataDir);
+try {
+  const idFile = path.join(storage.userDataDir, STORAGE_IDENTITY_FILE);
+  if (!fs.existsSync(idFile)) {
+    fs.mkdirSync(storage.userDataDir, { recursive: true });
+    fs.writeFileSync(idFile, storageIdentityFileText(storage), "utf8");
+  }
+} catch {
+  // Best effort: the next launch derives the same answer from the directory.
+}
 
-// e2e gives every run a fresh userData dir so saved settings never leak in
-// (PEN_DESKTOP_USER_DATA_DIR). Must run before app.ready.
-const userDataDir = resolveUserDataDir(process.env);
-if (userDataDir) app.setPath("userData", userDataDir);
+// One instance per userData dir. (The old "Pineapple Editor.app" does not take
+// this lock, so both builds can still run side by side.)
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+}
+app.on("second-instance", () => {
+  const win = BaseWindow.getAllWindows().find((w) => !loginServices.passwordsWindow.owns(w));
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+});
 
 // App-scoped, not window-scoped (see mcp/service.ts's header): created once
 // here and handed to every createMainWindow call, including the macOS dock
@@ -59,6 +107,10 @@ const loginServices = {
 };
 
 app.whenReady().then(async () => {
+  // The visible product name (app menu labels, About box). Safe now: the
+  // userData path and the Keychain item name are already fixed above.
+  app.setName(DISPLAY_APP_NAME);
+  app.setAboutPanelOptions({ applicationName: DISPLAY_APP_NAME });
   // The editor must always open — MCP is a background convenience, not a
   // prerequisite. createMainWindow() runs first and unconditionally, before
   // mcpService.start() is even called, so neither a rejected start() (e.g.

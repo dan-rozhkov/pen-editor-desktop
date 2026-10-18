@@ -183,7 +183,7 @@ export function createMainWindow(
   const win = new BaseWindow({
     width: 1440,
     height: 900,
-    title: "Pineapple Editor",
+    title: "Sideform Desktop",
     // Put the tab strip in the native title-bar row on macOS while keeping
     // the standard traffic-light controls. Other platforms retain their
     // normal system frame.

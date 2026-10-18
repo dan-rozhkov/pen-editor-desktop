@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveBrowserCursorMotion, resetCursorMotionWarningForTests, resolveUserDataDir, resolveAgentLayoutEnabled, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveTabEditorUrl, editorPreloadArguments, AGENT_LAYOUT_ARG, initialTabs, onLastTabClosed } from "../src/main/config";
+import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveBrowserCursorMotion, resetCursorMotionWarningForTests, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentLayoutEnabled, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveTabEditorUrl, editorPreloadArguments, AGENT_LAYOUT_ARG, initialTabs, onLastTabClosed } from "../src/main/config";
 
 describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
@@ -74,6 +74,52 @@ describe("resolveUserDataDir", () => {
     expect(resolveUserDataDir({})).toBeUndefined();
     expect(resolveUserDataDir({ PEN_DESKTOP_USER_DATA_DIR: "  " })).toBeUndefined();
     expect(resolveUserDataDir({ PEN_DESKTOP_USER_DATA_DIR: " /tmp/x " })).toBe("/tmp/x");
+  });
+});
+
+describe("resolveStorageIdentity", () => {
+  const join = (...p: string[]) => p.join("/");
+  const appData = "/AS";
+  const legacy = "/AS/Pineapple Editor";
+  const fresh = "/AS/Sideform Desktop";
+  const mk = (dirs: string[], files: Record<string, string> = {}) => ({
+    exists: (p: string) => dirs.includes(p) || p in files,
+    isDirectory: (p: string) => dirs.includes(p),
+    read: (p: string) => files[p] ?? null,
+  });
+
+  it("existing install: legacy dir and legacy name", () => {
+    expect(resolveStorageIdentity({}, appData, mk([legacy]), join)).toEqual({ userDataDir: legacy, storageName: LEGACY_APP_NAME });
+  });
+  it("fresh install: new dir and new name", () => {
+    expect(resolveStorageIdentity({}, appData, mk([]), join)).toEqual({ userDataDir: fresh, storageName: DISPLAY_APP_NAME });
+  });
+  it("the new dir wins when both exist; its identity file decides the name", () => {
+    const fs = mk([legacy, fresh], { [`${fresh}/storage-identity.json`]: '{"storageName":"Pineapple Editor"}' });
+    expect(resolveStorageIdentity({}, appData, fs, join)).toEqual({ userDataDir: fresh, storageName: LEGACY_APP_NAME });
+  });
+  it("a legacy dir that appears later does not change a fresh install", () => {
+    const fs = mk([legacy, fresh], { [`${fresh}/storage-identity.json`]: '{"storageName":"Sideform Desktop"}' });
+    expect(resolveStorageIdentity({}, appData, fs, join)).toEqual({ userDataDir: fresh, storageName: DISPLAY_APP_NAME });
+  });
+  it("a new dir without an identity file gets the new name even if legacy exists", () => {
+    expect(resolveStorageIdentity({}, appData, mk([legacy, fresh]), join).storageName).toBe(DISPLAY_APP_NAME);
+  });
+  it("a legacy path that is a file, not a directory, is ignored", () => {
+    expect(resolveStorageIdentity({}, appData, mk([], { [legacy]: "x" }), join)).toEqual({ userDataDir: fresh, storageName: DISPLAY_APP_NAME });
+  });
+  it("env override: its identity file decides the name; the legacy dir itself means the legacy name", () => {
+    const env = { PEN_DESKTOP_USER_DATA_DIR: " /tmp/e2e " };
+    const withFile = mk([], { "/tmp/e2e/storage-identity.json": '{"storageName":"Pineapple Editor"}' });
+    expect(resolveStorageIdentity(env, appData, withFile, join)).toEqual({ userDataDir: "/tmp/e2e", storageName: LEGACY_APP_NAME });
+    expect(resolveStorageIdentity(env, appData, mk([legacy]), join)).toEqual({ userDataDir: "/tmp/e2e", storageName: DISPLAY_APP_NAME });
+    expect(resolveStorageIdentity({ PEN_DESKTOP_USER_DATA_DIR: legacy }, appData, mk([]), join).storageName).toBe(LEGACY_APP_NAME);
+  });
+  it("ignores a corrupt or unknown identity file", () => {
+    for (const text of ["not json", '{"storageName":"Evil"}', "null"]) {
+      const fs = mk([legacy], { [`${legacy}/storage-identity.json`]: text });
+      expect(resolveStorageIdentity({}, appData, fs, join).storageName).toBe(LEGACY_APP_NAME);
+    }
   });
 });
 
