@@ -1108,4 +1108,4 @@ without sharing cookies, tabs, fixtures or mocks. The shared browser
   the `isolated` block in `test/preloadTab.test.ts`, the command check in
   `test/ipcContract.test.ts`, and `e2e/browser-sessions.spec.ts`.
 
-**e2e launch helper.** The window starts with zero tabs, so specs that need an editor page launch with `launchShell` (`e2e/launch.ts`: waits for the tab bar, then sends `tabbar:new` like the "+" button). Specs about the empty start use `electron.launch` directly. `e2e/bench-browse.spec.ts` (opt-in, network + tokens) drives the chat in the agent panel (`/agent` view) but was rewritten without a live run: the panel selectors are unverified (TODO).
+**e2e launch helper.** The window starts with zero tabs, so specs that need an editor page launch with `launchShell` (`e2e/launch.ts`: waits for the tab bar, then sends `tabbar:new` like the "+" button). Specs about the empty start use `electron.launch` directly. `e2e/bench-browse.spec.ts` (opt-in, network + tokens) drives the chat in the agent panel (`/agent` view). Verified live 2026-10-19 (`BENCH_MODE=nojev`, 1 run: order placed, 33 s, 21 chat requests).
