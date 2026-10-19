@@ -46,6 +46,7 @@ interface PenTabbarApi {
   openToolsMenu(anchor: { x: number; y: number }): void;
   activateTab(id: number): void;
   closeTab(id: number): void;
+  reorderTab(id: number, beforeId: number | null): void;
   navigate(action: "url" | "back" | "forward" | "reload", url?: string): void;
   onState(cb: (s: TabsSnapshot) => void): void;
   onTheme(cb: (theme: UITheme) => void): void;
@@ -268,6 +269,7 @@ function createTabView(tab: TabRow): TabView {
   const el = document.createElement("div");
   el.className = "tab";
   el.addEventListener("mousedown", () => window.penTabbar.activateTab(tab.id));
+  el.addEventListener("pointerdown", (e) => onTabPointerDown(e, tab.id, el));
 
   const progress = document.createElement("span");
   progress.className = "tab-progress";
@@ -349,7 +351,222 @@ function exitTab(v: TabView): void {
   anim.onfinish = anim.oncancel = () => el.remove();
 }
 
+// --- Drag to reorder ----------------------------------------------------------------------
+// pointerdown arms a drag; it starts after DRAG_THRESHOLD_PX of horizontal movement (a plain click
+// never moves a tab; activation stays on mousedown). The dragged tab follows the pointer via
+// translateX, the others shift with transforms to open a gap at the would-be slot. Drop sends
+// tabbar:reorder {id, beforeId} (beforeId = the tab it now sits before, null = the end).
+// pointercancel / lost capture cancel. There is no Escape/blur cancel: the mousedown activates the tab,
+// main then focuses the tab's page, so this view never has keyboard focus nor stays focused during a drag.
+// A tabbar:state mid-drag updates titles/active only; the DOM order waits for the drop.
+const DRAG_THRESHOLD_PX = 4;
+interface DragSlot {
+  id: number;
+  el: HTMLElement;
+  left: number;
+  width: number;
+}
+interface DragState {
+  id: number;
+  el: HTMLElement;
+  pointerId: number;
+  startX: number;
+  started: boolean;
+  slots: DragSlot[];
+  from: number;
+  to: number;
+  gap: number;
+  stripLeft: number;
+  stripRight: number;
+  animate: boolean;
+  tx: number;
+}
+let drag: DragState | null = null;
+let lastState: TabsSnapshot | null = null;
+// Optimistic order after a drop, until a tabbar:state confirms it (a stale push in between must not flip it back).
+let pendingOrder: number[] | null = null;
+let pendingTimer: number | undefined;
+
+function clearPending(): void {
+  pendingOrder = null;
+  window.clearTimeout(pendingTimer);
+}
+
+function onTabPointerDown(e: PointerEvent, id: number, el: HTMLElement): void {
+  if (e.button !== 0) return;
+  if (e.target instanceof Element && e.target.closest(".close")) return;
+  if (!el.classList.contains("tab") || el.classList.contains("entering")) return;
+  if (drag) abortDrag(); // a stale gesture (lost pointerup) must not swallow this one
+  drag = {
+    id, el, pointerId: e.pointerId, startX: e.clientX, started: false,
+    slots: [], from: 0, to: 0, gap: 0, stripLeft: 0, stripRight: 0, animate: false, tx: 0,
+  };
+  window.addEventListener("pointermove", onDragMove);
+  window.addEventListener("pointerup", onDragUp);
+  window.addEventListener("pointercancel", cancelDrag);
+}
+
+function startDrag(d: DragState): boolean {
+  // Mid-animation neighbours (entering / closing ghosts) move while measured: wait for a quiet strip.
+  if (tabsEl.querySelector(".tab-ghost, .tab.entering")) return false;
+  const els = Array.from(tabsEl.querySelectorAll<HTMLElement>(":scope > .tab"));
+  const ids = new Map<HTMLElement, number>();
+  for (const [id, v] of tabViews) ids.set(v.el, id);
+  d.slots = els.map((el) => {
+    const r = el.getBoundingClientRect();
+    return { id: ids.get(el) ?? -1, el, left: r.left, width: r.width };
+  });
+  d.from = d.slots.findIndex((s) => s.id === d.id);
+  if (d.from === -1 || d.slots.length < 2) return false;
+  d.to = d.from;
+  const strip = tabsEl.getBoundingClientRect();
+  d.stripLeft = strip.left;
+  d.stripRight = strip.right;
+  d.gap = parseFloat(getComputedStyle(tabsEl).columnGap) || 0;
+  d.animate = canAnimate(d.el);
+  try {
+    d.el.setPointerCapture(d.pointerId);
+  } catch {
+    return false;
+  }
+  d.el.addEventListener("lostpointercapture", cancelDrag);
+  d.el.classList.add("dragging");
+  tabsEl.classList.add("reordering");
+  for (const s of d.slots) {
+    if (s.el !== d.el) s.el.style.transition = d.animate ? "transform 150ms ease-out" : "none";
+  }
+  return true;
+}
+
+function layoutDrag(d: DragState, clientX: number): void {
+  const me = d.slots[d.from];
+  const minTx = d.stripLeft - me.left;
+  const maxTx = d.stripRight - me.width - me.left;
+  d.tx = Math.max(minTx, Math.min(Math.max(minTx, maxTx), clientX - d.startX));
+  d.el.style.transform = `translateX(${d.tx}px)`;
+  const center = me.left + d.tx + me.width / 2;
+  const others = d.slots.filter((_, i) => i !== d.from);
+  let to = 0;
+  for (const o of others) if (o.left + o.width / 2 < center) to++;
+  d.to = to;
+  // Final layout if dropped here: contiguous from the first slot's left edge.
+  const ordered = others.slice();
+  ordered.splice(to, 0, me);
+  let x = d.slots[0].left;
+  for (const s of ordered) {
+    if (s !== me) s.el.style.transform = x === s.left ? "" : `translateX(${x - s.left}px)`;
+    x += s.width + d.gap;
+  }
+}
+
+/** Detaches the gesture's listeners and forgets it. */
+function endDrag(d: DragState): void {
+  drag = null;
+  window.removeEventListener("pointermove", onDragMove);
+  window.removeEventListener("pointerup", onDragUp);
+  window.removeEventListener("pointercancel", cancelDrag);
+  d.el.removeEventListener("lostpointercapture", cancelDrag);
+  try {
+    d.el.releasePointerCapture(d.pointerId);
+  } catch {
+    /* already released */
+  }
+}
+
+function resetDragStyles(d: DragState): void {
+  for (const s of d.slots) {
+    s.el.style.transition = "none";
+    s.el.style.transform = "";
+  }
+  d.el.classList.remove("dragging");
+  tabsEl.classList.remove("reordering");
+  void tabsEl.offsetWidth; // flush with transitions off, so clearing the transforms is instant
+  for (const s of d.slots) s.el.style.transition = "";
+}
+
+/** Ends the gesture and restores the strip, without re-rendering. */
+function abortDrag(): void {
+  const d = drag;
+  if (!d) return;
+  endDrag(d);
+  if (d.started) resetDragStyles(d);
+}
+
+function cancelDrag(): void {
+  const d = drag;
+  if (!d) return;
+  abortDrag();
+  if (d.started && lastState) renderTabs(lastState); // apply any reorder deferred while dragging
+}
+
+function onDragMove(e: PointerEvent): void {
+  const d = drag;
+  if (!d || e.pointerId !== d.pointerId) return;
+  if ((e.buttons & 1) === 0) {
+    cancelDrag(); // the button is up: a pointerup was lost
+    return;
+  }
+  if (!d.started) {
+    if (Math.abs(e.clientX - d.startX) < DRAG_THRESHOLD_PX) return;
+    if (!startDrag(d)) return; // stay armed; retry on a later move once the strip is quiet
+    d.started = true;
+  }
+  layoutDrag(d, e.clientX);
+}
+
+function onDragUp(e: PointerEvent): void {
+  const d = drag;
+  if (!d || e.pointerId !== d.pointerId) return;
+  endDrag(d);
+  if (!d.started) return;
+  const visualLeft = d.el.getBoundingClientRect().left;
+  resetDragStyles(d);
+  if (d.to !== d.from) {
+    // Optimistic: the neighbours already sit in their final slots, so moving the DOM node does not jump them.
+    const others = d.slots.filter((s) => s.el !== d.el);
+    const before = d.to < others.length ? others[d.to] : null;
+    tabsEl.insertBefore(d.el, before ? before.el : others[others.length - 1].el.nextSibling);
+    pendingOrder = Array.from(tabsEl.querySelectorAll<HTMLElement>(":scope > .tab")).map(
+      (el) => d.slots.find((s) => s.el === el)?.id ?? -1,
+    );
+    window.clearTimeout(pendingTimer);
+    pendingTimer = window.setTimeout(clearPending, 3000); // safety net only
+    window.penTabbar.reorderTab(d.id, before ? before.id : null);
+  }
+  if (d.animate) {
+    // The dragged tab glides from where it was released into its slot.
+    const delta = visualLeft - d.el.getBoundingClientRect().left;
+    if (Math.abs(delta) > 0.5) {
+      d.el.animate([{ transform: `translateX(${delta}px)` }, { transform: "none" }], { duration: 120, easing: "cubic-bezier(0.33, 1, 0.68, 1)" });
+    }
+  }
+  if (lastState) renderTabs(lastState);
+}
+
 function renderTabs(state: TabsSnapshot): void {
+  if (drag?.started) {
+    const ids = new Set(state.tabs.map((t) => t.id));
+    if (ids.size === drag.slots.length && drag.slots.every((s) => ids.has(s.id))) {
+      // Same tabs: keep the DOM order until the drag ends, but titles / active / loading stay live.
+      for (const tab of state.tabs) {
+        const v = tabViews.get(tab.id);
+        if (v) updateTabView(v, tab, tab.id === state.activeId, tab.kind === "browser" && (state.agentTabIds?.includes(tab.id) ?? false));
+      }
+      return;
+    }
+    abortDrag(); // a tab came or went: the measured slots are stale; the render below reconciles
+  }
+  if (pendingOrder) {
+    const order = pendingOrder;
+    const ids = state.tabs.map((t) => t.id);
+    if (ids.length === order.length && ids.every((id) => order.includes(id))) {
+      if (ids.every((id, i) => id === order[i])) clearPending();
+      else {
+        const byId = new Map(state.tabs.map((t) => [t.id, t] as const));
+        state = { ...state, tabs: order.map((id) => byId.get(id)!) };
+      }
+    } else clearPending();
+  }
   const live = new Set(state.tabs.map((t) => t.id));
   for (const [id, v] of tabViews) {
     if (live.has(id)) continue;
@@ -398,6 +615,7 @@ window.penTabbar.onState((state) => {
   togglePanelEl.title = collapsed ? "Show agent panel (Cmd/Ctrl+Alt+B)" : "Hide agent panel (Cmd/Ctrl+Alt+B)";
   shellMotion = state.motion !== false;
   document.documentElement.style.setProperty("--tab-strip-left", `${state.tabStripLeft ?? 0}px`);
+  lastState = state;
   renderTabs(state);
 
   // Address row: only shown for the active browser tab (design doc §2).

@@ -3,6 +3,7 @@ import {
   TabManager,
   resolveMcpActiveTab,
   shouldFocusAddressBar,
+  parseReorderPayload,
   type TabKind,
   type TabViewHandle,
   type TabsSnapshot,
@@ -139,6 +140,94 @@ describe("TabManager", () => {
     expect(tm.getSnapshot().tabs[0].title).toBe("Untitled");
     expect(tm.getSnapshot().tabs[0].kind).toBe("editor");
     expect(tm.getSnapshot().activeKind).toBe("editor");
+  });
+
+  describe("moveTab", () => {
+    const order = () => tm.getSnapshot().tabs.map((t) => t.id);
+    let a: number, b: number, c: number, d: number;
+    beforeEach(() => {
+      a = tm.newTab();
+      b = tm.newTab("browser");
+      c = tm.newTab();
+      d = tm.newTab("doc");
+      tm.activate(b);
+      states.length = 0;
+    });
+
+    it("moves a tab forward (before a later tab)", () => {
+      tm.moveTab(a, d);
+      expect(order()).toEqual([b, c, a, d]);
+    });
+
+    it("moves a tab backward", () => {
+      tm.moveTab(d, a);
+      expect(order()).toEqual([d, a, b, c]);
+    });
+
+    it("beforeId null moves a tab to the end", () => {
+      tm.moveTab(a, null);
+      expect(order()).toEqual([b, c, d, a]);
+    });
+
+    it("is a no-op (and pushes no state) for unknown ids, self, unknown anchor and an unchanged position", () => {
+      tm.moveTab(999, a);
+      tm.moveTab(a, 999);
+      tm.moveTab(a, a);
+      tm.moveTab(a, b); // already right before b
+      tm.moveTab(d, null); // already last
+      expect(order()).toEqual([a, b, c, d]);
+      expect(states).toHaveLength(0);
+    });
+
+    it("pushes one snapshot in the new order and keeps the active tab, focus and pins", () => {
+      const focusCalls = views.map((v) => (v.focus as unknown as ReturnType<typeof vi.fn>).mock.calls.length);
+      const pinned = tm.currentBrowserTabId();
+      tm.moveTab(b, null);
+      expect(states).toHaveLength(1);
+      expect(states[0].tabs.map((t) => t.id)).toEqual([a, c, d, b]);
+      expect(states[0].activeId).toBe(b);
+      expect(tm.getSnapshot().activeId).toBe(b);
+      expect(views.map((v) => (v.focus as unknown as ReturnType<typeof vi.fn>).mock.calls.length)).toEqual(focusCalls);
+      expect(tm.currentBrowserTabId()).toBe(pinned);
+    });
+
+    it("is anchored on ids: a tab opened or closed meanwhile does not misplace it", () => {
+      const e = tm.newTab(); // appended after d
+      tm.moveTab(a, d);
+      expect(order()).toEqual([b, c, a, d, e]);
+      tm.closeTab(c);
+      tm.moveTab(e, b);
+      expect(order()).toEqual([e, b, a, d]);
+    });
+
+    it("nextTab / prevTab follow the new order", () => {
+      tm.moveTab(a, null); // b c d a, active b
+      tm.nextTab();
+      expect(tm.getSnapshot().activeId).toBe(c);
+      tm.prevTab();
+      tm.prevTab();
+      expect(tm.getSnapshot().activeId).toBe(a); // wraps backwards from b
+    });
+
+    it("editor tabs info follows the strip order (the canvas link sorts by activation itself)", () => {
+      tm.moveTab(c, a);
+      expect(tm.editorTabsInfo().tabs.map((t) => t.webContentsId)).toEqual([tm.webContentsIdOf(c), tm.webContentsIdOf(a)]);
+    });
+  });
+
+  describe("parseReorderPayload", () => {
+    it("accepts integer ids with an integer or null anchor", () => {
+      expect(parseReorderPayload({ id: 3, beforeId: 5 })).toEqual({ id: 3, beforeId: 5 });
+      expect(parseReorderPayload({ id: 3, beforeId: null })).toEqual({ id: 3, beforeId: null });
+    });
+
+    it("rejects malformed payloads", () => {
+      for (const raw of [undefined, null, 5, "x", [], {}, { id: 1 }, { id: 1.5, beforeId: null }, { id: "1", beforeId: null },
+        { id: 1, beforeId: "2" }, { id: 1, beforeId: 2.5 }, { id: 1, beforeId: undefined }, { id: Number.NaN, beforeId: null },
+        { id: 1, beforeId: Number.POSITIVE_INFINITY }]) {
+        expect(parseReorderPayload(raw), JSON.stringify(raw)).toBeNull();
+      }
+    });
   });
 
   describe("doc tabs", () => {

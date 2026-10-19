@@ -31,6 +31,7 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "tabbar:tools-menu", direction: "renderer->main" },
   { name: "tabbar:activate", direction: "renderer->main" },
   { name: "tabbar:close", direction: "renderer->main" },
+  { name: "tabbar:reorder", direction: "renderer->main" },
   { name: "tabbar:toggle-panel", direction: "renderer->main" },
   // Agent layout: the panel preload reports its theme (class `dark` on <html>); main checks sender + page.
   { name: "panel:theme", direction: "renderer->main" },

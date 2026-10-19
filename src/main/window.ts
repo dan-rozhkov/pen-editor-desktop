@@ -5,6 +5,7 @@ import { app, BaseWindow, View, WebContentsView, Menu, dialog, ipcMain, nativeTh
 import {
   TabManager,
   shouldFocusAddressBar,
+  parseReorderPayload,
   type TabKind,
   type TabViewHandle,
   type TabsSnapshot,
@@ -2198,6 +2199,12 @@ export function createMainWindow(
   };
   const onTabbarClose = (e: Electron.IpcMainEvent, id: number) =>
     fromOurTabbar(e) && closeTabByUser(id);
+  // Drag-to-reorder: `{id, beforeId | null}`; parsing is parseReorderPayload (pure, tested).
+  const onTabbarReorder = (e: Electron.IpcMainEvent, payload: unknown) => {
+    if (!fromOurTabbar(e)) return;
+    const move = parseReorderPayload(payload);
+    if (move) tabs.moveTab(move.id, move.beforeId);
+  };
   const onTabbarNavigate = (e: Electron.IpcMainEvent, payload: unknown) => {
     if (!fromOurTabbar(e)) return;
     if (!isRecord(payload)) return;
@@ -2219,6 +2226,7 @@ export function createMainWindow(
   ipcMain.on("tabbar:tools-menu", onTabbarToolsMenu);
   ipcMain.on("tabbar:activate", onTabbarActivate);
   ipcMain.on("tabbar:close", onTabbarClose);
+  ipcMain.on("tabbar:reorder", onTabbarReorder);
   ipcMain.on("tabbar:toggle-panel", onTabbarTogglePanel);
   ipcMain.on("panel:theme", onPanelTheme);
   ipcMain.on("tabbar:navigate", onTabbarNavigate);
@@ -2250,6 +2258,7 @@ export function createMainWindow(
     ipcMain.removeListener("tabbar:tools-menu", onTabbarToolsMenu);
     ipcMain.removeListener("tabbar:activate", onTabbarActivate);
     ipcMain.removeListener("tabbar:close", onTabbarClose);
+    ipcMain.removeListener("tabbar:reorder", onTabbarReorder);
     ipcMain.removeListener("tabbar:toggle-panel", onTabbarTogglePanel);
     ipcMain.removeListener("panel:theme", onPanelTheme);
     ipcMain.removeListener("tabbar:navigate", onTabbarNavigate);

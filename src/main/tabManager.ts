@@ -762,6 +762,28 @@ export class TabManager {
     return this.tabs.some((t) => t.kind === "editor" && t.view.getWebContentsId() === webContentsId);
   }
 
+  /**
+   * Tab strip drag-to-reorder: puts tab `id` right before tab `beforeId` (null = at the end) in the
+   * list order, which is also the order of `getSnapshot().tabs` (background session tabs included).
+   * Anchored on an id, not an index, so a tab opened or closed meanwhile cannot misplace it.
+   * Unknown ids, `beforeId === id`, an unknown `beforeId` and an unchanged position are no-ops
+   * (no state push). Activation, focus, agent pins and the MCP active tab are untouched; Ctrl+Tab
+   * cycles this same list, so it follows.
+   */
+  moveTab(id: number, beforeId: number | null): void {
+    const from = this.tabs.findIndex((t) => t.id === id);
+    if (from === -1 || beforeId === id) return;
+    if (beforeId !== null && !this.tabs.some((t) => t.id === beforeId)) return;
+    const [moved] = this.tabs.splice(from, 1);
+    const to = beforeId === null ? this.tabs.length : this.tabs.findIndex((t) => t.id === beforeId);
+    if (to === from) {
+      this.tabs.splice(from, 0, moved);
+      return;
+    }
+    this.tabs.splice(to, 0, moved);
+    this.emit();
+  }
+
   getSnapshot(): TabsSnapshot {
     const active = this.tabs.find((t) => t.id === this.activeId);
     const activeWebContentsId = active?.view.getWebContentsId() ?? null;
@@ -899,4 +921,14 @@ export class TabManager {
   private emit(): void {
     this.opts.onStateChanged(this.getSnapshot());
   }
+}
+
+/** Validates a `tabbar:reorder` payload from the tab bar: `{id: integer, beforeId: integer | null}`. */
+export function parseReorderPayload(raw: unknown): { id: number; beforeId: number | null } | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const { id, beforeId } = raw as Record<string, unknown>;
+  if (typeof id !== "number" || !Number.isInteger(id)) return null;
+  if (beforeId === null) return { id, beforeId: null };
+  if (typeof beforeId !== "number" || !Number.isInteger(beforeId)) return null;
+  return { id, beforeId };
 }

@@ -75,6 +75,11 @@ body {
   background: var(--tab-progress); pointer-events: none;
 }
 .tab-progress.static { width: 100%; opacity: 1; } /* reduced motion: no creep, just "loading" */
+/* Drag to reorder (renderer.ts): the dragged tab rides above its siblings; the siblings shift with
+   inline transforms. Both keep the strip a window no-drag zone. */
+.tab.dragging { z-index: 2; will-change: transform; }
+.tab.dragging:not(.active) { background: var(--glass-tab-hover); color: var(--text-active); }
+#tabs.reordering .tab { will-change: transform; }
 .tab-ghost { pointer-events: none; overflow: hidden; }
 .tab.entering { overflow: hidden; }
 /* The close "x" takes no room in the row: it sits over the end of the title, which fades out

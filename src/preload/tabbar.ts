@@ -13,6 +13,8 @@ const api = {
   togglePanel: () => ipcRenderer.send("tabbar:toggle-panel"),
   activateTab: (id: number) => ipcRenderer.send("tabbar:activate", id),
   closeTab: (id: number) => ipcRenderer.send("tabbar:close", id),
+  /** Drag-to-reorder: put tab `id` right before tab `beforeId` (null = at the end). */
+  reorderTab: (id: number, beforeId: number | null) => ipcRenderer.send("tabbar:reorder", { id, beforeId }),
   navigate: (action: "url" | "back" | "forward" | "reload", url?: string) =>
     ipcRenderer.send("tabbar:navigate", { action, url }),
   onState: (cb: (s: TabsSnapshot) => void) => {
