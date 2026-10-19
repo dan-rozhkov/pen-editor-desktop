@@ -94,7 +94,7 @@ area's x-range, rounded top corners, and it mirrors the agent chat header row of
 (pen-editor `ChatPanel` `OpenChatHeader`: `px-2 py-1.5 gap-1 border-b border-border-default`, 28px
 icon buttons, title `text-sm text-text-primary` (regular weight)): height `ADDRESS_ROW_HEIGHT` = 41
 (28 + 2*6 + 1px border; `layout.ts`, sent as `addressRowHeight` -> CSS `--address-row-height`),
-padding 0 8px, gap 4px, `border-bottom: 1px solid var(--border)` (#e0e0e0 / #404040), URL text 14px/400
+padding 0 8px, gap 4px, `border-bottom: 1px solid var(--border)` (#e0e0e0 / #404040), URL text 14px/400, always centered, in a field shaped like the nav buttons (28px high, 6px radius, `--glass-tab-hover` fill on hover/focus)
 in `--text-active`. Panel header and address row both start at the tab row height (38), so their
 bottom borders share one line (y = 78). Gap and radius are NOT hardcoded in CSS: `layout.ts`
 returns them (`gap`, `radius`), `window.ts` sends them on `tabbar:state` (`islandGap`,

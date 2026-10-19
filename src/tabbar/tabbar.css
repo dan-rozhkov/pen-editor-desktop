@@ -160,7 +160,8 @@ body {
   display: block;
   width: 100%;
   box-sizing: border-box;
-  height: 24px;
+  /* Same box as the .nav-btn buttons beside it: 28px high, 6px radius, their hover fill. */
+  height: 28px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -173,8 +174,9 @@ body {
   text-overflow: ellipsis;
   padding: 0 10px;
 }
-.url-input:hover, .url-input:focus { background: var(--glass-tab-active); }
-.url-input:focus { outline: none; text-align: left; }
+.url-input:hover, .url-input:focus { background: var(--glass-tab-hover); }
+/* The text stays centered while editing too. */
+.url-input:focus { outline: none; }
 /* Finding 5: a rejected submission (couldn't be normalized into a
    navigable http(s) URL) stays visible instead of silently doing nothing. */
 .url-input.invalid { box-shadow: inset 0 0 0 1px #d64545; }
