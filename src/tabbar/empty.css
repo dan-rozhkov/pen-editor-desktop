@@ -1,4 +1,18 @@
-/* Empty state of the tab area (agent layout, zero tabs). Tokens: tokens.css. */
+/* Empty state of the tab area (agent layout, zero tabs). Tokens: tokens.css.
+   Three cards (canvas, browser, document): a ghost preview of the tab kind on
+   top, a title, one line of copy and the call to action. The whole card is the
+   button. Hover/focus: accent ring, tinted preview, filled call to action. */
+:root {
+  --accent: var(--agent-cursor);
+  --accent-ring: light-dark(rgba(13, 153, 255, 0.28), rgba(13, 153, 255, 0.4));
+  --preview-bg: light-dark(#f7f7f8, #262626);
+  --preview-wash: light-dark(rgba(13, 153, 255, 0.07), rgba(13, 153, 255, 0.12));
+  --ghost: light-dark(#e9e9eb, #3a3a3a);
+  --ghost-surface: light-dark(#ffffff, #313131);
+  --ghost-border: light-dark(#e6e6e8, #3d3d3d);
+  --dot: light-dark(#e2e2e5, #353535);
+}
+
 html,
 body {
   margin: 0;
@@ -11,12 +25,16 @@ body {
 }
 
 .empty {
+  box-sizing: border-box;
   height: 100%;
+  overflow-y: auto;
+  padding: 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 16px;
+  /* safe: a short window (cards stacked) scrolls instead of clipping the top. */
+  justify-content: safe center;
+  gap: 20px;
 }
 
 .hint {
@@ -24,7 +42,7 @@ body {
 }
 
 .note {
-  margin: -8px 0 0;
+  margin: -12px 0 0;
   color: var(--text);
   opacity: 0.8;
 }
@@ -33,28 +51,330 @@ body {
   display: none;
 }
 
-.actions {
-  display: flex;
-  gap: 8px;
+.cards {
+  width: 100%;
+  max-width: 840px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
 }
 
-.action {
+.card {
   font: inherit;
+  color: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  background: var(--island-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  transition:
+    border-color 150ms ease-out,
+    box-shadow 150ms ease-out;
+}
+
+.card:hover,
+.card:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* Keyboard focus gets its own outline, so it stays distinct from a hovered card. */
+.card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* ---- preview ---- */
+
+.preview {
+  position: relative;
+  display: block;
+  height: 132px;
+  background: var(--preview-bg);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  transition: background-color 150ms ease-out;
+}
+
+/* Fade the ghost artwork into the card at the bottom, like the reference.
+   The colour sits in background-color and the fade in a mask, so the hover tint
+   interpolates (a gradient swap would jump). Shapes may run past the bottom: the
+   fade hides the cut. */
+.preview::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 36px;
+  background-color: var(--preview-bg);
+  mask-image: linear-gradient(to bottom, transparent, #000);
+  transition: background-color 150ms ease-out;
+}
+
+.card:hover .preview,
+.card:focus-visible .preview,
+.card:hover .preview::after,
+.card:focus-visible .preview::after {
+  background-color: color-mix(in srgb, var(--preview-bg), var(--accent) 6%);
+}
+
+:where(.preview span) {
+  display: block;
+}
+
+.line {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--ghost);
+}
+
+.line.short {
+  width: 55%;
+}
+
+/* Canvas: frames on a dot grid, with the agent cursor. */
+.preview-canvas {
+  background-image: radial-gradient(var(--dot) 1px, transparent 1.2px);
+  background-size: 12px 12px;
+  background-position: 6px 6px;
+}
+
+.frame {
+  position: absolute;
+  box-sizing: border-box;
+  background: var(--ghost-surface);
+  border: 1px solid var(--ghost-border);
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.frame .bar {
+  width: 40%;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--ghost);
+}
+
+.frame-a {
+  left: 14%;
+  top: 22px;
+  width: 30%;
+  height: 92px;
+}
+
+.frame-b {
+  left: 50%;
+  top: 34px;
+  width: 36%;
+  height: 64px;
+}
+
+.frame-b .block {
+  flex: 1;
+  border-radius: 4px;
+  background: var(--ghost);
+}
+
+.frame-c {
+  left: 50%;
+  top: 106px;
+  width: 22%;
+  height: 40px;
+}
+
+/* The agent's cursor: same arrow and colours as the tab bar's agent icon
+   (browser-agent ARROW_POINTS, tokens.css --agent-cursor*). */
+.cursor {
+  position: absolute;
+  left: 78%;
+  top: 80px;
+  width: 18px;
+  height: 18px;
+  filter: drop-shadow(0 0.5px 1px rgba(0, 0, 0, 0.4));
+  opacity: 0;
+  transition: opacity 150ms ease-out;
+}
+
+.cursor .arrow-rim {
+  fill: var(--agent-cursor-rim);
+  stroke: var(--agent-cursor-rim);
+}
+
+.cursor .arrow-body {
+  fill: var(--agent-cursor);
+  stroke: var(--agent-cursor);
+}
+
+.card:hover .cursor,
+.card:focus-visible .cursor {
+  opacity: 1;
+}
+
+/* Browser: a small window with an address pill. */
+.window {
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  top: 22px;
+  height: 140px;
+  box-sizing: border-box;
+  background: var(--ghost-surface);
+  border: 1px solid var(--ghost-border);
+  border-radius: 8px;
+}
+
+.chrome {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--ghost-border);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ghost);
+}
+
+.address {
+  margin-left: 8px;
+  flex: 1;
+  height: 14px;
+  line-height: 14px;
+  border-radius: 7px;
+  background: var(--preview-bg);
+  font-size: 9px;
+  text-align: center;
+  color: var(--text);
+  opacity: 0.8;
+}
+
+.page {
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.page .line {
+  grid-column: 1 / -1;
+}
+
+.page .line:first-child {
+  width: 45%;
+  height: 7px;
+}
+
+.tile {
+  height: 34px;
+  border-radius: 4px;
+  background: var(--ghost);
+}
+
+/* Document: a sheet on a sheet. */
+.sheet {
+  position: absolute;
+  left: 50%;
+  top: 20px;
+  width: 52%;
+  height: 140px;
+  transform: translateX(-50%);
+  box-sizing: border-box;
+  background: var(--ghost-surface);
+  border: 1px solid var(--ghost-border);
+  border-radius: 6px;
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sheet-back {
+  top: 28px;
+  transform: translateX(-42%) rotate(4deg);
+  opacity: 0.7;
+}
+
+.sheet .heading {
+  width: 60%;
+  height: 8px;
+  border-radius: 3px;
+  background: var(--ghost);
+  margin-bottom: 4px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.check .box {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid var(--ghost-border);
+  background: var(--ghost);
+}
+
+.check .line {
+  flex: 1;
+}
+
+/* ---- text ---- */
+
+.body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px 16px;
+}
+
+.title {
+  font-size: 14px;
+  font-weight: 500;
   color: var(--text-active);
-  background: transparent;
+}
+
+.desc {
+  line-height: 18px;
+  margin-bottom: 10px;
+}
+
+.cta {
+  align-self: flex-start;
+  /* Pin to the card bottom: descriptions that wrap differently keep the buttons in line. */
+  display: inline-flex;
+  align-items: center;
+  margin-top: auto;
+  height: 28px;
+  padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 6px 12px;
-  cursor: pointer;
+  color: var(--text-active);
+  transition:
+    background-color 150ms ease-out,
+    border-color 150ms ease-out,
+    color 150ms ease-out;
 }
 
-.action:hover {
-  background: var(--control-hover-bg);
-}
-
-.action:focus-visible {
-  outline: 2px solid #0d99ff;
-  outline-offset: 1px;
+.card:hover .cta,
+.card:focus-visible .cta {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
 }
 
 /* Motion: only when the user has not asked for reduced motion. Classes only (CSP: no inline styles). */
@@ -70,5 +390,13 @@ body {
     transition:
       opacity 200ms ease-out,
       transform 200ms ease-out;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .card *,
+  .card *::after {
+    transition: none !important;
   }
 }

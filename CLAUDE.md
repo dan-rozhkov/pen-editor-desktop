@@ -249,8 +249,9 @@ open a canvas tab: the editor must be loaded before it can handle a command);
 Close Tab (Cmd/Ctrl+W, `decideCloseTarget`) closes the active tab and does NOTHING with no active tab (zero tabs, or only background session tabs): it never closes the window (macOS convention). File > "Close Window" (Cmd/Ctrl+Shift+W, local action `closeWindow`, no `menu:command` id) closes the focused window; with the Passwords window focused it closes that window like Close Tab does. A new non-session tab becomes active when none is active, even if requested in the background (`activate:false`). macOS dock `activate` reopens a window
 the same way (panel only). **Placeholder:** while `activeId === null`, a local view (`src/tabbar/empty.html` + `empty.css` + `emptyRenderer.ts`,
 same CSP as the tab bar, light/dark tokens shared via `tokens.css`, no remote content) covers the tab
-area with "Canvas and browser tabs open here." and three buttons, "New Canvas Tab",
-"New Browser Tab" and "New Document". It has its OWN minimal preload (`src/preload/empty.ts`: `newCanvasTab`,
+area with the hint "Canvas, browser and document tabs open here." and three cards (`#new-canvas`,
+`#new-browser`, `#new-doc`; the whole card is the button: preview, title, description, "New canvas tab" /
+"New browser tab" / "New document" label). Previews are CSS plus one inline SVG (the canvas card's agent cursor on hover/focus); no images (the CSP has no `img-src`). It has its OWN minimal preload (`src/preload/empty.ts`: `newCanvasTab`,
 `newBrowserTab`, `newDocTab`, `onTheme`); its buttons send `tabbar:new` / `tabbar:new-doc` / `tabbar:new-browser`
 (the same actions as the "+" menu; main accepts them from the tab bar or this
 view via `isTabCreationSender`). Visibility, theme and focus decisions are pure
@@ -336,9 +337,9 @@ CI of its own. `Close Window` is a local action like Passwords (no forwarded id)
 - `panel:theme` agent panel preload→main (`light` | `dark`; accepted only from the panel's webContents and page) — the theme the panel paints, see "Theme and tint"
 - `tabbar:toggle-panel` tabbar→main (sender-checked) — the sidebar button: show/hide the agent panel (see "Sidebar toggle"); the new state returns as `panelCollapsed` on `tabbar:state`
 - `tabbar:new-browser` tabbar/empty-state→main (sender-checked) — a user-driven browser tab (`newUserBrowserTab`); sent by the empty-state placeholder only (`preload/empty.ts`)
-- `tabbar:new-doc` tabbar/empty-state→main (sender-checked) — a new document tab (`/doc?new=1&chat=off`); sent by the empty-state "New Document" button only (the "+" menu item calls `tabs.newTab("doc")` directly); File > New Document Tab (`CmdOrCtrl+Shift+D`) runs the same action locally
+- `tabbar:new-doc` tabbar/empty-state→main (sender-checked) — a new document tab (`/doc?new=1&chat=off`); sent by the empty-state Document card (`#new-doc`) only (the "+" menu item calls `tabs.newTab("doc")` directly); File > New Document Tab (`CmdOrCtrl+Shift+D`) runs the same action locally
 - `doc:open` agent panel→main (invoke, panel-only; `docId` → `{ok, error?}`) — activates the doc tab showing that document or opens `/doc?id=<docId>&chat=off`; see "Document tabs"
-- `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Canvas Tab / New Browser Tab / New Document), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` is sent by the empty-state placeholder's "New Canvas Tab" button; e2e also drives it through `penTabbar.newTab()`, which a native menu can't be clicked through
+- `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Canvas Tab / New Browser Tab / New Document), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` is sent by the empty-state placeholder's Canvas card (`#new-canvas`); e2e also drives it through `penTabbar.newTab()`, which a native menu can't be clicked through
 - `tabbar:tools-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the browser chrome row's gear button: native menu (Viewport emulation via CDP, Open/Close Developer Tools, Zoom) for the active browser tab; builder in `src/main/browserToolsMenu.ts`
 - `tabbar:navigate` tabbar→main (sender-checked; `{action: "url" | "back" | "forward" | "reload", url?}`) — the address row driving the active browser tab, see "Built-in browser tab" below
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below

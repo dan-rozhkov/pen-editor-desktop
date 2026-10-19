@@ -11,12 +11,49 @@
   </head>
   <body>
     <main class="empty" id="empty-state">
-      <p class="hint">Canvas and browser tabs open here.</p>
+      <p class="hint">Canvas, browser and document tabs open here.</p>
       <p class="note" id="sessions-note" hidden>Background browser sessions are running.</p>
-      <div class="actions">
-        <button id="new-canvas" class="action">New Canvas Tab</button>
-        <button id="new-browser" class="action">New Browser Tab</button>
-        <button id="new-doc" class="action">New Document</button>
+      <div class="cards">
+        <button id="new-canvas" class="card" aria-labelledby="canvas-cta" aria-describedby="canvas-desc">
+          <span class="preview preview-canvas" aria-hidden="true">
+            <span class="frame frame-a"><span class="bar"></span><span class="line"></span><span class="line short"></span></span>
+            <span class="frame frame-b"><span class="block"></span></span>
+            <span class="frame frame-c"><span class="bar"></span></span>
+            <svg class="cursor" viewBox="-2.4 -2.6 24.2 24.4"><polygon class="arrow-rim" points="2.2,1.6 17.6,8.5 10.8,12.4 6.2,17.7" stroke-width="7.8" stroke-linejoin="round" stroke-linecap="round" /><polygon class="arrow-body" points="2.2,1.6 17.6,8.5 10.8,12.4 6.2,17.7" stroke-width="5.4" stroke-linejoin="round" stroke-linecap="round" /></svg>
+          </span>
+          <span class="body">
+            <span class="title">Canvas</span>
+            <span class="desc" id="canvas-desc">Design screens with the agent on an open canvas.</span>
+            <span class="cta"><span class="cta-label" id="canvas-cta">New canvas tab</span></span>
+          </span>
+        </button>
+        <button id="new-browser" class="card" aria-labelledby="browser-cta" aria-describedby="browser-desc">
+          <span class="preview" aria-hidden="true">
+            <span class="window">
+              <span class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="address">sideform.pro</span></span>
+              <span class="page"><span class="line"></span><span class="line short"></span><span class="tile"></span><span class="tile"></span></span>
+            </span>
+          </span>
+          <span class="body">
+            <span class="title">Browser</span>
+            <span class="desc" id="browser-desc">Open a site. The agent can read, test and capture it.</span>
+            <span class="cta"><span class="cta-label" id="browser-cta">New browser tab</span></span>
+          </span>
+        </button>
+        <button id="new-doc" class="card" aria-labelledby="doc-cta" aria-describedby="doc-desc">
+          <span class="preview" aria-hidden="true">
+            <span class="sheet sheet-back"></span>
+            <span class="sheet">
+              <span class="heading"></span><span class="line"></span><span class="line"></span><span class="line short"></span>
+              <span class="check"><span class="box"></span><span class="line"></span></span>
+            </span>
+          </span>
+          <span class="body">
+            <span class="title">Document</span>
+            <span class="desc" id="doc-desc">Write notes, briefs and specs in Markdown.</span>
+            <span class="cta"><span class="cta-label" id="doc-cta">New document</span></span>
+          </span>
+        </button>
       </div>
     </main>
     <script src="emptyRenderer.js"></script>

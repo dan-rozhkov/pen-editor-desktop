@@ -43,12 +43,17 @@ test("agent layout opens with the panel only; the placeholder opens and returns 
     const empty = await find((u) => u.endsWith("/tabbar/empty.html"));
     await expect(panel.locator("#ready")).toHaveText("stub-agent");
 
-    // Zero tabs, placeholder visible with its text and both buttons.
+    // Zero tabs, placeholder visible with its text and the three cards (whole card = button, named by its CTA).
     await expect(tabbar.locator(".tab")).toHaveCount(0);
     expect(app.windows().some((p) => p.url().startsWith(`${baseUrl}/app`))).toBe(false);
-    await expect(empty.locator(".hint")).toHaveText("Canvas and browser tabs open here.");
-    await expect(empty.locator("#new-canvas")).toHaveText("New Canvas Tab");
-    await expect(empty.locator("#new-browser")).toHaveText("New Browser Tab");
+    await expect(empty.locator(".hint")).toHaveText("Canvas, browser and document tabs open here.");
+    await expect(empty.locator("#new-canvas .cta-label")).toHaveText("New canvas tab");
+    await expect(empty.locator("#new-browser .cta-label")).toHaveText("New browser tab");
+    await expect(empty.locator("#new-doc .cta-label")).toHaveText("New document");
+    await expect(empty.locator(".card .title")).toHaveText(["Canvas", "Browser", "Document"]);
+    await expect(empty.getByRole("button", { name: "New canvas tab" })).toHaveAccessibleDescription(
+      "Design screens with the agent on an open canvas.",
+    );
     await expect(empty.locator("#sessions-note")).toBeHidden();
     const emptyVisible = () =>
       app.evaluate(({ BaseWindow }) => {
