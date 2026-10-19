@@ -22,6 +22,7 @@ export const BROWSER_COMMANDS = [
   "startJournal",
   "stopJournal",
   "captureCheckpoint",
+  "releaseApp",
 ] as const;
 
 export type BrowserCommandName = (typeof BROWSER_COMMANDS)[number];

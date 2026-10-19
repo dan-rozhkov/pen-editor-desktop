@@ -82,6 +82,8 @@ const makeBrowser = (scope?: { session: unknown }) => {
       call({ command: "stopJournal", args: { token } }),
     captureCheckpoint: (token?: string): Promise<unknown> =>
       call({ command: "captureCheckpoint", args: { token } }),
+    // Quits the external desktop app this chat launched with `open({ app })` (no-op without one).
+    releaseApp: (): Promise<unknown> => call({ command: "releaseApp" }),
   };
 };
 

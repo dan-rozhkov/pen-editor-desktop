@@ -3,6 +3,7 @@ import path from "node:path";
 import { app, BaseWindow, safeStorage, session } from "electron";
 import { DISPLAY_APP_NAME, STORAGE_IDENTITY_FILE, resolveEditorUrl, resolveStorageIdentity, storageIdentityFileText } from "./config";
 import { createMainWindow } from "./window";
+import { appRegistry } from "./appTargetsService";
 import { createMcpService } from "./mcp/service";
 import { denyAllPermissions } from "./browser/permissions";
 import { CREDENTIALS_FILE, createCredentialStore, nodeCredentialFs } from "./browser/credentialStore";
@@ -145,6 +146,13 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+// Desktop apps the agent launched must not outlive us. Synchronous SIGKILL and profile
+// removal, no preventDefault and no delay: an async close would be cut off when the
+// process exits (and close() unhooks the launcher's own exit handler first).
+app.on("before-quit", () => {
+  appRegistry.killAllSync();
 });
 
 app.on("will-quit", () => {

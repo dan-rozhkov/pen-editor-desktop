@@ -1168,3 +1168,67 @@ without sharing cookies, tabs, fixtures or mocks. The shared browser
   `test/ipcContract.test.ts`, and `e2e/browser-sessions.spec.ts`.
 
 **e2e launch helper.** The window starts with zero tabs, so specs that need an editor page launch with `launchShell` (`e2e/launch.ts`: waits for the tab bar, then sends `tabbar:new` like the "+" button). Specs about the empty start use `electron.launch` directly. `e2e/bench-browse.spec.ts` (opt-in, network + tokens) drives the chat in the agent panel (`/agent` view). Verified live 2026-10-19 (`BENCH_MODE=nojev`, 1 run: order placed, 33 s, 21 chat requests).
+
+## External desktop apps (`open({ app })` / `releaseApp`)
+
+The chat agent can launch and drive another Electron app (e.g. Orca). Same
+`browser:command` IPC as the browser; the model's text is ONLY an `.app` path.
+Every decision is pure in `src/main/appTargets.ts`; `appTargetsService.ts` is
+the app-global wiring (registry, confirm memory, real launcher); `window.ts`'s
+`runAppCommand` adapts it. The launcher is `launchElectronApp` from
+`@sideform/browser-agent/adapters/electron` (v0.2.25+), loaded lazily through
+`require(esm)`.
+
+- **Routing.** `planAppCommand(command, args, state)` (state: none / pending /
+  running / gone) and one table `APP_ROUTES` (`routeAppCommand`) map commands to
+  controller methods; `openApp` is the whole open (reserve, validate, confirm,
+  launch, shape the result). `open` with a non-empty `args.app` launches (a present
+  but malformed `app` is refused, never a URL open); on a running app
+  `open/act/snapshot/read/screenshot/tabs/findImages/perform/assert` go to its
+  controller (navigation is locked by the adapter); `capture`, `applyFixture`,
+  `fillLogin`, `startJournal`, `captureCheckpoint` are refused; cleanup commands
+  pass through. App commands skip tab activity, dialog sweeps and the run boundary.
+  The decision runs right after `parseSessionId`, before `planSessionCommand`.
+- **Sticky binding.** Once a key launched an app it stays bound until `releaseApp`
+  or a session/owner release. If the app quits, the key keeps a tombstone
+  (`gone`): routed commands answer "The desktop app is no longer running..."
+  instead of falling through to the built-in browser. Commands while an open is
+  pending answer a "still starting" error.
+- **Key** `${senderId}:${sessionId ?? ""}`, reserved (`registry.begin`) BEFORE
+  validate/confirm: a parallel open on the key gets BUSY, and so does a new open on
+  a key whose cancelled open still shows its dialog (the flight entry stays until
+  it finishes). Cap 2 counts every spawned app not yet fully closed plus flights
+  not spawned yet, except the key's own app on a relaunch. A relaunch starts the
+  new app first and closes the old one only on success; cancellation is
+  re-checked after every await, so a release never yields `ok`, and `openApp`
+  reports success only if the key is still bound to that handle. A quit before
+  binding is a tombstone. Every release point cancels pending opens too;
+  `releaseApp` answers `{ok:true, pending:true}` when it cancelled one. `releaseApp`
+  (cleanup, NOT page-driving) is in both preloads and `BROWSER_COMMANDS`.
+- **Guards** (`validateAppPath`, on the realpath): ends with `.app`, inside
+  `/Applications` or `~/Applications` (symlinks out are refused), contains
+  `Contents/Frameworks/Electron Framework.framework`, is not our own bundle.
+  Extra roots via `PEN_DESKTOP_APP_ROOTS` (colon separated) only when
+  `!app.isPackaged` (e2e). Never pass model text as args, env or `userDataDir`:
+  the adapter makes a fresh temp profile and keeps the navigation lock.
+- **Confirm.** Native `dialog.showMessageBox` (bundle name + full path + a plain
+  warning that the app runs with the user's rights: files, commands, keychain):
+  "Allow once" / "Allow until Sideform quits" / "Don't allow" (default and cancel).
+  "Until quits" is remembered in memory per realpath AND per owner sender (a new
+  chat or reloaded panel asks again), never persisted.
+- **Release points.** `closeSession` (releases that session's key; `closeSessionById`
+  itself is unchanged), `closeSessionsOwnedBy` (releases everything of the owner and `forgetSender`s its
+  "until quits" answers;
+  covers the editor-tab orphan points, `releasePanelOrphans` and the window
+  `closed` path via `tabs.destroyAll`), and `before-quit` in `index.ts`: it calls
+  `killAllSync()` (synchronous SIGKILL of every spawned app + profile removal, no
+  `preventDefault`, no delay). Async `close()` is not enough there: it unhooks the
+  launcher's exit handler first and the process exits before the kill.
+  `closeSession` awaits the app release (capped at 5 s) after `sessions.close`.
+- **Profile dir.** The service creates it (`mkdtempSync`, `sideform-app-*` under the OS
+  temp dir) and passes it as `userDataDir`, so it can be removed on release, on a
+  failed launch and in `killAllSync`.
+- **`playwright-core` is a runtime dependency** (pinned 1.64.1): the adapter has it as
+  a peer, and electron-builder drops dev deps, so the packaged app would fail at
+  the first launch otherwise.
+- Tests: `test/appTargets.test.ts`; the command list in `test/ipcContract.test.ts`.

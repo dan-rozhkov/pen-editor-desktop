@@ -65,6 +65,8 @@ import { isLoginBindingCall, promptChoiceFromButton, savePromptCopy, type LoginC
 import { normalizeOrigin, type CredentialStore } from "./browser/credentialStore";
 import type { FaviconCache } from "./browser/faviconCache";
 import type { PasswordsWindow } from "./passwordsWindow";
+import { appKey, errorForPlan, openApp, ownedBySender, ownedBySession, planAppCommand, routeAppCommand } from "./appTargets";
+import { appConfirm, appRegistry, validateRequestedApp } from "./appTargetsService";
 import { createTabAgentActivity, isAgentPageCommand } from "./agentActivity";
 import { decideCloseTarget, guardMenuActions } from "./closeTarget";
 import { focusAfterCollapse, isTabCreationSender, planEmptyViewUpdate, resolveFocusTarget, type EmptyViewState } from "./emptyView";
@@ -1773,6 +1775,10 @@ export function createMainWindow(
   // Orphans: the owner editor tab reloaded, crashed or closed (`gone`: destroyed for good).
   closeSessionsOwnedBy = (owner: number, gone = false) => {
     for (const id of sessions.idsOwnedBy(owner)) void closeSessionById(id, owner);
+    // Covers every session key of this owner too (and the shared one).
+    void appRegistry.releaseWhere(ownedBySender(owner));
+    // A reloaded or crashed owner is a new chat: its "allow until quit" answers are void.
+    appConfirm.forgetSender(owner);
     if (gone) sessions.forgetOwner(owner);
   };
 
@@ -1804,6 +1810,33 @@ export function createMainWindow(
   // The reloaded panel has no list: push it once the page is up.
   agentPanelView.webContents.on("did-finish-load", () => canvasLink.repush());
 
+  // Commands for an external desktop app (src/main/appTargets.ts). They skip the
+  // built-in browser's tab activity, dialog sweeps and run boundary entirely.
+  const runAppCommand = async (
+    plan: Exclude<ReturnType<typeof planAppCommand>, "passthrough">,
+    payload: Record<string, unknown> & { command: string },
+    sender: number,
+    sessionId: string | undefined,
+  ): Promise<unknown> => {
+    const key = appKey(sender, sessionId);
+    if (plan === "release") {
+      const { pending } = await appRegistry.release(key);
+      return pending ? { ok: true, pending: true } : { ok: true };
+    }
+    if (plan === "refuse" || plan === "pending" || plan === "gone") return errorForPlan(plan, payload.command, payload.args);
+    if (plan === "launch") {
+      const requested = isRecord(payload.args) ? payload.args.app : undefined;
+      return await openApp(key, requested, {
+        registry: appRegistry,
+        validate: validateRequestedApp,
+        confirm: (target) => appConfirm.confirm(win, target, sender),
+      });
+    }
+    const running = appRegistry.get(key);
+    if (!running) return errorForPlan("gone", payload.command, payload.args);
+    return await routeAppCommand(running.controller, payload.command, payload.args);
+  };
+
   const onBrowserCommand = async (event: Electron.IpcMainInvokeEvent, payload: unknown) => {
     // Single source of truth for "which webContents id is an editor tab" —
     // TabManager.isEditorTab (finding 10). Deliberately not a second,
@@ -1819,11 +1852,19 @@ export function createMainWindow(
     const parsedSession = parseSessionId(payload);
     if (!parsedSession.ok) return { error: parsedSession.error };
     const sessionId = parsedSession.id;
+    const appPlan = planAppCommand(payload.command, payload.args, appRegistry.state(appKey(sender, sessionId)));
+    if (appPlan !== "passthrough") return await runAppCommand(appPlan, payload as Record<string, unknown> & { command: string }, sender, sessionId);
     if (payload.command === "closeSession") {
       if (sessionId === undefined) return { error: ERR_INVALID_SESSION_ID };
       const owner = sessions.ownerOf(sessionId);
       if (owner !== undefined && owner !== sender) return { error: ERR_SESSION_NOT_OWNED };
-      await closeSessionById(sessionId, sender);
+      const closing = closeSessionById(sessionId, sender);
+      const appsGone = appRegistry.releaseWhere(ownedBySession(sender, sessionId));
+      await closing;
+      // Bounded: a new open on this id must not overlap the old app, but a stuck close must not hang the reply.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([appsGone, new Promise<void>((resolve) => { timer = setTimeout(resolve, 5_000); })]);
+      clearTimeout(timer);
       return { ok: true };
     }
     // The controller, journal and tab scope this command runs against: one

@@ -195,7 +195,10 @@ describe("browser:command commands", () => {
   const list = [...BROWSER_COMMANDS].sort();
 
   it("window.ts dispatches exactly the commands in the list", () => {
-    expect([...handled].filter((c) => (list as string[]).includes(c) || c === "default").sort()).toEqual(list);
+    // releaseApp is routed by planAppCommand (plan "release"), not by a switch case.
+    expect(windowSource).toContain('plan === "release"');
+    const dispatched = list.filter((c) => c !== "releaseApp");
+    expect([...handled].filter((c) => (list as string[]).includes(c) || c === "default").sort()).toEqual(dispatched);
     for (const c of handled) if (c !== "default") expect(list, `${c} is dispatched but not in BROWSER_COMMANDS`).toContain(c);
   });
 
