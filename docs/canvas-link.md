@@ -39,6 +39,7 @@ A `tab-gone` (it carries `registrationId`) for the bound registration clears the
 | Channel | Direction | Payload |
 |---|---|---|
 | `canvas:list` | panel → main, invoke | → `CanvasTabInfo[]` (this window's registered canvas tabs) |
+| `browser:reveal-agent-tab` | panel → main, invoke | `{session?}` → `boolean`: makes the agent's browser tab (shared, or that session's) the active tab; false for a non-panel sender, a bad session id or no such tab; never creates a tab or session |
 | `canvas:open` | panel → main, invoke | `{activate?}` → `{tabId, registrationId}` (the registration that resolved it) after the new tab called `register()` (timeout 20 s → reject) |
 | `canvas:activate` | panel → main | `tabId` |
 | `canvas:to-tab` | panel → main | `{tabId, env}` |

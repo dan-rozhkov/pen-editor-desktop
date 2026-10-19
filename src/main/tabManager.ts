@@ -604,6 +604,17 @@ export class TabManager {
     return this.resolveBrowserTabId(scope);
   }
 
+  /** Brings the browser tab the agent drives (`browserHandle(scope)`'s own rule) to
+   * the front. Show-only: unlike `activate`, no agent pin moves, so revealing a
+   * fallback tab (the pinned one closed) never points the agent at it. Never
+   * creates a tab or a session: false when the scope has no browser tab. */
+  revealAgentBrowserTab(scope?: string): boolean {
+    const id = this.resolveBrowserTabId(scope);
+    if (id === null) return false;
+    this.setActive(id);
+    return true;
+  }
+
   private inScope(t: TabEntry, scope: string | undefined): boolean {
     return t.kind === "browser" && t.session === scope;
   }

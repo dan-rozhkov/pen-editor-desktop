@@ -93,6 +93,10 @@ const browser = {
   isolated: (sessionId: string) => makeBrowser({ session: sessionId }),
   closeSession: (sessionId: string): Promise<unknown> =>
     ipcRenderer.invoke("browser:command", { command: "closeSession", session: sessionId }),
+  // Bring the agent's browser tab to the front (a click on a tool chip). No id = the
+  // shared browser. Resolves false when there is no such tab; never creates one.
+  revealAgentTab: (sessionId?: string): Promise<unknown> =>
+    ipcRenderer.invoke("browser:reveal-agent-tab", { session: sessionId }),
 };
 
 

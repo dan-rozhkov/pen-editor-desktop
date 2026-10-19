@@ -1867,6 +1867,16 @@ export function createMainWindow(
     }
   };
   ipcMain.handle("browser:command", onBrowserCommand);
+  // Panel only: bring the agent's browser tab to the front (a click on a tool chip).
+  // Never creates a session or a tab, so it does not go through `browser:command`.
+  ipcMain.handle("browser:reveal-agent-tab", (event, payload: unknown): boolean => {
+    if (panelWc()?.id !== event.sender.id) return false;
+    if (!isRecord(payload)) return false;
+    if (payload.session === undefined) return tabs.revealAgentBrowserTab();
+    const parsed = parseSessionId({ session: payload.session });
+    if (!parsed.ok) return false;
+    return tabs.revealAgentBrowserTab(parsed.id);
+  });
 
   // --- canvas link IPC ---
   const onCanvasRegister = (event: Electron.IpcMainEvent) => canvasLink.register(event.sender.id);
@@ -2094,6 +2104,7 @@ export function createMainWindow(
     ipcMain.removeListener("editor:theme", onEditorTheme);
     ipcMain.removeListener("editor:document-title", onEditorDocumentTitle);
     ipcMain.removeHandler("browser:command");
+    ipcMain.removeHandler("browser:reveal-agent-tab");
     ipcMain.removeListener("canvas:register", onCanvasRegister);
     ipcMain.removeListener("canvas:unregister", onCanvasUnregister);
     ipcMain.removeListener("canvas:to-panel", onCanvasToPanel);

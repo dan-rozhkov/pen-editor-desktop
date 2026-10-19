@@ -27,7 +27,9 @@ function browserObject(file: string): string {
   return src
     .slice(start, end)
     .replace(/^\s*\/\/.*$/gm, "")
-    .replace(/\s+/g, "");
+    .replace(/\s+/g, "")
+    // Panel-only member (the tab has no tool chips to reveal from).
+    .replace(/revealAgentTab:.*?\{session:sessionId\}\),/, "");
 }
 
 describe("preload browser bridge", () => {

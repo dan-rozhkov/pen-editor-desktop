@@ -889,6 +889,47 @@ describe("TabManager scopes (isolated browser sessions)", () => {
     expect(tm.currentBrowserTabId()).toBe(shared);
   });
 
+  describe("revealAgentBrowserTab", () => {
+    it("reveals the pinned shared tab and keeps the pin", () => {
+      const b1 = tm.newTab("browser");
+      const b2 = tm.newTab("browser"); // active
+      tm.setAgentBrowserTabId(b1);
+      expect(tm.revealAgentBrowserTab()).toBe(true);
+      expect(tm.getSnapshot().activeId).toBe(b1);
+      expect(tm.currentBrowserTabId()).toBe(b1);
+      expect(b2).not.toBe(b1);
+    });
+
+    it("falls back to the default rule when nothing is pinned", () => {
+      tm.newTab("browser");
+      const b2 = tm.newTab("browser");
+      tm.activate(tm.getSnapshot().tabs[0].id); // editor active
+      expect(tm.revealAgentBrowserTab()).toBe(true);
+      expect(tm.getSnapshot().activeId).toBe(b2);
+    });
+
+    it("reveals a session tab without repointing the shared pin", () => {
+      const shared = tm.newTab("browser");
+      const a = tm.newTab("browser", "a"); // background
+      tm.setAgentBrowserTabId(shared);
+      expect(tm.revealAgentBrowserTab("a")).toBe(true);
+      expect(tm.getSnapshot().activeId).toBe(a);
+      expect(tm.currentBrowserTabId()).toBe(shared);
+      expect(tm.currentBrowserTabId("a")).toBe(a);
+    });
+
+    it("returns false and creates nothing when the scope has no browser tab", () => {
+      tm.newTab("browser", "a");
+      const before = tm.count();
+      const active = tm.getSnapshot().activeId;
+      expect(tm.revealAgentBrowserTab()).toBe(false);
+      expect(tm.revealAgentBrowserTab("nope")).toBe(false);
+      expect(tm.count()).toBe(before);
+      expect(tm.getSnapshot().activeId).toBe(active);
+      expect(sessionsSeen).toEqual([undefined, "a"]);
+    });
+  });
+
   it("a user click or cycle on a session tab does not repoint the session's agent tab", () => {
     const a1 = tm.newTab("browser", "a");
     const a2 = tm.newTab("browser", "a");

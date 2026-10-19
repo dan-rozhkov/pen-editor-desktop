@@ -46,6 +46,8 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "passwords:remove", direction: "renderer->main" },
   { name: "passwords:never-remove", direction: "renderer->main" },
   // Canvas link : panel <-> canvas tabs, see CLAUDE.md "Canvas link".
+  // Panel-only: bring the agent's browser tab to the front.
+  { name: "browser:reveal-agent-tab", direction: "renderer->main" },
   { name: "canvas:list", direction: "renderer->main" },
   { name: "canvas:open", direction: "renderer->main" },
   { name: "canvas:activate", direction: "renderer->main" },
