@@ -164,7 +164,7 @@ Phosphor "Globe" ALWAYS, never the site favicon. Phosphor is MIT: the notice liv
 monochrome `currentColor` (tab text color), no background square. The tab bar CSP has no `img-src`:
 the tab bar draws no images. The agent's
 cursor arrow replaces the icon while the agent drives a browser tab. Compact paddings, no
-separators, the close "x" only on the active tab and on hover.
+separators, the close "x" only on the active tab and on hover; it reserves no room in the row (absolutely positioned over the end of the title, which fades out under it with a mask).
 Tab strip motion (`tabbar/renderer.ts`, `tabbar.css`): tabs are rendered keyed by id (elements are reused,
 never rebuilt per `tabbar:state`). `TabState.loading` (from the view's `did-start-loading`/`did-stop-loading`
 via `TabViewHandle.onLoadingChanged`, pushed on change only) drives `span.tab-progress`: a fake-progress fill

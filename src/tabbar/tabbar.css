@@ -38,7 +38,8 @@ body {
   isolation: isolate;
   display: flex; align-items: center; gap: 6px;
   box-sizing: border-box;
-  height: 28px; padding: 0 4px 0 6px; max-width: 200px; min-width: 60px;
+  --close-size: 20px; --close-inset: 4px; --tab-pad-end: 8px;
+  height: 28px; padding: 0 var(--tab-pad-end) 0 6px; max-width: 200px; min-width: 60px;
   border-radius: 8px; color: var(--glass-text);
   cursor: default; white-space: nowrap;
   app-region: no-drag;
@@ -76,12 +77,20 @@ body {
 .tab-progress.static { width: 100%; opacity: 1; } /* reduced motion: no creep, just "loading" */
 .tab-ghost { pointer-events: none; overflow: hidden; }
 .tab.entering { overflow: hidden; }
+/* The close "x" takes no room in the row: it sits over the end of the title, which fades out
+   under it, so a tab's title uses the full width until the button shows. */
 :is(.tab, .tab-ghost) .close {
-  position: relative; flex: 0 0 20px; width: 20px; height: 20px;
+  position: absolute; right: var(--close-inset); top: calc(50% - var(--close-size) / 2);
+  width: var(--close-size); height: var(--close-size);
   border: 0; background: none; color: inherit;
   cursor: pointer; padding: 0; border-radius: 4px; visibility: hidden;
 }
 .tab:hover .close, :is(.tab, .tab-ghost).active .close { visibility: visible; }
+.tab:hover .title, :is(.tab, .tab-ghost).active .title {
+  /* Fully transparent under the whole button (its hover fill too), then an 8px fade. */
+  --close-cover: calc(var(--close-inset) + var(--close-size) - var(--tab-pad-end));
+  mask-image: linear-gradient(to left, transparent var(--close-cover), #000 calc(var(--close-cover) + 8px));
+}
 /* Translucent so it still reads on a hovered (already grey) inactive pill. */
 :is(.tab, .tab-ghost) .close:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 :is(.tab, .tab-ghost) .close::before, :is(.tab, .tab-ghost) .close::after {
