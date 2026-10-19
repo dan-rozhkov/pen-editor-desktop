@@ -178,6 +178,10 @@ const makeBrowser = (scope?: { session: unknown }) => {
       call({ command: "stopJournal", args: { token } }),
     captureCheckpoint: (token?: string): Promise<unknown> =>
       call({ command: "captureCheckpoint", args: { token } }),
+    // Launches an external Electron app (an .app path) and drives it with the commands
+    // above until `releaseApp`. Same `open` command as a URL open, with `app` instead of `url`.
+    launchApp: (args: { app: string }): Promise<unknown> =>
+      call({ command: "open", args: { app: args.app } }),
     // Quits the external desktop app this chat launched with `open({ app })` (no-op without one).
     releaseApp: (): Promise<unknown> => call({ command: "releaseApp" }),
   };

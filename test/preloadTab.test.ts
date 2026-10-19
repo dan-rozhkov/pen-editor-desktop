@@ -189,6 +189,16 @@ describe("preload/tab.ts isolated browser sessions", () => {
     expect("session" in invokeMock.mock.calls[0][1]).toBe(true);
   });
 
+  it("launchApp sends open with only { app }, shared or isolated; releaseApp is exposed beside it", async () => {
+    await exposedApi.browser.launchApp({ app: "/Applications/Orca.app", url: "https://x.test" });
+    expect(invokeMock.mock.calls[0][1]).toEqual({ command: "open", args: { app: "/Applications/Orca.app" } });
+    invokeMock.mockClear();
+    await exposedApi.browser.isolated("run-1").launchApp({ app: "/Applications/Orca.app" });
+    expect(invokeMock.mock.calls[0][1]).toEqual({ command: "open", args: { app: "/Applications/Orca.app" }, session: "run-1" });
+    expect(typeof exposedApi.browser.releaseApp).toBe("function");
+    expect(typeof exposedApi.browser.isolated("run-1").releaseApp).toBe("function");
+  });
+
   it("closeSession sends the closeSession command", async () => {
     await exposedApi.browser.closeSession("run-1");
     expect(invokeMock).toHaveBeenCalledWith("browser:command", { command: "closeSession", session: "run-1" });

@@ -226,6 +226,14 @@ describe("browser:command commands", () => {
     expect(preload).toContain("session: scope.session");
   });
 
+  it("both preloads expose launchApp (open with { app }) and releaseApp as the desktop-app capability", () => {
+    const panelPreload = readFileSync(join(SRC, "preload/agentPanel.ts"), "utf8");
+    for (const src of [preload, panelPreload]) {
+      expect(src).toMatch(/launchApp: \(args: \{ app: string \}\)[^;]*\s+call\(\{ command: "open", args: \{ app: args\.app \} \}\)/);
+      expect(src).toContain('releaseApp: (): Promise<unknown> => call({ command: "releaseApp" })');
+    }
+  });
+
   it("the page-driving commands are a subset of the list", () => {
     for (const c of PAGE_DRIVING_COMMANDS) expect(list).toContain(c);
   });
