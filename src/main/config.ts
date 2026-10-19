@@ -185,6 +185,52 @@ export function resolveCanvasTabUrl(editorUrl: string): string {
   return url.toString();
 }
 
+/** The URL a document tab loads (the frontend's markdown editor at `/doc`).
+ * Same shape rule as `resolveAgentPanelUrl` for the path (the LAST path segment
+ * `app` becomes `doc`, prefix kept, `/app/` -> `/doc`; a path not ending in
+ * `app` gets `doc` beside its last segment). Query and hash of the editor URL
+ * are kept, `chat` is forced to `off` (the chat is in the panel), and an
+ * `docId` becomes `id=<docId>` placed before `chat=off`; without it `new=1` is used
+ * (open a NEW document). Any `id`, `new` or `chat` param of the editor URL is replaced, never duplicated. The docId is
+ * validated by the caller (`isValidDocId`); it is still encoded here. */
+export function resolveDocTabUrl(editorUrl: string, docId?: string): string {
+  const url = new URL(editorUrl);
+  url.hash = "";
+  const segments = url.pathname.split("/");
+  if (segments.length > 2 && segments[segments.length - 1] === "" && segments[segments.length - 2] === "app") {
+    segments.pop();
+  }
+  segments[segments.length - 1] = "doc";
+  url.pathname = segments.join("/");
+  const kept = url.search
+    .replace(/^\?/, "")
+    .split("&")
+    .filter((pair) => {
+      if (pair === "") return false;
+      const key = decodeURIComponent_safe(pair.split("=")[0]);
+      return key !== "chat" && key !== "id" && key !== "new";
+    });
+  // No docId = a NEW document: the page creates it and rewrites the URL to `?id=<newId>`.
+  kept.push(docId !== undefined ? `id=${encodeURIComponent(docId)}` : "new=1");
+  kept.push("chat=off");
+  url.search = kept.join("&");
+  return url.toString();
+}
+
+/** A document id the agent panel may ask to open: 1-64 of `A-Za-z0-9_-`. */
+export function isValidDocId(docId: unknown): docId is string {
+  return typeof docId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(docId);
+}
+
+/** The `id` query param of a document tab URL, or null (not a URL, no `id`). */
+export function docIdOfUrl(rawUrl: string): string | null {
+  try {
+    return new URL(rawUrl).searchParams.get("id");
+  } catch {
+    return null;
+  }
+}
+
 function decodeURIComponent_safe(s: string): string {
   try {
     return decodeURIComponent(s.replace(/\+/g, " "));
@@ -195,4 +241,4 @@ function decodeURIComponent_safe(s: string): string {
 
 /** Tabs a new main window opens: none. The window starts EMPTY (only the agent
  * panel); a canvas tab opens when the agent or the user asks for one. */
-export const INITIAL_TABS: readonly ("editor" | "browser")[] = [];
+export const INITIAL_TABS: readonly ("editor" | "browser" | "doc")[] = [];

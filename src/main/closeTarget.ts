@@ -35,6 +35,7 @@ export function decideCloseTarget(input: {
 export const MENU_ACTION_SCOPE: Record<keyof MenuActions, "main" | "close" | "app"> = {
   newTab: "main",
   newBrowserTab: "main",
+  newDocTab: "main",
   openPasswords: "app",
   closeTab: "close",
   closeWindow: "close",

@@ -26,6 +26,7 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "tabbar:strip-left", direction: "main->renderer" },
   { name: "tabbar:new", direction: "renderer->main" },
   { name: "tabbar:new-browser", direction: "renderer->main" },
+  { name: "tabbar:new-doc", direction: "renderer->main" },
   { name: "tabbar:new-menu", direction: "renderer->main" },
   { name: "tabbar:tools-menu", direction: "renderer->main" },
   { name: "tabbar:activate", direction: "renderer->main" },
@@ -51,6 +52,8 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "browser:reveal-agent-tab", direction: "renderer->main" },
   { name: "canvas:list", direction: "renderer->main" },
   { name: "canvas:open", direction: "renderer->main" },
+  // Documents: the panel asks main to open/focus a markdown doc tab (`/doc`).
+  { name: "doc:open", direction: "renderer->main" },
   { name: "canvas:activate", direction: "renderer->main" },
   { name: "canvas:to-tab", direction: "renderer->main" },
   { name: "canvas:from-tab", direction: "main->renderer" },

@@ -25,6 +25,8 @@ export interface MenuActions {
   newTab(): void;
   /** Opens a new built-in browser tab (design doc `2026-09-18-builtin-browser-design.md`). */
   newBrowserTab(): void;
+  /** Opens a new document tab (the frontend's markdown editor at `/doc`). */
+  newDocTab(): void;
   /** Opens (or focuses) the Passwords window. A local action: it forwards no `menu:command` id. */
   openPasswords(): void;
   /** Closes the active tab; does nothing with no tab (never the window). */
@@ -69,7 +71,7 @@ function mcpStatusLabel(status: McpStatus): string {
  * The accelerator is display-only; the application menu owns ⌘T.
  */
 export function buildNewTabMenuTemplate(
-  actions: Pick<MenuActions, "newTab" | "newBrowserTab">,
+  actions: Pick<MenuActions, "newTab" | "newBrowserTab" | "newDocTab">,
 ): MenuItemConstructorOptions[] {
   return [
     {
@@ -79,6 +81,7 @@ export function buildNewTabMenuTemplate(
       click: () => actions.newTab(),
     },
     { label: "New Browser Tab", click: () => actions.newBrowserTab() },
+    { label: "New Document", click: () => actions.newDocTab() },
   ];
 }
 
@@ -101,6 +104,7 @@ export function buildMenuTemplate(
     submenu: [
       { label: "New Canvas Tab", accelerator: "CmdOrCtrl+T", click: () => actions.newTab() },
       { label: "New Browser Tab", click: () => actions.newBrowserTab() },
+      { label: "New Document Tab", accelerator: "CmdOrCtrl+Shift+D", click: () => actions.newDocTab() },
       { label: "Passwords…", click: () => actions.openPasswords() },
       {
         label: "Open…",

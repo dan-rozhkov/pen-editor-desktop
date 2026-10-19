@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveBrowserCursorMotion, resetCursorMotionWarningForTests, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, INITIAL_TABS } from "../src/main/config";
+import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveBrowserCursorMotion, resetCursorMotionWarningForTests, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, INITIAL_TABS } from "../src/main/config";
 
 describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
@@ -148,6 +148,40 @@ describe("resolveAgentPanelUrl", () => {
   it("follows a PEN_DESKTOP_URL override", () => {
     const url = resolveEditorUrl({ PEN_DESKTOP_URL: "https://staging.example.com/app?flag=1" });
     expect(resolveAgentPanelUrl(url)).toBe("https://staging.example.com/agent");
+  });
+});
+
+describe("resolveDocTabUrl", () => {
+  it("swaps the /app path for /doc and adds chat=off", () => {
+    expect(resolveDocTabUrl(DEFAULT_EDITOR_URL)).toBe("https://pen-editor.onrender.com/doc?new=1&chat=off");
+  });
+  it("drops a stray new param when an id is given", () => {
+    expect(resolveDocTabUrl("https://h/app?new=1", "n1")).toBe("https://h/doc?id=n1&chat=off");
+  });
+  it("adds id before chat=off and encodes it", () => {
+    expect(resolveDocTabUrl("http://localhost:5173/app", "abc_1-X")).toBe("http://localhost:5173/doc?id=abc_1-X&chat=off");
+  });
+  it("keeps the path prefix, other params and drops the hash; replaces id and chat", () => {
+    expect(resolveDocTabUrl("https://h/pen/app?q=1&id=old&chat=on#frame", "n1")).toBe("https://h/pen/doc?q=1&id=n1&chat=off");
+  });
+  it("handles /app/ and a path not ending in app like the panel URL", () => {
+    expect(resolveDocTabUrl("https://h/app/")).toBe("https://h/doc?new=1&chat=off");
+    expect(resolveDocTabUrl("https://h/pen/x")).toBe("https://h/pen/doc?new=1&chat=off");
+    expect(resolveDocTabUrl("https://h/")).toBe("https://h/doc?new=1&chat=off");
+  });
+});
+
+describe("isValidDocId / docIdOfUrl", () => {
+  it("accepts 1-64 of A-Za-z0-9_- only", () => {
+    expect(isValidDocId("a")).toBe(true);
+    expect(isValidDocId("A_b-9".repeat(12))).toBe(true);
+    expect(isValidDocId("a".repeat(65))).toBe(false);
+    for (const bad of ["", "a b", "a/b", "a&id=b", "../x", "é", 5, null, undefined, {}]) expect(isValidDocId(bad)).toBe(false);
+  });
+  it("reads the id param of a doc URL", () => {
+    expect(docIdOfUrl("https://h/doc?id=abc&chat=off")).toBe("abc");
+    expect(docIdOfUrl("https://h/doc?new=1&chat=off")).toBeNull();
+    expect(docIdOfUrl("not a url")).toBeNull();
   });
 });
 

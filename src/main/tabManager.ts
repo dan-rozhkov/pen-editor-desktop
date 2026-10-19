@@ -1,4 +1,5 @@
 import type { BrowserTabInfo } from "@sideform/browser-agent/controller";
+import { docIdOfUrl, resolveDocTabUrl } from "./config";
 export type UITheme = "light" | "dark";
 
 /** How a tab becomes the active one. `focus: false` shows it without moving keyboard focus into it. */
@@ -37,9 +38,12 @@ export type McpStatus = "listening" | "not-published" | "off" | "error";
  * (design doc `2026-09-18-builtin-browser-design.md`) — a plain web page with
  * no preload at all, never registered with the MCP bridge, whose title/url
  * are learned from real navigation events instead of the editor's own IPC
- * channels.
+ * channels. "doc" is a markdown document tab (the frontend's `/doc`): the
+ * same preload, default session and title/theme callbacks as "editor", but it
+ * is NOT a canvas tab: never in the canvas link, the MCP active tab or
+ * `lastEditorWebContentsId`.
  */
-export type TabKind = "editor" | "browser";
+export type TabKind = "editor" | "browser" | "doc";
 
 /** The navigation state a browser tab reports back into its TabState. */
 export interface BrowserNavState {
@@ -359,6 +363,8 @@ interface TabEntry {
   kind: TabKind;
   view: TabViewHandle;
   theme: UITheme | null;
+  /** Doc tabs only: the document id the tab was opened with (`doc:open`). */
+  docId?: string;
   url?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
@@ -432,17 +438,19 @@ export class TabManager {
    * becomes active even when requested in the background, so the window never
    * holds tabs with none active (keyboard cycling, close and MCP need one).
    * That tab is shown without taking keyboard focus (`ActivationOptions`).
+   * `opts.focus: false` makes a normally activated tab visible without taking keyboard focus (`doc:open`).
    */
-  newTab(kind: TabKind = "editor", session?: string, opts: { activate?: boolean } = {}): number {
+  newTab(kind: TabKind = "editor", session?: string, opts: { activate?: boolean; docId?: string; focus?: boolean } = {}): number {
     const id = this.nextId++;
     const view = this.opts.createView(kind, kind === "browser" ? session : undefined);
     const entry: TabEntry = {
       id,
       session: kind === "browser" ? session : undefined,
-      title: kind === "browser" ? "New Tab" : "Untitled",
+      title: kind === "browser" ? "New Tab" : kind === "doc" ? "Document" : "Untitled",
       kind,
       view,
       theme: null,
+      docId: kind === "doc" ? opts.docId : undefined,
       url: kind === "browser" ? "" : undefined,
       canGoBack: kind === "browser" ? false : undefined,
       canGoForward: kind === "browser" ? false : undefined,
@@ -454,7 +462,7 @@ export class TabManager {
       // `this.tabs`: record it, and let the push that adds the tab carry it.
       if (this.tabs.includes(entry)) this.emit();
     });
-    if (kind === "editor") {
+    if (kind === "editor" || kind === "doc") {
       view.onDocumentTitleChanged((title) => {
         entry.title = title;
         this.emit();
@@ -470,10 +478,11 @@ export class TabManager {
         // tab's live `entry.theme` on every `getSnapshot()` call.
         this.emit();
       });
-      view.loadURL(this.opts.editorUrl).catch((err) => {
-        console.error("TabManager: editor tab failed to load", err);
+      const target = kind === "doc" ? resolveDocTabUrl(this.opts.editorUrl, opts.docId) : this.opts.editorUrl;
+      view.loadURL(target).catch((err) => {
+        console.error(`TabManager: ${kind} tab failed to load`, err);
       });
-    } else {
+    } else if (kind === "browser") {
       // Browser tabs get their own url/title updates (design doc §1) — no
       // document-title/theme IPC callbacks, since there is no preload to
       // send them. A fresh browser tab loads nothing until
@@ -499,7 +508,7 @@ export class TabManager {
       // A background request that only became active because the window had no
       // active tab is shown WITHOUT taking keyboard focus: the person is
       // typing in the agent panel (see decideActivationFocus).
-      this.setActive(id, { focus: decideActivationFocus(opts.activate) });
+      this.setActive(id, { focus: opts.focus !== false && decideActivationFocus(opts.activate) });
     }
     return id;
   }
@@ -561,10 +570,10 @@ export class TabManager {
    * own — see window.ts's popup handler / review finding 7, which decides
    * that repoint explicitly instead.
    */
-  activate(id: number): void {
+  activate(id: number, opts: ActivationOptions = {}): void {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab) return;
-    this.setActive(id);
+    this.setActive(id, opts);
     // Only the shared browser follows the user's focus; a session's agent tab is
     // repointed by the session's own commands, never by a click.
     if (tab.kind === "browser" && tab.session === undefined) this.pinAgentTab(undefined, id);
@@ -724,6 +733,20 @@ export class TabManager {
     };
   }
 
+  /**
+   * The id of the open document tab showing `docId`, or null. The live URL
+   * wins (the person may have navigated inside the tab); the id the tab was
+   * opened with only counts while the view reports no URL yet.
+   */
+  findDocTab(docId: string): number | null {
+    for (const t of this.tabs) {
+      if (t.kind !== "doc") continue;
+      const live = t.view.getURL();
+      if ((live ? docIdOfUrl(live) : t.docId) === docId) return t.id;
+    }
+    return null;
+  }
+
   /** The webContents id of a tab, or null. */
   webContentsIdOf(id: number): number | null {
     return this.tabs.find((t) => t.id === id)?.view.getWebContentsId() ?? null;
@@ -778,12 +801,12 @@ export class TabManager {
    * of which tab is active — is picked up by the very next snapshot.
    */
   private resolveActiveTheme(active: TabEntry | undefined): UITheme | null {
-    if (active?.kind === "editor") return active.theme;
+    if (active?.kind === "editor" || active?.kind === "doc") return active.theme;
     const lastEditor = this.tabs.find(
       (t) => t.kind === "editor" && t.view.getWebContentsId() === this.lastEditorWebContentsId,
     );
     if (lastEditor?.theme) return lastEditor.theme;
-    const anyEditorWithTheme = this.tabs.find((t) => t.kind === "editor" && t.theme !== null);
+    const anyEditorWithTheme = this.tabs.find((t) => (t.kind === "editor" || t.kind === "doc") && t.theme !== null);
     return anyEditorWithTheme?.theme ?? null;
   }
 

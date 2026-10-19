@@ -13,6 +13,7 @@ describe("buildMenuTemplate", () => {
     actions = {
       newTab: vi.fn(),
       newBrowserTab: vi.fn(),
+      newDocTab: vi.fn(),
       openPasswords: vi.fn(),
       closeTab: vi.fn(), closeWindow: vi.fn(),
       nextTab: vi.fn(),
@@ -52,6 +53,13 @@ describe("buildMenuTemplate", () => {
     const i = item("New Browser Tab");
     (i.click as () => void)();
     expect(actions.newBrowserTab).toHaveBeenCalled();
+  });
+
+  it("New Document Tab triggers newDocTab with CmdOrCtrl+Shift+D", () => {
+    const i = item("New Document Tab");
+    expect(i.accelerator).toBe("CmdOrCtrl+Shift+D");
+    (i.click as () => void)();
+    expect(actions.newDocTab).toHaveBeenCalledOnce();
   });
 
   it("Passwords… opens the Passwords window and forwards no menu command", () => {
@@ -225,8 +233,8 @@ function mcpStatusLabelFor(status: "listening" | "not-published" | "off" | "erro
 
 describe("buildNewTabMenuTemplate", () => {
   it("offers an editor tab and a browser tab, each wired to its action", () => {
-    const actions = { newTab: vi.fn(), newBrowserTab: vi.fn() };
-    const [editor, browser] = buildNewTabMenuTemplate(actions);
+    const actions = { newTab: vi.fn(), newBrowserTab: vi.fn(), newDocTab: vi.fn() };
+    const [editor, browser, doc] = buildNewTabMenuTemplate(actions);
 
     expect(editor.label).toBe("New Canvas Tab");
     // Display-only: the application menu already owns ⌘T.
@@ -238,12 +246,16 @@ describe("buildNewTabMenuTemplate", () => {
     expect(browser.label).toBe("New Browser Tab");
     (browser.click as () => void)();
     expect(actions.newBrowserTab).toHaveBeenCalledOnce();
+
+    expect(doc.label).toBe("New Document");
+    (doc.click as () => void)();
+    expect(actions.newDocTab).toHaveBeenCalledOnce();
   });
 });
 
 describe("View > Agent Panel", () => {
   const actions = {
-    newTab: vi.fn(), newBrowserTab: vi.fn(), openPasswords: vi.fn(), closeTab: vi.fn(), closeWindow: vi.fn(), nextTab: vi.fn(), prevTab: vi.fn(),
+    newTab: vi.fn(), newBrowserTab: vi.fn(), newDocTab: vi.fn(), openPasswords: vi.fn(), closeTab: vi.fn(), closeWindow: vi.fn(), nextTab: vi.fn(), prevTab: vi.fn(),
     forwardToActiveTab: vi.fn(), useThisAppForMcp: vi.fn(), setCursorMotion: vi.fn(), setCursorEnabled: vi.fn(), toggleAgentPanel: vi.fn(),
   } as MenuActions;
   it("View menu has a Show/Hide Agent Panel item (Cmd/Ctrl+Alt+B) only with the agent layout", () => {

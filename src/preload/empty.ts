@@ -12,6 +12,7 @@ interface EmptyState {
 const api = {
   newCanvasTab: () => ipcRenderer.send("tabbar:new"),
   newBrowserTab: () => ipcRenderer.send("tabbar:new-browser"),
+  newDocTab: () => ipcRenderer.send("tabbar:new-doc"),
   onState: (cb: (state: EmptyState) => void) => {
     ipcRenderer.on("tabbar:theme", (_e: IpcRendererEvent, state: EmptyState) => cb(state));
   },

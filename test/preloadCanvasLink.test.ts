@@ -66,8 +66,8 @@ describe("agent panel preload", () => {
     await import("../src/preload/agentPanel");
   });
 
-  it("exposes version 2 with canvas and browser only", () => {
-    expect(Object.keys(exposed.penAgentPanel).sort()).toEqual(["browser", "canvas", "version"]);
+  it("exposes version 2 with canvas, browser and docs only", () => {
+    expect(Object.keys(exposed.penAgentPanel).sort()).toEqual(["browser", "canvas", "docs", "version"]);
     expect(exposed.penAgentPanel.version).toBe(2);
   });
 
@@ -92,6 +92,12 @@ describe("agent panel preload", () => {
     c.onTabsChanged(tcb);
     on.mock.calls.find((x) => x[0] === "canvas:tabs")![1]({}, [1]);
     expect(tcb).toHaveBeenCalledWith([1]);
+  });
+
+  it("docs.open invokes doc:open with the id and returns main's reply", async () => {
+    invoke.mockResolvedValueOnce({ ok: true } as never);
+    await expect(exposed.penAgentPanel.docs.open("abc_1")).resolves.toEqual({ ok: true });
+    expect(invoke).toHaveBeenLastCalledWith("doc:open", "abc_1");
   });
 
   it("browser goes through browser:command, shared, isolated and closeSession", async () => {

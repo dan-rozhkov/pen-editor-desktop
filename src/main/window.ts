@@ -1,3 +1,4 @@
+import { shouldForwardMenuCommand } from "./menuTarget";
 import { normalizePageColor, PAGE_BG_FALLBACK, SAMPLE_PAGE_BG_SCRIPT } from "./pageBackground";
 import path from "node:path";
 import { app, BaseWindow, View, WebContentsView, Menu, dialog, ipcMain, nativeTheme, session, shell, systemPreferences, webContents } from "electron";
@@ -52,6 +53,7 @@ import { JournalOwners } from "./journalOwners";
 import { FixtureOwners } from "./fixtureOwners";
 import { isBrowserOwner as isBrowserOwnerId, isOrphaningEvent } from "./orphanRelease";
 import { CanvasLinkRouter } from "./canvasLink";
+import { openDocTab } from "./docOpen";
 import { FetchRouter } from "./fetchRouting";
 import { BLANK_DOCUMENT_URL, createCommitGate } from "./commitGate";
 import * as fixtureSession from "./fixtureSession";
@@ -298,7 +300,8 @@ export function createMainWindow(
   let rememberedEditorTheme: UITheme | null = null;
   // True while `rememberedEditorTheme` came from the agent panel page, not from an editor tab (an editor's own report always wins).
   let rememberedFromPanel = false;
-  const editorTabCount = (s: TabsSnapshot) => s.tabs.filter((t) => t.kind === "editor").length;
+  // Doc tabs report the editor theme like canvas tabs do (same preload), so they count here.
+  const editorTabCount = (s: TabsSnapshot) => s.tabs.filter((t) => t.kind === "editor" || t.kind === "doc").length;
   let lastResolvedForTint: UITheme = FALLBACK_THEME;
   const emptyView = new WebContentsView({
     webPreferences: secureWebPreferences(path.join(__dirname, "../preload/empty.js")),
@@ -996,6 +999,18 @@ export function createMainWindow(
         });
       }
 
+      if (kind === "doc") {
+        // A document tab is a plain frontend page (`/doc`): same origin clamp and offline
+        // fallback as a canvas tab, but NOT a canvas tab: no MCP registration, no fixtures,
+        // no canvas link. Its title follows the page title (the page sets document.title and
+        // does not call the preload's setDocumentTitle), so main listens to the event.
+        attachNavigationPolicy(view.webContents, editorOrigin, (url) => void shell.openExternal(url));
+        attachOfflineFallback(view.webContents, offlineFile);
+        view.webContents.on("page-title-updated", (_e, title) => {
+          titleCallbacks.get(viewId)?.(title.trim().slice(0, 200) || "Document");
+        });
+      }
+
       if (kind === "editor") {
         // Mocks are owned by main; the editor tab that drives the agent releases
         // them in its renderer `finally`, which never runs on reload/crash/close.
@@ -1038,7 +1053,7 @@ export function createMainWindow(
         view.webContents.on("did-start-navigation", (details) => {
           if (shouldDropMcpRegistration(details)) mcpService.handleTabNavigated(viewId);
         });
-      } else {
+      } else if (kind === "browser") {
         // Browser tabs: never registered with the MCP bridge, never get the
         // editor:* IPC callbacks (there is no preload to send them from
         // anyway). Popups open as a new browser tab instead of escaping to
@@ -1997,6 +2012,19 @@ export function createMainWindow(
   ipcMain.on("canvas:activate", onCanvasActivate);
   ipcMain.handle("canvas:list", (event) => canvasLink.list(event.sender.id));
   ipcMain.handle("canvas:open", (event, opts: unknown) => canvasLink.open(event.sender.id, opts));
+  // Documents: the agent panel asks to open one. Panel-only, like canvas:open; logic in docOpen.ts.
+  ipcMain.handle("doc:open", (event, docId: unknown) =>
+    openDocTab(
+      {
+        isPanel: (id) => panelWc()?.id === id,
+        findDocTab: (id) => tabs.findDocTab(id),
+        activate: (tabId, opts) => tabs.activate(tabId, opts),
+        newDocTab: (id, opts) => tabs.newTab("doc", undefined, { docId: id, focus: opts.focus }),
+      },
+      event.sender.id,
+      docId,
+    ),
+  );
 
   // --- layout ---
   // computeLayout is pure geometry (layout.ts); pushState calls it BEFORE it builds the tab bar
@@ -2050,6 +2078,7 @@ export function createMainWindow(
   const emptyId = emptyView.webContents.id;
   const fromTabbarOrEmpty = (event: Electron.IpcMainEvent) => isTabCreationSender(event.sender.id, tabbarId, emptyId);
   const onTabbarNew = (e: Electron.IpcMainEvent) => fromTabbarOrEmpty(e) && tabs.newTab("editor");
+  const onTabbarNewDoc = (e: Electron.IpcMainEvent) => fromTabbarOrEmpty(e) && tabs.newTab("doc");
   // Second-pass review finding 3: a user-driven "New Browser Tab" pins the
   // agent to it, the same as any other explicit user action that lands on a
   // browser tab (activate()'s tab-strip click, nextTab/prevTab's cycle) —
@@ -2067,7 +2096,11 @@ export function createMainWindow(
       ? { x: Math.round(anchor.x), y: Math.round(anchor.y) }
       : {};
     Menu.buildFromTemplate(
-      buildNewTabMenuTemplate({ newTab: () => tabs.newTab("editor"), newBrowserTab: newUserBrowserTab }, ),
+      buildNewTabMenuTemplate({
+        newTab: () => tabs.newTab("editor"),
+        newBrowserTab: newUserBrowserTab,
+        newDocTab: () => void tabs.newTab("doc"),
+      }),
     ).popup({ window: win, ...at });
   };
   // The chrome row's "Browser tools" popup. Viewport choice is kept per tab
@@ -2181,6 +2214,7 @@ export function createMainWindow(
   };
   ipcMain.on("tabbar:new", onTabbarNew);
   ipcMain.on("tabbar:new-browser", onTabbarNewBrowser);
+  ipcMain.on("tabbar:new-doc", onTabbarNewDoc);
   ipcMain.on("tabbar:new-menu", onTabbarNewMenu);
   ipcMain.on("tabbar:tools-menu", onTabbarToolsMenu);
   ipcMain.on("tabbar:activate", onTabbarActivate);
@@ -2211,6 +2245,7 @@ export function createMainWindow(
     stopPanelTimer();
     ipcMain.removeListener("tabbar:new", onTabbarNew);
     ipcMain.removeListener("tabbar:new-browser", onTabbarNewBrowser);
+    ipcMain.removeListener("tabbar:new-doc", onTabbarNewDoc);
     ipcMain.removeListener("tabbar:new-menu", onTabbarNewMenu);
     ipcMain.removeListener("tabbar:tools-menu", onTabbarToolsMenu);
     ipcMain.removeListener("tabbar:activate", onTabbarActivate);
@@ -2229,6 +2264,7 @@ export function createMainWindow(
     ipcMain.removeListener("canvas:activate", onCanvasActivate);
     ipcMain.removeHandler("canvas:list");
     ipcMain.removeHandler("canvas:open");
+    ipcMain.removeHandler("doc:open");
     canvasLink.dispose();
     // The panel's fixture, checkpoint journals and browser sessions die with the window.
     releasePanelOrphans(true);
@@ -2259,6 +2295,7 @@ export function createMainWindow(
           {
             newTab: () => tabs.newTab("editor"),
             newBrowserTab: newUserBrowserTab,
+            newDocTab: () => void tabs.newTab("doc"),
             openPasswords: () => loginServices.passwordsWindow.open(),
             closeTab: () => {
               const target = decideCloseTarget({
@@ -2270,7 +2307,11 @@ export function createMainWindow(
             closeWindow: () => win.close(),
             nextTab: () => tabs.nextTab(),
             prevTab: () => tabs.prevTab(),
-            forwardToActiveTab: (commandId) => tabs.activeHandle()?.sendMenuCommand(commandId),
+            forwardToActiveTab: (commandId) => {
+              // Palette commands are editor-only: a doc or browser tab gets nothing.
+              if (!shouldForwardMenuCommand(tabs.getSnapshot().activeKind)) return;
+              tabs.activeHandle()?.sendMenuCommand(commandId);
+            },
             useThisAppForMcp: () => void mcpService.forcePublish(),
             toggleAgentPanel: () => setPanelCollapsed(!panelCollapsed),
             setCursorMotion: (motion) => updateCursorSettings({ motion }),

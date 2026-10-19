@@ -158,7 +158,7 @@ or a launch never auto-expands a collapsed panel: only the user's toggle changes
 Tests: `layout.test.ts`, `agentPanelSettings.test.ts`, `menu.test.ts`, `e2e/agent-panel-toggle.spec.ts`.
 
 **Tab icons.** Every tab has a leading glyph keyed by `TabState.kind` in
-`tabbar/renderer.ts` (one mapping): editor (canvas) tabs a Phosphor "PaintBrush" (light weight), browser tabs a
+`tabbar/renderer.ts` (one mapping): editor (canvas) tabs a Phosphor "PaintBrush" (light weight), doc tabs a Phosphor "FileText" (regular), browser tabs a
 Phosphor "Globe" ALWAYS, never the site favicon. Phosphor is MIT: the notice lives in
 `THIRD_PARTY_NOTICES.md` (shipped via the electron-builder `files` list; keep it there). Just the glyph,
 monochrome `currentColor` (tab text color), no background square. The tab bar CSP has no `img-src`:
@@ -211,6 +211,28 @@ panel URL is still derived from the plain `editorUrl`. The "+" menu item and Fil
 = true` and `canvasHost` from `preload/tab.ts` (the preload is loaded by editor tabs
 only; browser tabs have no preload). e2e: `agent-layout.spec.ts` / `smoke.spec.ts`. The canvas-link channels (`docs/canvas-link.md`) are described in "Canvas link" below.
 
+**Document tabs (`TabKind` `"doc"`).** A third tab kind: the frontend's markdown
+editor at `/doc?new=1&chat=off` for a NEW document (the page creates it and rewrites the URL to `?id=<newId>&chat=off`; `resolveDocTabUrl(editorUrl, docId?)` in `config.ts`: the last
+`app` path segment becomes `doc`, `id=<docId>` goes before `chat=off`, other params kept).
+Entry points: the placeholder button and the "+" menu item "New Document" (the "+" menu calls `tabs.newTab("doc")` directly), File > "New
+Document Tab" (`CmdOrCtrl+Shift+D`, action `newDocTab`). A doc
+tab is **NOT a canvas tab**: it is absent from `editorTabsInfo()` / the canvas link,
+`isEditorTab`, `lastEditorWebContentsId`, the MCP active tab and `canvas:open`, and gets no
+MCP/fixture/orphan wiring. **Shared session requirement:** doc tabs use the DEFAULT session
+(no `partition`), exactly like editor tabs and the `/agent` panel view, because documents
+live in `localStorage` and the panel's tools write them; never give doc tabs their own
+partition. Preload: the same `preload/tab.ts` (harmless: the page never calls
+`canvasHost.register`); it also publishes `editor:theme`, so doc tabs take part in theme
+sync (`editorTabCount`, `resolveActiveTheme`). The tab title follows `document.title`
+(main listens to `page-title-updated`; the preload's `setDocumentTitle` is not used). Same
+origin clamp, offline fallback and window-open policy as editor tabs (external links go to the system browser; the browser-tab popup policy applies to `kind === "browser"` only). File-menu palette commands (`forwardToActiveTab`) reach editor tabs only (`menuTarget.ts`); with a doc tab active they are a no-op. **`doc:open`** (invoke, agent panel only,
+`window.penAgentPanel.docs.open(docId)` -> `{ok, error?}`; logic in `src/main/docOpen.ts`):
+`docId` must match `/^[A-Za-z0-9_-]{1,64}$/`; an open doc tab whose URL has `id=<docId>`
+(`TabManager.findDocTab`; a `new=1` tab never matches) is activated, else a new doc tab opens at `/doc?id=<docId>&chat=off`
+and is shown as the active tab; it resolves once the tab exists, not when the page has loaded. **Focus rule:** `doc:open` is agent-initiated, so the doc tab becomes the visible active tab but does NOT take keyboard focus (`activate(id, {focus:false})` / `newTab("doc", undefined, {docId, focus:false})`); typing stays in the panel composer. User-driven activation (click, menu, empty-start button) keeps focusing. Glyph:
+Phosphor "FileText" (regular). Tests: `docOpen.test.ts`, `tabManager.test.ts` ("doc tabs"),
+`config.test.ts`, `menu.test.ts`, `preloadCanvasLink.test.ts`, `ipcContract.test.ts`.
+
 **Empty start (zero tabs).** The window opens with ONLY the agent
 panel: no initial canvas tab (`INITIAL_TABS` is `[]` in `config.ts`). Closing the last tab (or the
 active tab when only background session tabs remain) leaves zero tabs and the window open;
@@ -226,9 +248,9 @@ open a canvas tab: the editor must be loaded before it can handle a command);
 Close Tab (Cmd/Ctrl+W, `decideCloseTarget`) closes the active tab and does NOTHING with no active tab (zero tabs, or only background session tabs): it never closes the window (macOS convention). File > "Close Window" (Cmd/Ctrl+Shift+W, local action `closeWindow`, no `menu:command` id) closes the focused window; with the Passwords window focused it closes that window like Close Tab does. A new non-session tab becomes active when none is active, even if requested in the background (`activate:false`). macOS dock `activate` reopens a window
 the same way (panel only). **Placeholder:** while `activeId === null`, a local view (`src/tabbar/empty.html` + `empty.css` + `emptyRenderer.ts`,
 same CSP as the tab bar, light/dark tokens shared via `tokens.css`, no remote content) covers the tab
-area with "Canvas and browser tabs open here." and two buttons, "New Canvas Tab"
-and "New Browser Tab". It has its OWN minimal preload (`src/preload/empty.ts`: `newCanvasTab`,
-`newBrowserTab`, `onTheme`); its buttons send `tabbar:new` / `tabbar:new-browser`
+area with "Canvas and browser tabs open here." and three buttons, "New Canvas Tab",
+"New Browser Tab" and "New Document". It has its OWN minimal preload (`src/preload/empty.ts`: `newCanvasTab`,
+`newBrowserTab`, `newDocTab`, `onTheme`); its buttons send `tabbar:new` / `tabbar:new-doc` / `tabbar:new-browser`
 (the same actions as the "+" menu; main accepts them from the tab bar or this
 view via `isTabCreationSender`). Visibility, theme and focus decisions are pure
 (`emptyView.ts`, applied on change only); bounds (`tabArea`) follow `layout`.
@@ -242,7 +264,7 @@ Protocol, roles and message rules: `docs/canvas-link.md` (a copy; the source is 
 - **Routing** — panel→tab `canvas:to-tab {tabId, env}` only to registered tabs, else `{kind:"error", refId: env.id}` comes back to the panel (as `canvas:from-tab`); tab→panel `canvas:to-panel env` is forwarded as `canvas:from-tab {tabId, env}` (main adds the sender). Payloads are never interpreted: only the envelope is checked (object, string `id`, finite number `sentAt`, object `msg` with string `kind`); malformed envelopes and the main-only kinds `error` / `tab-gone` coming from a renderer are dropped. Order is kept, nothing is batched. `tab-gone {registrationId}` goes to the panel when a registered tab is destroyed, navigates its main frame (a COMMITTED non-same-document `did-navigate`; not `did-start-navigation`, which also fires for denied navigations, 204s and downloads), sends `canvas:unregister`, or its renderer dies. A registered id that `syncTabs` no longer sees as an editor tab (a closing tab) is dropped the same way, so `canvas:tabs` never lists it as "Untitled". Main-made kinds: `error`, `tab-gone` (to the panel) and `panel-gone` (to every registered tab, `docs/canvas-link.md`).
 - **Open** — `canvas:open {activate?}` calls `TabManager.newTab("editor", undefined, { activate })` (editor tabs are canvas tabs in this layout; `activate !== true` creates the tab hidden in the background: no activation, no agent pin change, no strip flash) and resolves `{tabId, registrationId}` (the registration that resolved it) when THAT tab calls `canvas:register`; it rejects after 20 s (`OPEN_TIMEOUT_MS`, timer injectable) or when the tab is destroyed or its renderer dies first. A navigation of the new tab (its first load) does not reject it.
 - **Sender checks** — `canvas:register` / `canvas:unregister` / `canvas:to-panel`: this window's editor tabs only (`TabManager.isEditorTab`; `unregister` and `to-panel` only when registered); `canvas:list|open|activate|to-tab`: this window's agent panel webContents only (others get `[]`, a rejection or silence). Listeners are added per window and removed in the window's `closed` handler.
-- **Preloads** — editor tab: `window.penDesktop.canvasHost = { register, unregister, post, onMessage }`, exposed on every editor tab (next to `agentLayout: true`). Panel: `window.penAgentPanel = { version: 2, canvas: { listTabs, openTab, activateTab, post, onMessage, onTabsChanged }, browser }`.
+- **Preloads** — editor tab: `window.penDesktop.canvasHost = { register, unregister, post, onMessage }`, exposed on every editor tab (next to `agentLayout: true`). Panel: `window.penAgentPanel = { version: 2, canvas: { listTabs, openTab, activateTab, post, onMessage, onTabsChanged }, browser, docs: { open } }` (`docs.open` -> `doc:open`, see "Document tabs").
 - **Panel browser access** — the panel's browser tools run in the panel, with or without a canvas tab. `penAgentPanel.browser` has the same shape as `penDesktop.browser` (incl. `isolated(id)` and `closeSession(id)`) over the same `browser:command` invoke. A sandboxed preload cannot import `tab.ts`, so the code is a copy; `test/ipcContract.test.ts` pins both to the same command set. Main accepts the sender if it is an editor tab OR the panel (`isBrowserOwner` in `window.ts`). The panel's identity is its **webContents id**, used exactly like an editor tab's: it owns isolated sessions (`BrowserSessions` owner), checkpoint journals (`JournalOwners`, `isBrowserOwner` as the liveness check) and the shared fixture. When the panel reloads (a COMMITTED main-frame navigation: `did-frame-navigate` with `isMainFrame`; never `did-start-navigation`, which also fires for denied navigations, 204s and downloads) or its renderer dies, main releases the shared fixture, stops its journals and closes its sessions (`closeSessionsOwnedBy`), tells every registered canvas tab `{kind:"panel-gone"}` (main-made, on `canvas:from-panel`; the tab cancels in-flight work and abandons open streams) and resets the router's `canvas:tabs` dedupe (the reloaded panel gets a fresh push at `did-finish-load` and on `canvas:list`); on window close its sessions are closed and forgotten. Nothing else widens: no MCP for the panel (`mcpService.registerTab` is never called for it), and a browser/panel id is never a canvas tab.
 - Tests: `test/canvasLink.test.ts` (router), `test/preloadCanvasLink.test.ts`, the channel table and command-set checks in `test/ipcContract.test.ts`, `e2e/canvas-link.spec.ts` (list, both directions, openTab, tab-gone on close/reload, panel browser) and `e2e/agent-layout.spec.ts`.
 
@@ -312,7 +334,9 @@ CI of its own. `Close Window` is a local action like Passwords (no forwarded id)
 - `panel:theme` agent panel preload→main (`light` | `dark`; accepted only from the panel's webContents and page) — the theme the panel paints, see "Theme and tint"
 - `tabbar:toggle-panel` tabbar→main (sender-checked) — the sidebar button: show/hide the agent panel (see "Sidebar toggle"); the new state returns as `panelCollapsed` on `tabbar:state`
 - `tabbar:new-browser` tabbar/empty-state→main (sender-checked) — a user-driven browser tab (`newUserBrowserTab`); sent by the empty-state placeholder only (`preload/empty.ts`)
-- `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Canvas Tab / New Browser Tab), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` is sent by the empty-state placeholder's "New Canvas Tab" button; e2e also drives it through `penTabbar.newTab()`, which a native menu can't be clicked through
+- `tabbar:new-doc` tabbar/empty-state→main (sender-checked) — a new document tab (`/doc?new=1&chat=off`); sent by the empty-state "New Document" button only (the "+" menu item calls `tabs.newTab("doc")` directly); File > New Document Tab (`CmdOrCtrl+Shift+D`) runs the same action locally
+- `doc:open` agent panel→main (invoke, panel-only; `docId` → `{ok, error?}`) — activates the doc tab showing that document or opens `/doc?id=<docId>&chat=off`; see "Document tabs"
+- `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Canvas Tab / New Browser Tab / New Document), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` is sent by the empty-state placeholder's "New Canvas Tab" button; e2e also drives it through `penTabbar.newTab()`, which a native menu can't be clicked through
 - `tabbar:tools-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the browser chrome row's gear button: native menu (Viewport emulation via CDP, Open/Close Developer Tools, Zoom) for the active browser tab; builder in `src/main/browserToolsMenu.ts`
 - `tabbar:navigate` tabbar→main (sender-checked; `{action: "url" | "back" | "forward" | "reload", url?}`) — the address row driving the active browser tab, see "Built-in browser tab" below
 - `mcp:register` tab→main (`{protocol, tools} | null`; `null` unregisters) — desktop MCP bridge, see below

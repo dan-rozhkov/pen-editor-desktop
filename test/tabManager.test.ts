@@ -141,6 +141,63 @@ describe("TabManager", () => {
     expect(tm.getSnapshot().activeKind).toBe("editor");
   });
 
+  describe("doc tabs", () => {
+    it("load /doc?chat=off (with the id), start titled Document, follow the page title and the theme", () => {
+      const id = tm.newTab("doc", undefined, { docId: "d1" });
+      expect(views[0].loadURL).toHaveBeenCalledWith("https://pen-editor.onrender.com/doc?id=d1&chat=off");
+      let snap = tm.getSnapshot();
+      expect(snap).toMatchObject({ activeId: id, activeKind: "doc" });
+      expect(snap.tabs[0]).toMatchObject({ kind: "doc", title: "Document" });
+      views[0].emitTitle("My notes");
+      expect(tm.getSnapshot().tabs[0].title).toBe("My notes");
+      views[0].emitTheme("dark");
+      snap = tm.getSnapshot();
+      expect(snap.activeTheme).toBe("dark");
+    });
+
+    it("a doc tab without an id opens a NEW document (new=1) and never matches findDocTab", () => {
+      tm.newTab("doc");
+      expect(views[0].loadURL).toHaveBeenCalledWith("https://pen-editor.onrender.com/doc?new=1&chat=off");
+      expect(tm.findDocTab("new")).toBeNull();
+      expect(tm.findDocTab("1")).toBeNull();
+      (views[0].getURL as unknown as ReturnType<typeof vi.fn>).mockReturnValue("https://pen-editor.onrender.com/doc?new=1&chat=off");
+      expect(tm.findDocTab("x")).toBeNull();
+    });
+
+    it("are not canvas tabs: not in the canvas-link list, not the MCP active tab, not lastEditor", () => {
+      const editor = tm.newTab("editor");
+      const doc = tm.newTab("doc");
+      expect(tm.getSnapshot().activeKind).toBe("doc");
+      expect(tm.editorTabsInfo()).toEqual({
+        tabs: [{ webContentsId: 1, title: "Untitled" }],
+        activeWebContentsId: null,
+      });
+      expect(tm.isEditorTab(2)).toBe(false);
+      expect(tm.getSnapshot().mcpActiveWebContentsId).toBe(1);
+      tm.activateEditorByWebContentsId(2);
+      expect(tm.getSnapshot().activeId).toBe(doc);
+      tm.closeTab(editor);
+      expect(tm.getSnapshot().mcpActiveWebContentsId).toBeNull();
+    });
+
+    it("a lone doc tab never becomes the MCP target", () => {
+      tm.newTab("doc");
+      expect(tm.getSnapshot().mcpActiveWebContentsId).toBeNull();
+      expect(tm.editorTabsInfo().tabs).toEqual([]);
+    });
+
+    it("findDocTab matches the opened id, then the live URL once the view reports one", () => {
+      const a = tm.newTab("doc", undefined, { docId: "a" });
+      tm.newTab("doc", undefined, { docId: "b" });
+      tm.newTab("editor");
+      expect(tm.findDocTab("a")).toBe(a);
+      expect(tm.findDocTab("zzz")).toBeNull();
+      (views[0].getURL as unknown as ReturnType<typeof vi.fn>).mockReturnValue("https://pen-editor.onrender.com/doc?id=c&chat=off");
+      expect(tm.findDocTab("a")).toBeNull();
+      expect(tm.findDocTab("c")).toBe(a);
+    });
+  });
+
   it("newTab with activate:false opens in the background without activating or emitting an activation", () => {
     const first = tm.newTab();
     const browser = tm.newTab("browser");
@@ -172,6 +229,26 @@ describe("TabManager", () => {
     expect(views[0].setVisible).toHaveBeenLastCalledWith(true);
     expect(views[1].setVisible).toHaveBeenLastCalledWith(false);
     expect(tm.getSnapshot().activeId).toBe(a);
+  });
+
+  it("activate with focus:false shows the tab without focusing its view", () => {
+    const a = tm.newTab();
+    tm.newTab();
+    const before = vi.mocked(views[0].focus).mock.calls.length;
+    tm.activate(a, { focus: false });
+    expect(views[0].setVisible).toHaveBeenLastCalledWith(true);
+    expect(tm.getSnapshot().activeId).toBe(a);
+    expect(vi.mocked(views[0].focus).mock.calls.length).toBe(before);
+    tm.activate(a);
+    expect(vi.mocked(views[0].focus).mock.calls.length).toBe(before + 1);
+  });
+
+  it("newTab with focus:false becomes active but is not focused", () => {
+    tm.newTab();
+    const d = tm.newTab("doc", undefined, { docId: "abc", focus: false });
+    expect(tm.getSnapshot().activeId).toBe(d);
+    expect(views[1].setVisible).toHaveBeenLastCalledWith(true);
+    expect(views[1].focus).not.toHaveBeenCalled();
   });
 
   it("closeTab destroys the view and activates a neighbor", () => {

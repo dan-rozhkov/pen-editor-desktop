@@ -126,7 +126,12 @@ const canvas = {
   },
 };
 
-contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser });
+// Documents (markdown tabs at `/doc`): ask main to open or focus one. Main checks the sender.
+const docs = {
+  open: (docId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("doc:open", docId),
+};
+
+contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser, docs });
 
 // Theme report for main (channel `panel:theme`): the page paints the stored editor theme as the
 // class `dark` on <html>. Initial read on DOMContentLoaded, then a MutationObserver on that class.

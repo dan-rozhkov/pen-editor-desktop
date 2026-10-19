@@ -7,11 +7,13 @@
     penEmpty: {
       newCanvasTab(): void;
       newBrowserTab(): void;
+      newDocTab(): void;
       onState(cb: (state: { theme: "light" | "dark"; sessionTabs: number }) => void): void;
     };
   }).penEmpty;
   document.getElementById("new-canvas")!.addEventListener("click", () => bridge.newCanvasTab());
   document.getElementById("new-browser")!.addEventListener("click", () => bridge.newBrowserTab());
+  document.getElementById("new-doc")!.addEventListener("click", () => bridge.newDocTab());
   const note = document.getElementById("sessions-note")!;
   // Fade-in + 4px rise whenever the placeholder appears: first load, and each time the view is
   // shown again (WebContentsView.setVisible fires visibilitychange). Without the `.shown` class the
