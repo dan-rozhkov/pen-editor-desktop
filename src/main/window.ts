@@ -1,3 +1,4 @@
+import { normalizePageColor, PAGE_BG_FALLBACK, SAMPLE_PAGE_BG_SCRIPT } from "./pageBackground";
 import path from "node:path";
 import { app, BaseWindow, View, WebContentsView, Menu, dialog, ipcMain, nativeTheme, session, shell, webContents } from "electron";
 import {
@@ -357,6 +358,18 @@ export function createMainWindow(
       else tabs.activeHandle()?.focus?.();
     }
   };
+  // Page background per browser tab (webContents id) for the address-row tail; absent = blank tab.
+  const tailColors = new Map<number, string>();
+  const pushTail = () => {
+    try {
+      if (tabbarView.webContents.isDestroyed()) return;
+      const h = tabs.activeHandle();
+      const color = h && tabs.getSnapshot().activeKind === "browser" ? (tailColors.get(h.getWebContentsId()) ?? null) : null;
+      tabbarView.webContents.send("tabbar:tail", color);
+    } catch {
+      // Never let a cosmetic colour break a state push.
+    }
+  };
   const pushState = (s: TabsSnapshot) => {
     // s.mcpActiveWebContentsId is computed by TabManager itself (see
     // TabsSnapshot's doc comment / finding 1) — window.ts just forwards it,
@@ -405,6 +418,7 @@ export function createMainWindow(
     lastResolvedForTint = resolvedTheme;
     glassTintView?.setBackgroundColor(glassTint(resolvedTheme, nativeTheme.shouldUseDarkColors).color);
     tabbarView.webContents.send("tabbar:theme", resolvedTheme);
+    pushTail();
     agentPanelView.setBackgroundColor(backgroundColorForTheme(resolvedTheme));
     if (!emptyView.webContents.isDestroyed()) {
       // No active tab: every tab left is a background session tab (never auto-activated).
@@ -1011,6 +1025,26 @@ export function createMainWindow(
       };
       view.webContents.on("did-navigate", reportNavState);
       view.webContents.on("did-navigate-in-page", reportNavState);
+      if (kind === "browser") {
+        // Tail colour under the page's rounded top corners (pageBackground.ts): sample the page background.
+        const wc = view.webContents;
+        const sampleTail = async () => {
+          try {
+            if (wc.isDestroyed() || browserTabBlank || isPlaceholderShown()) return;
+            const raw: unknown = await wc.executeJavaScript(SAMPLE_PAGE_BG_SCRIPT);
+            if (wc.isDestroyed()) return;
+            tailColors.set(viewId, normalizePageColor(raw));
+          } catch {
+            // Navigation race or destroyed contents: the page is painted white by Chromium.
+            if (!wc.isDestroyed() && !browserTabBlank) tailColors.set(viewId, PAGE_BG_FALLBACK);
+          }
+          pushTail();
+        };
+        wc.on("dom-ready", () => void sampleTail());
+        wc.on("did-navigate", () => void sampleTail());
+        wc.on("did-navigate-in-page", () => void sampleTail());
+        wc.once("destroyed", () => tailColors.delete(viewId));
+      }
       view.webContents.on("page-title-updated", reportNavState);
 
       // Wave 1 speed: event-driven navigation detection

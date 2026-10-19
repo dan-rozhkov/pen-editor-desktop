@@ -100,7 +100,7 @@ bottom borders share one line (y = 78). Gap and radius are NOT hardcoded in CSS:
 returns them (`gap`, `radius`), `window.ts` sends them on `tabbar:state` (`islandGap`,
 `islandRadius`) and `renderer.ts` writes `--island-gap` / `--island-radius` (pinned by
 `layout.test.ts`). The tab VIEW starts exactly below the row (`tabArea`): no page content is
-hidden. A parent View's radius does not clip child WebContentsViews in Electron 43, so browser pages keep all-corner rounding; the page's rounded top corners show small wedges against the island-colour tail (which starts 1px below the row, `top: calc(100% + 1px)`, so it does not cover the border).
+hidden. A parent View's radius does not clip child WebContentsViews in Electron 43, so browser pages keep all-corner rounding; the page's rounded top corners show small wedges against the tail (which starts 1px below the row, `top: calc(100% + 1px)`, so it does not cover the border). The tail is painted in the ACTIVE browser page's own background, not `--island-bg` (dark wedges on a white page in dark theme): main samples `getComputedStyle` of `<html>`/`<body>` after `dom-ready`/`did-navigate`/`did-navigate-in-page` (`pageBackground.ts`; transparent or failure -> `#ffffff`, as Chromium paints it) and sends it on `tabbar:tail`; the renderer sets `--tail-bg`. Blank and canvas tabs send null -> `--island-bg`.
 
 *Theme and tint.* The app/OS appearance is NEVER changed (no `nativeTheme.themeSource`: it is
 app-wide and would flip `prefers-color-scheme` for browser tabs, isolated sessions and QA
@@ -275,6 +275,7 @@ CI of its own. `Close Window` is a local action like Passwords (no forwarded id)
 - `editor:theme` tab→main (`light` | `dark`, observed from the editor's root class)
 - `tabbar:state` main→tabbar (`TabsSnapshot`, now including `mcpStatus`), re-sent on tabbar `did-finish-load`
 - `tabbar:theme` main→tabbar (`light` | `dark`, active editor theme or system fallback)
+- `tabbar:tail` main→tabbar (`string | null`: the active browser page's background as `#rrggbb`/`rgb(r, g, b)`, sampled in main; null = blank/canvas tab, keep `--island-bg`)
 - `tabbar:new` / `tabbar:activate` / `tabbar:close` tabbar→main (sender-checked)
 - `panel:theme` agent panel preload→main (`light` | `dark`; accepted only from the panel's webContents and page) — the theme the panel paints, see "Theme and tint"
 - `tabbar:toggle-panel` tabbar→main (sender-checked) — the sidebar button: show/hide the agent panel (see "Sidebar toggle"); the new state returns as `panelCollapsed` on `tabbar:state`

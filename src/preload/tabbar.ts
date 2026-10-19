@@ -18,6 +18,10 @@ const api = {
   onState: (cb: (s: TabsSnapshot) => void) => {
     ipcRenderer.on("tabbar:state", (_e: IpcRendererEvent, s: TabsSnapshot) => cb(s));
   },
+  /** Page background colour for the address-row tail (null: keep the island colour). */
+  onTail: (cb: (color: string | null) => void) => {
+    ipcRenderer.on("tabbar:tail", (_e: IpcRendererEvent, color: string | null) => cb(color));
+  },
   onTheme: (cb: (theme: UITheme) => void) => {
     ipcRenderer.on("tabbar:theme", (_e: IpcRendererEvent, theme: UITheme) => cb(theme));
   },

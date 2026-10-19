@@ -169,10 +169,10 @@ body {
 .url-input.invalid { box-shadow: inset 0 0 0 1px #d64545; }
 
 /* The tab bar view is `radius` px taller than the address row; the ::after tail paints that strip
-   in the island colour, so the notches under the tab view's rounded top corners are not glass.
+   in the active page's background (--tail-bg, sampled by main; --island-bg for canvas/blank tabs), so the notches under the tab view's rounded top corners are not glass.
    The tab view itself starts exactly below the row: no page content is hidden. */
 .chrome-row::after {
-  content: ""; position: absolute; left: 0; right: 0; top: calc(100% + 1px); height: var(--island-radius, 12px); background: var(--island-bg); /* below the 1px border */
+  content: ""; position: absolute; left: 0; right: 0; top: calc(100% + 1px); height: var(--island-radius, 12px); background: var(--tail-bg, var(--island-bg)); /* below the 1px border */
 }
 
 /* --- sidebar toggle and leading tab icons --- */

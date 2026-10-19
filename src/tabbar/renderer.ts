@@ -45,6 +45,7 @@ interface PenTabbarApi {
   navigate(action: "url" | "back" | "forward" | "reload", url?: string): void;
   onState(cb: (s: TabsSnapshot) => void): void;
   onTheme(cb: (theme: UITheme) => void): void;
+  onTail(cb: (color: string | null) => void): void;
 }
 
 interface Window {
@@ -112,6 +113,15 @@ urlInputEl.addEventListener("input", () => {
   // happens in that flow), leaving the address bar permanently stuck on
   // "" even once the tab actually navigated.
   userEditingUrl = true;
+});
+
+window.penTabbar.onTail((color) => {
+  // Only a plain CSS colour from main; anything else keeps the island colour.
+  if (typeof color === "string" && /^(#[0-9a-f]{6}|rgb\(\d{1,3}, \d{1,3}, \d{1,3}\))$/.test(color)) {
+    document.documentElement.style.setProperty("--tail-bg", color);
+  } else {
+    document.documentElement.style.removeProperty("--tail-bg");
+  }
 });
 
 window.penTabbar.onTheme((theme) => {
