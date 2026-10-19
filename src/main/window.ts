@@ -1,6 +1,6 @@
 import { normalizePageColor, PAGE_BG_FALLBACK, SAMPLE_PAGE_BG_SCRIPT } from "./pageBackground";
 import path from "node:path";
-import { app, BaseWindow, View, WebContentsView, Menu, dialog, ipcMain, nativeTheme, session, shell, webContents } from "electron";
+import { app, BaseWindow, View, WebContentsView, Menu, dialog, ipcMain, nativeTheme, session, shell, systemPreferences, webContents } from "electron";
 import {
   TabManager,
   shouldFocusAddressBar,
@@ -17,6 +17,13 @@ import {
   viewportNeedsReload,
   type ViewportPresetId,
 } from "./browserToolsMenu";
+import {
+  PANEL_ANIMATION_FRAME_MS,
+  createPanelAnimator,
+  panelAnimationFrame,
+  shellMotionEnabled,
+  type PanelFrame,
+} from "./panelAnimation";
 import { createFailedRequestRecorder } from "./failedRequests";
 import { createAgentEmulationTracker } from "./agentEmulation";
 import { createRunBoundary } from "./runBoundary";
@@ -38,7 +45,7 @@ import {
 } from "@sideform/browser-agent/controller";
 import { resolveAgentPanelUrl, resolveCanvasTabUrl, INITIAL_TABS } from "./config";
 import { secureWebPreferences } from "./webPreferences";
-import { ADDRESS_ROW_HEIGHT, ISLAND_GAP, ISLAND_RADIUS, TAB_ROW_HEIGHT, agentPanelWidthFor, computeWindowLayout } from "./layout";
+import { ADDRESS_ROW_HEIGHT, ISLAND_GAP, ISLAND_RADIUS, TAB_ROW_HEIGHT, agentPanelWidthFor, computeWindowLayout, type WindowLayout } from "./layout";
 import { AGENT_PANEL_SETTINGS_FILE, readAgentPanelSettings, writeAgentPanelSettings } from "./agentPanelSettings";
 import { isRecord, parseJournalOrigins, parseToken, rawToken } from "./checkpointArgs";
 import { JournalOwners } from "./journalOwners";
@@ -345,11 +352,78 @@ export function createMainWindow(
   // tab opened by the agent or a launch never auto-expands it.
   const agentPanelSettingsPath = path.join(app.getPath("userData"), AGENT_PANEL_SETTINGS_FILE);
   let panelCollapsed = readAgentPanelSettings(agentPanelSettingsPath).collapsed;
+  // Panel slide animation (panelAnimation.ts owns the state and the maths; this only owns the timer
+  // and applies what it returns). While `panelAnimator.running`, applyLayout follows the interpolated
+  // frame whatever the target layout is, so a mid-flight pushState never snaps it.
+  const panelAnimator = createPanelAnimator(panelCollapsed);
+  let panelTimer: ReturnType<typeof setInterval> | null = null;
+  // Expanded/collapsed layouts, computed once per animation (and again only if the active tab's kind
+  // changes mid-flight: the address row appears or goes away).
+  let animLayouts: { kind: TabsSnapshot["activeKind"]; expanded: WindowLayout; collapsed: WindowLayout } | null = null;
+  const shellMotion = (): boolean => {
+    let reduced = false;
+    try {
+      const getSettings = (systemPreferences as { getAnimationSettings?: () => { prefersReducedMotion?: boolean } })
+        .getAnimationSettings;
+      if (typeof getSettings === "function") reduced = getSettings.call(systemPreferences)?.prefersReducedMotion === true;
+    } catch {
+      /* unsupported platform: animate */
+    }
+    return shellMotionEnabled(process.env.PEN_DESKTOP_NO_ANIMATIONS, reduced);
+  };
+  const currentActiveKind = (): TabsSnapshot["activeKind"] =>
+    previousSnapshot ? previousSnapshot.activeKind : tabs.getSnapshot().activeKind;
+  /** The interpolated frame while a slide runs, else null. */
+  const animationFrame = (): PanelFrame | null => {
+    if (!panelAnimator.running) return null;
+    const kind = currentActiveKind();
+    if (!animLayouts || animLayouts.kind !== kind) {
+      animLayouts = { kind, expanded: computeLayout(kind, false), collapsed: computeLayout(kind, true) };
+    }
+    return panelAnimationFrame(animLayouts.expanded, animLayouts.collapsed, panelAnimator.progress);
+  };
+  const sendStripLeft = (x: number) => {
+    try {
+      if (!tabbarView.webContents.isDestroyed()) tabbarView.webContents.send("tabbar:strip-left", x);
+    } catch {
+      // cosmetic
+    }
+  };
+  const stopPanelTimer = () => {
+    if (panelTimer) clearInterval(panelTimer);
+    panelTimer = null;
+    animLayouts = null;
+  };
+  /** Jump to the rest state of `panelCollapsed`. The caller applies the plain layout. */
+  const finishPanelAnimation = () => {
+    stopPanelTimer();
+    panelAnimator.stop(panelCollapsed);
+  };
+  const startPanelAnimation = (collapsed: boolean) => {
+    panelAnimator.start(performance.now(), collapsed); // retargets from the CURRENT progress
+    if (panelTimer) return;
+    panelTimer = setInterval(() => {
+      if (win.isDestroyed()) return stopPanelTimer();
+      const tick = panelAnimator.tick(performance.now());
+      if (!tick.done) {
+        const frame = animationFrame();
+        if (frame && animLayouts) applyLayout(animLayouts.expanded, frame); // tab bar rect: same in both
+        return;
+      }
+      // Finished: the animator is at rest, so pushState applies the plain layout (every tab view,
+      // once) and carries the final strip offset on tabbar:state.
+      stopPanelTimer();
+      pushState(tabs.getSnapshot());
+    }, PANEL_ANIMATION_FRAME_MS);
+  };
   const setPanelCollapsed = (collapsed: boolean) => {
     if (collapsed === panelCollapsed) return;
     const panelHadFocus = !agentPanelView.webContents.isDestroyed() && agentPanelView.webContents.isFocused();
     panelCollapsed = collapsed;
     writeAgentPanelSettings(agentPanelSettingsPath, { collapsed });
+    // Animate the slide (main-process timer, see panelAnimation.ts) or jump when motion is off.
+    if (shellMotion()) startPanelAnimation(collapsed);
+    else finishPanelAnimation();
     pushState(tabs.getSnapshot());
     rebuildMenu();
     // A collapsed panel cannot hold the keyboard: hand it to the placeholder or the active tab.
@@ -398,12 +472,14 @@ export function createMainWindow(
     const focusAddressBar = shouldFocusAddressBar(previousSnapshot, s);
     previousSnapshot = s;
     const geometry = computeLayout(s.activeKind);
-    tabStripLeft = geometry.tabStripLeft;
+    // Mid-slide the tab bar gets the CURRENT strip offset (tabbar:strip-left then moves it every frame).
+    tabStripLeft = animationFrame()?.tabArea.x ?? geometry.tabStripLeft;
     tabbarView.webContents.send("tabbar:state", {
       ...s,
       focusAddressBar,
       tabStripLeft,
       panelCollapsed,
+      motion: shellMotion(),
       // Island numbers from layout.ts (CSS --island-gap / --island-radius).
       islandGap: geometry.gap,
       islandRadius: geometry.radius,
@@ -620,16 +696,23 @@ export function createMainWindow(
           // Kept so handle.loadURL can wait it out: Electron resolves a loadURL() issued while
           // about:blank is still loading at the PLACEHOLDER's finish-load, so `open` would come
           // back "loaded" on about:blank with the real page still to come.
+          // The flag goes up BEFORE loadURL: did-start-loading fires synchronously inside it, and the
+          // tab-strip loading fill must not show for this hidden document.
+          placeholderActive = true;
           const p = view.webContents.loadURL(BLANK_DOCUMENT_URL);
           const settled = p.then(() => undefined, () => undefined);
           placeholderLoad = settled;
           void settled.then(() => {
-            if (placeholderLoad === settled) placeholderLoad = null;
+            if (placeholderLoad === settled) {
+              placeholderLoad = null;
+              placeholderActive = false;
+            }
           });
           return p;
         },
       });
       let placeholderLoad: Promise<void> | null = null;
+      let placeholderActive = false;
       const ensureDocument = (timeoutMs?: number): Promise<void> =>
         kind === "browser" ? commitGate.ensure(timeoutMs === undefined ? undefined : { timeoutMs }) : Promise.resolve();
       const sendGated = async (method: string, params?: Record<string, unknown>, gateTimeoutMs?: number): Promise<unknown> => {
@@ -1111,6 +1194,7 @@ export function createMainWindow(
           if (placeholderLoad && kind === "browser") {
             commitGate.cancelPlaceholder();
             placeholderLoad = null;
+            placeholderActive = false;
             view.webContents.stop();
           }
           return view.webContents.loadURL(url);
@@ -1160,6 +1244,28 @@ export function createMainWindow(
           view.setBackgroundColor(color);
         },
         getWebContentsId: () => viewId,
+        // Tab-strip loading fill. The hidden about:blank placeholder (browser tabs) is not
+        // something the person waits for.
+        onLoadingChanged: (cb) => {
+          view.webContents.on("did-start-loading", () => {
+            if (placeholderActive) return;
+            cb(true);
+          });
+          // A real page replacing an in-flight placeholder by another path than handle.loadURL
+          // (page/CDP navigation, history): the placeholder is over, the real load shows.
+          view.webContents.on("did-start-navigation", (details) => {
+            if (!placeholderActive || !details.isMainFrame || details.isSameDocument || details.url === BLANK_DOCUMENT_URL) return;
+            placeholderActive = false;
+            if (view.webContents.isLoading()) cb(true);
+          });
+          // A stopped load that a newer one superseded (the placeholder) reports its stop late:
+          // only an idle view is done loading.
+          view.webContents.on("did-stop-loading", () => {
+            if (!view.webContents.isLoading()) cb(false);
+          });
+          // A crash mid-load may never send did-stop-loading.
+          view.webContents.on("render-process-gone", () => cb(false));
+        },
         onNavigationStateChanged: (cb) => {
           navListener = cb;
         },
@@ -1896,29 +2002,39 @@ export function createMainWindow(
   // computeLayout is pure geometry (layout.ts); pushState calls it BEFORE it builds the tab bar
   // snapshot, so the strip offset and island numbers the tab bar receives are always the ones
   // applied below (a panel toggle or an address row changes them).
-  const computeLayout = (activeKind: TabsSnapshot["activeKind"]) => {
+  const computeLayout = (activeKind: TabsSnapshot["activeKind"], collapsed = panelCollapsed) => {
     const { width, height } = win.getContentBounds();
     const tabbarHeight = TAB_ROW_HEIGHT + (activeKind === "browser" ? ADDRESS_ROW_HEIGHT : 0);
     return computeWindowLayout({
       width,
       height,
       tabbarHeight,
-      panelWidth: agentPanelWidthFor(panelCollapsed),
+      panelWidth: agentPanelWidthFor(collapsed),
       tabRowHeight: TAB_ROW_HEIGHT,
       islands: { gap: ISLAND_GAP, radius: ISLAND_RADIUS },
     });
   };
-  const applyLayout = (l: ReturnType<typeof computeLayout>) => {
+  const applyLayout = (l: ReturnType<typeof computeLayout>, frame: PanelFrame | null = animationFrame()) => {
     const { width, height } = win.getContentBounds();
-    agentPanelView.setBounds(l.panel);
+    const panelRect = frame ? frame.panel : l.panel;
+    const panelVisible = frame ? frame.panelVisible : l.panelVisible;
+    const tabArea = frame ? frame.tabArea : l.tabArea;
+    agentPanelView.setBounds(panelRect);
     // Collapsed: hidden, not destroyed (the chat keeps running and its state survives).
-    agentPanelView.setVisible(l.panelVisible);
+    agentPanelView.setVisible(panelVisible);
     tabbarView.setBounds(l.tabbar);
     glassTintView?.setBounds({ x: 0, y: 0, width, height });
-    emptyView.setBounds(l.tabArea);
-    tabs.layout(l.tabArea);
+    emptyView.setBounds(tabArea);
+    if (frame) {
+      // Per frame: only the visible tab moves; the hidden ones follow in the full layout at the end.
+      tabs.layoutActive(tabArea);
+      sendStripLeft(tabArea.x);
+    } else {
+      tabs.layout(tabArea);
+    }
   };
   const layout = () => {
+    finishPanelAnimation(); // a resize ends a running slide at once
     const l = computeLayout(tabs.getSnapshot().activeKind);
     applyLayout(l);
     // A resize can move the strip offset: the tab bar must hear about it (pushState sets it first, so no loop).
@@ -2092,6 +2208,7 @@ export function createMainWindow(
     loginServices.passwordsWindow.focusMain(themeKey);
   });
   win.on("closed", () => {
+    stopPanelTimer();
     ipcMain.removeListener("tabbar:new", onTabbarNew);
     ipcMain.removeListener("tabbar:new-browser", onTabbarNewBrowser);
     ipcMain.removeListener("tabbar:new-menu", onTabbarNewMenu);

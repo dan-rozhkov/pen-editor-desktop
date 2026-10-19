@@ -56,3 +56,19 @@ body {
   outline: 2px solid #0d99ff;
   outline-offset: 1px;
 }
+
+/* Motion: only when the user has not asked for reduced motion. Classes only (CSP: no inline styles). */
+@media (prefers-reduced-motion: no-preference) {
+  .empty {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  .empty.shown {
+    opacity: 1;
+    transform: none;
+    transition:
+      opacity 200ms ease-out,
+      transform 200ms ease-out;
+  }
+}

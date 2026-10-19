@@ -22,6 +22,10 @@ const api = {
   onTail: (cb: (color: string | null) => void) => {
     ipcRenderer.on("tabbar:tail", (_e: IpcRendererEvent, color: string | null) => cb(color));
   },
+  /** Per-frame strip offset (px) while the agent panel slides; the final value arrives on tabbar:state. */
+  onStripLeft: (cb: (x: number) => void) => {
+    ipcRenderer.on("tabbar:strip-left", (_e: IpcRendererEvent, x: number) => cb(x));
+  },
   onTheme: (cb: (theme: UITheme) => void) => {
     ipcRenderer.on("tabbar:theme", (_e: IpcRendererEvent, theme: UITheme) => cb(theme));
   },

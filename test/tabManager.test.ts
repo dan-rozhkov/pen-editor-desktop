@@ -12,6 +12,7 @@ import {
 function makeFakeView() {
   let titleCb: ((t: string) => void) | undefined;
   let themeCb: ((theme: "light" | "dark") => void) | undefined;
+  let loadingCb: ((loading: boolean) => void) | undefined;
   let navCb: ((s: { url: string; title: string; canGoBack: boolean; canGoForward: boolean }) => void) | undefined;
   const view = {
     loadURL: vi.fn(() => Promise.resolve()),
@@ -26,6 +27,9 @@ function makeFakeView() {
     }),
     onThemeChanged: vi.fn((cb: (theme: "light" | "dark") => void) => {
       themeCb = cb;
+    }),
+    onLoadingChanged: vi.fn((cb: (loading: boolean) => void) => {
+      loadingCb = cb;
     }),
     onNavigationStateChanged: vi.fn(
       (cb: (s: { url: string; title: string; canGoBack: boolean; canGoForward: boolean }) => void) => {
@@ -44,11 +48,13 @@ function makeFakeView() {
     onceDomReady: vi.fn(() => Promise.resolve()),
     emitTitle: (t: string) => titleCb?.(t),
     emitTheme: (theme: "light" | "dark") => themeCb?.(theme),
+    emitLoading: (l: boolean) => loadingCb?.(l),
     emitNavState: (s: { url: string; title: string; canGoBack: boolean; canGoForward: boolean }) => navCb?.(s),
   };
   return view as TabViewHandle & {
     emitTitle: (t: string) => void;
     emitTheme: (theme: "light" | "dark") => void;
+    emitLoading: (loading: boolean) => void;
     emitNavState: (s: { url: string; title: string; canGoBack: boolean; canGoForward: boolean }) => void;
     loadURL: ReturnType<typeof vi.fn>;
     destroy: ReturnType<typeof vi.fn>;
@@ -84,6 +90,45 @@ describe("TabManager", () => {
       editorUrl: "https://pen-editor.onrender.com",
       onStateChanged: (s) => states.push(s),
     });
+  });
+
+  it("loading flag follows the view, and pushes state only when it changes", () => {
+    const e = tm.newTab();
+    const b = tm.newTab("browser");
+    expect(tm.getSnapshot().tabs.every((t) => !t.loading)).toBe(true);
+    const before = states.length;
+    views[1].emitLoading(true);
+    expect(states.length).toBe(before + 1);
+    expect(tm.getSnapshot().tabs.find((t) => t.id === b)?.loading).toBe(true);
+    expect(tm.getSnapshot().tabs.find((t) => t.id === e)?.loading).toBeFalsy();
+    views[1].emitLoading(true); // repeat: no push
+    expect(states.length).toBe(before + 1);
+    views[1].emitLoading(false);
+    expect(states.length).toBe(before + 2);
+    expect(tm.getSnapshot().tabs.find((t) => t.id === b)?.loading).toBeFalsy();
+    views[0].emitLoading(true); // editor tabs too
+    expect(tm.getSnapshot().tabs.find((t) => t.id === e)?.loading).toBe(true);
+  });
+
+  it("a loading event fired synchronously inside loadURL (entry not in the list yet) emits no snapshot", () => {
+    const seen: TabsSnapshot[] = [];
+    const m = new TabManager({
+      createView: () => {
+        const v = makeFakeView();
+        v.loadURL.mockImplementation(() => {
+          v.emitLoading(true); // like webContents did-start-loading firing inside loadURL
+          return Promise.resolve();
+        });
+        return v;
+      },
+      editorUrl: "https://pen-editor.onrender.com",
+      onStateChanged: (s) => seen.push(s),
+    });
+    m.newTab("editor", undefined, { activate: false });
+    // No snapshot lacking the new tab: every emitted snapshot holds it, and carries loading: true.
+    expect(seen.length).toBeGreaterThan(0);
+    for (const s of seen) expect(s.tabs).toHaveLength(1);
+    expect(seen[seen.length - 1].tabs[0].loading).toBe(true);
   });
 
   it("newTab loads the editor url and becomes active", () => {
@@ -259,6 +304,32 @@ describe("TabManager", () => {
     tm.newTab();
     tm.layout({ x: 1, y: 38, width: 1198, height: 761 });
     expect(views[0].setBounds).toHaveBeenLastCalledWith({ x: 1, y: 38, width: 1198, height: 761 });
+  });
+
+  it("layoutActive moves only the active tab view, and later tabs get the latest rect", () => {
+    const a = tm.newTab();
+    tm.newTab();
+    tm.activate(a);
+    for (const v of views) v.setBounds.mockClear();
+    tm.layoutActive({ x: 100, y: 38, width: 500, height: 700 });
+    expect(views[0].setBounds).toHaveBeenCalledTimes(1);
+    expect(views[0].setBounds).toHaveBeenLastCalledWith({ x: 100, y: 38, width: 500, height: 700 });
+    expect(views[1].setBounds).not.toHaveBeenCalled();
+    // A tab opened mid-slide is placed at the latest frame.
+    tm.newTab();
+    expect(views[2].setBounds).toHaveBeenLastCalledWith({ x: 100, y: 38, width: 500, height: 700 });
+    // The final full layout reaches the hidden tab views too.
+    tm.layout({ x: 8, y: 38, width: 900, height: 700 });
+    expect(views[1].setBounds).toHaveBeenLastCalledWith({ x: 8, y: 38, width: 900, height: 700 });
+  });
+
+  it("layoutActive with no active tab only records the rect", () => {
+    const empty = new TabManager({
+      createView: () => makeFakeView(),
+      editorUrl: "https://pen-editor.onrender.com",
+      onStateChanged: () => {},
+    });
+    expect(() => empty.layoutActive({ x: 1, y: 2, width: 3, height: 4 })).not.toThrow();
   });
 
   it("layout positions all tab views below the tab bar", () => {

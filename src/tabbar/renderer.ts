@@ -6,6 +6,8 @@ type TabRow = {
   url?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
+  /** A page load is in progress: the tab shows the loading fill. */
+  loading?: boolean;
 };
 type TabsSnapshot = {
   tabs: TabRow[];
@@ -26,6 +28,8 @@ type TabsSnapshot = {
   tabStripLeft?: number;
   /** The agent panel is collapsed (sidebar toggle state). */
   panelCollapsed?: boolean;
+  /** Shell motion allowed; false = PEN_DESKTOP_NO_ANIMATIONS=1 or OS reduced motion (no tab motion). */
+  motion?: boolean;
   /** Island gap / corner radius in px (layout.ts), for the address row CSS. */
   islandGap?: number;
   islandRadius?: number;
@@ -46,6 +50,7 @@ interface PenTabbarApi {
   onState(cb: (s: TabsSnapshot) => void): void;
   onTheme(cb: (theme: UITheme) => void): void;
   onTail(cb: (color: string | null) => void): void;
+  onStripLeft(cb: (x: number) => void): void;
 }
 
 interface Window {
@@ -194,6 +199,192 @@ function agentCursorIcon(): SVGSVGElement {
   return cursor;
 }
 
+// --- Keyed tab rendering -------------------------------------------------------------------
+// Tabs are reconciled by id so their elements (and running animations) survive a state push.
+// A removed tab becomes a `.tab-ghost` (never `.tab`: e2e counts `.tab`) that plays an exit and
+// is dropped. Motion is skipped under prefers-reduced-motion and on the first render.
+const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+const prefersReducedMotion = (): boolean => reducedMotionQuery.matches;
+// `shellMotion` comes from main (tabbar:state `motion`): false for PEN_DESKTOP_NO_ANIMATIONS=1 and the OS setting.
+let shellMotion = true;
+const canAnimate = (el: Element): boolean => typeof el.animate === "function" && shellMotion && !prefersReducedMotion();
+
+const PROGRESS_CREEP_MS = 7000;
+const PROGRESS_FINISH_MS = 400; // 180ms run to 100%, then 220ms fade
+interface TabView {
+  el: HTMLElement;
+  progress: HTMLElement;
+  lead: Node[];
+  leadKey: string;
+  title: HTMLElement;
+  loading: boolean;
+  anim: Animation | null;
+}
+const tabViews = new Map<number, TabView>();
+let firstTabRender = true;
+
+function startProgress(v: TabView): void {
+  v.anim?.cancel();
+  v.anim = null;
+  if (!canAnimate(v.progress)) {
+    v.progress.classList.add("static");
+    return;
+  }
+  v.anim = v.progress.animate(
+    [{ width: "0%", opacity: 1 }, { width: "80%", opacity: 1 }],
+    { duration: PROGRESS_CREEP_MS, easing: "cubic-bezier(0.1, 0.75, 0.25, 1)", fill: "forwards" },
+  );
+}
+
+function finishProgress(v: TabView): void {
+  v.progress.classList.remove("static");
+  const running = v.anim;
+  v.anim = null;
+  if (!running || !canAnimate(v.progress)) {
+    running?.cancel();
+    return;
+  }
+  const from = getComputedStyle(v.progress).width; // current animated width, in px
+  running.cancel();
+  const finish = v.progress.animate(
+    [
+      { width: from, opacity: 1, offset: 0 },
+      { width: "100%", opacity: 1, offset: 180 / PROGRESS_FINISH_MS },
+      { width: "100%", opacity: 0, offset: 1 },
+    ],
+    { duration: PROGRESS_FINISH_MS, easing: "linear", fill: "forwards" },
+  );
+  v.anim = finish;
+  finish.onfinish = () => {
+    if (v.anim === finish) {
+      finish.cancel();
+      v.anim = null;
+    }
+  };
+}
+
+function createTabView(tab: TabRow): TabView {
+  const el = document.createElement("div");
+  el.className = "tab";
+  el.addEventListener("mousedown", () => window.penTabbar.activateTab(tab.id));
+
+  const progress = document.createElement("span");
+  progress.className = "tab-progress";
+  progress.setAttribute("aria-hidden", "true");
+  el.appendChild(progress);
+
+  const title = document.createElement("span");
+  title.className = "title";
+  el.appendChild(title);
+
+  const close = document.createElement("button");
+  close.className = "close";
+  close.setAttribute("aria-label", "Close tab");
+  close.title = "Close Tab";
+  close.addEventListener("mousedown", (e) => e.stopPropagation());
+  close.addEventListener("click", () => window.penTabbar.closeTab(tab.id));
+  el.appendChild(close);
+
+  return { el, progress, lead: [], leadKey: "", title, loading: false, anim: null };
+}
+
+function updateTabView(v: TabView, tab: TabRow, active: boolean, agentWorking: boolean): void {
+  v.el.classList.toggle("active", active);
+  if (v.title.textContent !== tab.title) v.title.textContent = tab.title;
+  // Every tab has a leading icon; the agent's cursor takes its slot while it drives the tab.
+  const leadKey = agentWorking ? "agent" : tab.kind;
+  if (v.leadKey !== leadKey) {
+    for (const n of v.lead) n.parentNode?.removeChild(n);
+    if (agentWorking) {
+      const hint = document.createElement("span");
+      hint.className = "sr-only";
+      hint.textContent = "Agent is working";
+      v.lead = [agentCursorIcon(), hint];
+    } else {
+      v.lead = [tabIconEl(tab)];
+    }
+    for (const n of v.lead) v.el.insertBefore(n, v.title);
+    v.leadKey = leadKey;
+  }
+  const loading = tab.loading === true;
+  if (loading !== v.loading) {
+    v.loading = loading;
+    if (loading) startProgress(v);
+    else finishProgress(v);
+  }
+}
+
+function enterTab(el: HTMLElement): void {
+  if (!canAnimate(el)) return;
+  const w = el.getBoundingClientRect().width;
+  el.classList.add("entering");
+  const anim = el.animate(
+    [{ opacity: 0, width: "0px", minWidth: "0px", paddingLeft: "0px", paddingRight: "0px" }, { opacity: 1, width: `${w}px`, minWidth: `${w}px` }],
+    { duration: 180, easing: "cubic-bezier(0.33, 1, 0.68, 1)" },
+  );
+  anim.onfinish = anim.oncancel = () => el.classList.remove("entering");
+}
+
+function exitTab(v: TabView): void {
+  const el = v.el;
+  v.anim?.cancel();
+  const w = el.getBoundingClientRect().width;
+  // Not `.tab` any more: e2e specs count/find `.tab`. Styling is shared in tabbar.css.
+  el.classList.remove("tab");
+  el.classList.add("tab-ghost");
+  el.setAttribute("aria-hidden", "true");
+  el.setAttribute("inert", "");
+  if (!canAnimate(el)) {
+    el.remove();
+    return;
+  }
+  const anim = el.animate(
+    [
+      { opacity: 1, width: `${w}px`, minWidth: `${w}px` },
+      { opacity: 0, width: "0px", minWidth: "0px", paddingLeft: "0px", paddingRight: "0px" },
+    ],
+    { duration: 160, easing: "cubic-bezier(0.32, 0, 0.67, 0)", fill: "forwards" },
+  );
+  anim.onfinish = anim.oncancel = () => el.remove();
+}
+
+function renderTabs(state: TabsSnapshot): void {
+  const live = new Set(state.tabs.map((t) => t.id));
+  for (const [id, v] of tabViews) {
+    if (live.has(id)) continue;
+    tabViews.delete(id);
+    if (firstTabRender) v.el.remove();
+    else exitTab(v);
+  }
+  const nextTab = (from: Element | null): Element | null => {
+    let n = from;
+    while (n && !n.classList.contains("tab")) n = n.nextElementSibling;
+    return n;
+  };
+  let prev: HTMLElement | null = null;
+  for (const tab of state.tabs) {
+    let v = tabViews.get(tab.id);
+    const isNew = !v;
+    if (!v) {
+      v = createTabView(tab);
+      tabViews.set(tab.id, v);
+    }
+    const agentWorking = tab.kind === "browser" && (state.agentTabIds?.includes(tab.id) ?? false);
+    updateTabView(v, tab, tab.id === state.activeId, agentWorking);
+    const expected = nextTab(prev ? prev.nextElementSibling : tabsEl.firstElementChild);
+    if (expected !== v.el) tabsEl.insertBefore(v.el, expected);
+    if (isNew && !firstTabRender) enterTab(v.el);
+    prev = v.el;
+  }
+  firstTabRender = false;
+}
+
+// While the panel slides, main pushes the interpolated strip offset every frame (one clock for the
+// native views and the strip); the final value also arrives on tabbar:state.
+window.penTabbar.onStripLeft((x) => {
+  document.documentElement.style.setProperty("--tab-strip-left", `${x}px`);
+});
+
 window.penTabbar.onState((state) => {
   // The tab row's left padding is max(mac traffic-light padding, this) — see tabbar.css.
   if (state.islandGap !== undefined) document.documentElement.style.setProperty("--island-gap", `${state.islandGap}px`);
@@ -204,39 +395,9 @@ window.penTabbar.onState((state) => {
   togglePanelEl.setAttribute("aria-pressed", String(!collapsed));
   togglePanelEl.setAttribute("aria-label", collapsed ? "Show agent panel" : "Hide agent panel");
   togglePanelEl.title = collapsed ? "Show agent panel (Cmd/Ctrl+Alt+B)" : "Hide agent panel (Cmd/Ctrl+Alt+B)";
+  shellMotion = state.motion !== false;
   document.documentElement.style.setProperty("--tab-strip-left", `${state.tabStripLeft ?? 0}px`);
-  tabsEl.textContent = "";
-  for (const tab of state.tabs) {
-    const el = document.createElement("div");
-    el.className = tab.id === state.activeId ? "tab active" : "tab";
-    el.addEventListener("mousedown", () => window.penTabbar.activateTab(tab.id));
-
-    const agentWorking = tab.kind === "browser" && state.agentTabIds?.includes(tab.id);
-    // Every tab has a leading icon; the agent's cursor takes its slot while it drives the tab.
-    if (!agentWorking) el.appendChild(tabIconEl(tab));
-    if (agentWorking) {
-      el.appendChild(agentCursorIcon());
-      const hint = document.createElement("span");
-      hint.className = "sr-only";
-      hint.textContent = "Agent is working";
-      el.appendChild(hint);
-    }
-
-    const title = document.createElement("span");
-    title.className = "title";
-    title.textContent = tab.title;
-    el.appendChild(title);
-
-    const close = document.createElement("button");
-    close.className = "close";
-    close.setAttribute("aria-label", "Close tab");
-    close.title = "Close Tab";
-    close.addEventListener("mousedown", (e) => e.stopPropagation());
-    close.addEventListener("click", () => window.penTabbar.closeTab(tab.id));
-    el.appendChild(close);
-
-    tabsEl.appendChild(el);
-  }
+  renderTabs(state);
 
   // Address row: only shown for the active browser tab (design doc §2).
   const isBrowser = state.activeKind === "browser";

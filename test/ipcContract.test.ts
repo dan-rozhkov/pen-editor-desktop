@@ -23,6 +23,7 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "tabbar:state", direction: "main->renderer" },
   { name: "tabbar:theme", direction: "main->renderer" },
   { name: "tabbar:tail", direction: "main->renderer" },
+  { name: "tabbar:strip-left", direction: "main->renderer" },
   { name: "tabbar:new", direction: "renderer->main" },
   { name: "tabbar:new-browser", direction: "renderer->main" },
   { name: "tabbar:new-menu", direction: "renderer->main" },

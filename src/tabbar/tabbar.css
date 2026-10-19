@@ -26,15 +26,16 @@ body {
   -webkit-app-region: drag;
 }
 /* Tab strip start: right of the sidebar toggle and of the agent panel (--tab-strip-left, set by
-   renderer.ts from the tabbar:state snapshot). The row stays a window drag region, so the part
+   renderer.ts from tabbar:state and, during the panel slide, tabbar:strip-left every frame). The row stays a window drag region, so the part
    above the panel is an empty draggable title area. */
 :root { --toggle-left: 8px; --controls-end: calc(var(--toggle-left) + 28px + 6px); }
 :root[data-macos] { --toggle-left: 80px; } /* right after the traffic lights */
 /* The tab strip: rounded 28px tabs, 2px apart, vertically centred in the 38px row. The row's own left
    padding (above) pushes them clear of the traffic lights and the sidebar toggle. */
 #tabs { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; flex: 1; }
-.tab {
+:is(.tab, .tab-ghost) {
   position: relative;
+  isolation: isolate;
   display: flex; align-items: center; gap: 6px;
   box-sizing: border-box;
   height: 28px; padding: 0 4px 0 6px; max-width: 200px; min-width: 60px;
@@ -43,7 +44,7 @@ body {
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
-.tab .title { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+:is(.tab, .tab-ghost) .title { overflow: hidden; text-overflow: ellipsis; flex: 1; }
 /* The agent's cursor arrow, shown before the title of the browser tab it is
    driving. Static on purpose — motion in the tab strip would pull the eye. */
 .sr-only {
@@ -58,27 +59,37 @@ body {
 .agent-cursor .body { fill: var(--agent-cursor); stroke: var(--agent-cursor); }
 /* Greyed out when the agent's tab is in the background; softer shadow so it
    recedes instead of looking like a stuck blue badge. */
-.tab:not(.active) .agent-cursor {
+:is(.tab, .tab-ghost):not(.active) .agent-cursor {
   filter: drop-shadow(0 0.5px 0.5px rgba(0, 0, 0, 0.15));
 }
-.tab:not(.active) .agent-cursor .rim { fill: var(--agent-cursor-idle-rim); stroke: var(--agent-cursor-idle-rim); }
-.tab:not(.active) .agent-cursor .body { fill: var(--agent-cursor-idle); stroke: var(--agent-cursor-idle); }
+:is(.tab, .tab-ghost):not(.active) .agent-cursor .rim { fill: var(--agent-cursor-idle-rim); stroke: var(--agent-cursor-idle-rim); }
+:is(.tab, .tab-ghost):not(.active) .agent-cursor .body { fill: var(--agent-cursor-idle); stroke: var(--agent-cursor-idle); }
 .tab:not(.active):hover { background: var(--glass-tab-hover); color: var(--text-active); }
-.tab.active { background: var(--glass-tab-active); color: var(--text-active); }
-.tab .close {
+:is(.tab, .tab-ghost).active { background: var(--glass-tab-active); color: var(--text-active); }
+/* Page-loading fill: a translucent bar that IS the tab background, under the content (z-index -1
+   inside the tab's own stacking context). renderer.ts animates its width with element.animate. */
+.tab-progress {
+  position: absolute; z-index: -1; left: 0; top: 0; bottom: 0;
+  width: 0; opacity: 0; border-radius: 8px;
+  background: var(--tab-progress); pointer-events: none;
+}
+.tab-progress.static { width: 100%; opacity: 1; } /* reduced motion: no creep, just "loading" */
+.tab-ghost { pointer-events: none; overflow: hidden; }
+.tab.entering { overflow: hidden; }
+:is(.tab, .tab-ghost) .close {
   position: relative; flex: 0 0 20px; width: 20px; height: 20px;
   border: 0; background: none; color: inherit;
   cursor: pointer; padding: 0; border-radius: 4px; visibility: hidden;
 }
-.tab:hover .close, .tab.active .close { visibility: visible; }
+.tab:hover .close, :is(.tab, .tab-ghost).active .close { visibility: visible; }
 /* Translucent so it still reads on a hovered (already grey) inactive pill. */
-.tab .close:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
-.tab .close::before, .tab .close::after {
+:is(.tab, .tab-ghost) .close:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
+:is(.tab, .tab-ghost) .close::before, :is(.tab, .tab-ghost) .close::after {
   content: ""; position: absolute; left: 5px; top: 9.5px;
   width: 10px; height: 1px; border-radius: 1px; background: currentColor;
 }
-.tab .close::before { transform: rotate(45deg); }
-.tab .close::after { transform: rotate(-45deg); }
+:is(.tab, .tab-ghost) .close::before { transform: rotate(45deg); }
+:is(.tab, .tab-ghost) .close::after { transform: rotate(-45deg); }
 #new-tab {
   position: relative; flex: 0 0 28px; width: 28px; height: 28px; border-radius: 8px;
   border: 0; background: none; color: var(--glass-text); cursor: pointer;
@@ -154,10 +165,10 @@ body {
   border-radius: 6px;
   background: transparent;
   color: var(--text-active);
-  /* The chat header title: text-sm font-medium text-text-primary. */
+  /* The chat header title size (text-sm), in regular weight. */
   font-family: inherit;
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 400;
   text-align: center;
   text-overflow: ellipsis;
   padding: 0 10px;
@@ -189,5 +200,6 @@ body {
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 18px; width: 18px; height: 18px;
   color: var(--glass-text);
 }
-.tab.active .tab-icon { color: var(--text-active); }
+:is(.tab, .tab-ghost).active .tab-icon { color: var(--text-active); }
 .tab-icon .glyph { width: 16px; height: 16px; }
+

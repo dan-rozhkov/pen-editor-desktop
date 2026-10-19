@@ -56,7 +56,7 @@ parameter (`clampAgentPanelWidth`: min 300, max 50% of the window; default 380);
 is not built; collapse is the sidebar toggle below.
 
 Inside the tab bar the strip starts at the panel's right edge: `window.ts`
-adds `tabStripLeft` to the existing `tabbar:state` snapshot (no new channel);
+adds `tabStripLeft` to the existing `tabbar:state` snapshot (during the panel slide a per-frame `tabbar:strip-left` also carries it);
 `renderer.ts` writes it to the CSS var `--tab-strip-left`; the tab row's left
 padding is `max(--controls-end, --tab-strip-left)`, where `--controls-end` is the sidebar toggle's right edge (after the macOS traffic lights); the address
 row margin uses `--tab-strip-left`. The row stays a window drag region, so the part of
@@ -92,9 +92,9 @@ tab pill keeps its own translucent `--glass-tab-active` (unchanged).
 *Address row.* Painted in the island colour as the top of the tab island: inset to the tab
 area's x-range, rounded top corners, and it mirrors the agent chat header row of the frontend
 (pen-editor `ChatPanel` `OpenChatHeader`: `px-2 py-1.5 gap-1 border-b border-border-default`, 28px
-icon buttons, title `text-sm font-medium text-text-primary`): height `ADDRESS_ROW_HEIGHT` = 41
+icon buttons, title `text-sm text-text-primary` (regular weight)): height `ADDRESS_ROW_HEIGHT` = 41
 (28 + 2*6 + 1px border; `layout.ts`, sent as `addressRowHeight` -> CSS `--address-row-height`),
-padding 0 8px, gap 4px, `border-bottom: 1px solid var(--border)` (#e0e0e0 / #404040), URL text 14px/500
+padding 0 8px, gap 4px, `border-bottom: 1px solid var(--border)` (#e0e0e0 / #404040), URL text 14px/400
 in `--text-active`. Panel header and address row both start at the tab row height (38), so their
 bottom borders share one line (y = 78). Gap and radius are NOT hardcoded in CSS: `layout.ts`
 returns them (`gap`, `radius`), `window.ts` sends them on `tabbar:state` (`islandGap`,
@@ -130,7 +130,26 @@ destroyed: the chat keeps running and keeps its state). The strip then starts ri
 button (CSS `--controls-end`). `pushState` computes the layout BEFORE it builds the snapshot, so
 `tabStripLeft` (and the island numbers) the tab bar gets always match what is applied; a resize
 that moves the offset re-pushes (e2e checks the row padding / address row margin after toggling).
-Focus never goes to the hidden panel: `emptyView.ts` `resolveFocusTarget` sends it to the
+The toggle is animated (240ms, easeOutCubic). `src/main/panelAnimation.ts` is pure and tested: the
+motion decision (`shellMotionEnabled(env PEN_DESKTOP_NO_ANIMATIONS, reducedMotion)`), the maths
+(`panelAnimationFrame`) and the state machine (`createPanelAnimator`: start / retarget from the CURRENT
+progress / stop / `tick(now)` -> frame or done). `window.ts` only owns the `setInterval`
+(`startPanelAnimation`) and applies the results. The panel keeps its full width and slides off to the left
+while the tab area's left edge interpolates (right edge fixed); the panel is `setVisible(false)` only when
+the collapse finishes (a frame's own `panelVisible`), and made visible at the start of an expand. The
+expanded and collapsed layouts are computed ONCE per animation (again only if the active tab's kind
+changes mid-flight), and each frame moves only the ACTIVE tab view (`TabManager.layoutActive`); one full
+`tabs.layout` (all views) plus one `pushState` run when the slide finishes. `applyLayout` applies the
+interpolated frame while the animator runs, so a mid-flight `pushState` never snaps it; a second toggle
+retargets from the current progress; a window `resize` finishes it at once. ONE clock for views and strip:
+on every frame main also sends the interpolated tab-area x over `tabbar:strip-left` and the renderer writes
+`--tab-strip-left` from it (there are no CSS transitions on the strip padding / margin); a `tabbar:state`
+push mid-slide carries the current interpolated `tabStripLeft`, the final value comes with the push at the
+end. Opt-outs: OS reduced motion (`systemPreferences.getAnimationSettings().prefersReducedMotion`) and env
+`PEN_DESKTOP_NO_ANIMATIONS=1` both give the instant jump AND turn off the tab strip motion: `tabbar:state`
+carries `motion: boolean` (the same decision) and `renderer.ts` skips its tab enter/exit/progress animations
+when it is false. e2e polls until bounds settle (and polls the panel's visibility together with the bounds:
+the last frames already round to the final x). Focus never goes to the hidden panel: `emptyView.ts` `resolveFocusTarget` sends it to the
 placeholder or the active tab, and collapsing while the panel has focus hands it over
 (`focusAfterCollapse`). IPC: `tabbar:toggle-panel` tabbar->main (sender-checked,
 `fromOurTabbar`), state back on `tabbar:state` as `panelCollapsed`; the menu action
@@ -146,6 +165,18 @@ monochrome `currentColor` (tab text color), no background square. The tab bar CS
 the tab bar draws no images. The agent's
 cursor arrow replaces the icon while the agent drives a browser tab. Compact paddings, no
 separators, the close "x" only on the active tab and on hover.
+Tab strip motion (`tabbar/renderer.ts`, `tabbar.css`): tabs are rendered keyed by id (elements are reused,
+never rebuilt per `tabbar:state`). `TabState.loading` (from the view's `did-start-loading`/`did-stop-loading`
+via `TabViewHandle.onLoadingChanged`, pushed on change only) drives `span.tab-progress`: a fake-progress fill
+behind the content, 0->80% over ~7s, then 100% in 180ms and a 220ms fade (Web Animations API). New tabs
+animate in; a closed tab becomes a `.tab-ghost` (NOT `.tab`, so e2e `.tab` counts ignore it; aria-hidden,
+inert) that collapses and is removed; ghost rules in `tabbar.css` use `:is(.tab, .tab-ghost)` so a closing
+tab keeps its look. The first render never animates. The hidden `about:blank` placeholder of browser tabs never
+shows the loading fill (`placeholderActive` is set BEFORE its `loadURL`, because `did-start-loading` fires
+inside it). The strip follows the panel slide through `tabbar:strip-left` (see "Sidebar toggle"). All tab motion is off when
+`tabbar:state` `motion` is false (env `PEN_DESKTOP_NO_ANIMATIONS=1` or OS reduced motion) or under
+`prefers-reduced-motion: reduce` in the tab bar page (the loading fill becomes a static full-width fill). The empty
+view's fade is CSS-only (`empty.css`, `prefers-reduced-motion`) and ignores the env opt-out. The agent cursor stays static.
 
 Screenshots: opt-in `npm run test:e2e:shots` (`e2e/bench-agent-layout-screens.spec.ts`, gated
 by `AGENT_SHOTS=1` so the default bench run skips it; needs a local frontend on :5194 and writes
@@ -276,6 +307,7 @@ CI of its own. `Close Window` is a local action like Passwords (no forwarded id)
 - `tabbar:state` main→tabbar (`TabsSnapshot`, now including `mcpStatus`), re-sent on tabbar `did-finish-load`
 - `tabbar:theme` main→tabbar (`light` | `dark`, active editor theme or system fallback)
 - `tabbar:tail` main→tabbar (`string | null`: the active browser page's background as `#rrggbb`/`rgb(r, g, b)`, sampled in main; null = blank/canvas tab, keep `--island-bg`)
+- `tabbar:strip-left` main→tabbar (`number`, px: the interpolated tab-area left edge, sent on every frame of the panel slide; the renderer writes `--tab-strip-left`; the final value also comes on `tabbar:state`)
 - `tabbar:new` / `tabbar:activate` / `tabbar:close` tabbar→main (sender-checked)
 - `panel:theme` agent panel preload→main (`light` | `dark`; accepted only from the panel's webContents and page) — the theme the panel paints, see "Theme and tint"
 - `tabbar:toggle-panel` tabbar→main (sender-checked) — the sidebar button: show/hide the agent panel (see "Sidebar toggle"); the new state returns as `panelCollapsed` on `tabbar:state`

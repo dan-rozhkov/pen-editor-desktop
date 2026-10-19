@@ -85,6 +85,8 @@ export interface TabViewHandle {
   // window.ts adapts into @sideform/browser-agent/controller's Electron-free
   // BrowserPageHandle for the BrowserController.
 
+  /** Page load started/stopped (webContents did-start-loading / did-stop-loading); wired for both kinds. */
+  onLoadingChanged?(cb: (loading: boolean) => void): void;
   /** Browser tabs only — wired by TabManager only for kind "browser". */
   onNavigationStateChanged(cb: (s: BrowserNavState) => void): void;
   getURL(): string;
@@ -297,6 +299,8 @@ export interface TabState {
   url?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
+  /** A page load is in progress (tab strip loading fill). Omitted when idle. */
+  loading?: boolean;
 }
 
 export interface TabsSnapshot {
@@ -345,6 +349,8 @@ export interface TabsSnapshot {
   tabStripLeft?: number;
   /** The agent panel is collapsed (sidebar toggle state). Filled in by window.ts. */
   panelCollapsed?: boolean;
+  /** Shell motion allowed (false: PEN_DESKTOP_NO_ANIMATIONS=1 or OS reduced motion). Filled in by window.ts. */
+  motion?: boolean;
 }
 
 interface TabEntry {
@@ -356,6 +362,7 @@ interface TabEntry {
   url?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
+  loading?: boolean;
   /** Isolated browser session this tab belongs to (browser tabs only); undefined = the shared browser. */
   session?: string;
 }
@@ -440,6 +447,13 @@ export class TabManager {
       canGoBack: kind === "browser" ? false : undefined,
       canGoForward: kind === "browser" ? false : undefined,
     };
+    view.onLoadingChanged?.((loading) => {
+      if ((entry.loading ?? false) === loading) return;
+      entry.loading = loading || undefined;
+      // did-start-loading fires synchronously inside loadURL below, before the entry is in
+      // `this.tabs`: record it, and let the push that adds the tab carry it.
+      if (this.tabs.includes(entry)) this.emit();
+    });
     if (kind === "editor") {
       view.onDocumentTitleChanged((title) => {
         entry.title = title;
@@ -729,13 +743,14 @@ export class TabManager {
     const active = this.tabs.find((t) => t.id === this.activeId);
     const activeWebContentsId = active?.view.getWebContentsId() ?? null;
     return {
-      tabs: this.tabs.map(({ id, title, kind, url, canGoBack, canGoForward }) => ({
+      tabs: this.tabs.map(({ id, title, kind, url, canGoBack, canGoForward, loading }) => ({
         id,
         title,
         kind,
         url,
         canGoBack,
         canGoForward,
+        loading,
       })),
       activeId: this.activeId,
       activeKind: active?.kind ?? null,
@@ -790,6 +805,17 @@ export class TabManager {
   layout(area: { x: number; y: number; width: number; height: number }): void {
     this.lastLayout = area;
     for (const tab of this.tabs) this.applyLayout(tab);
+  }
+
+  /**
+   * Like `layout`, but moves only the ACTIVE tab's view. Per-frame use (the panel slide): hidden
+   * tab views need no setBounds until the final full `layout`. `lastLayout` is updated, so a tab
+   * created or activated meanwhile is placed at the latest frame.
+   */
+  layoutActive(area: { x: number; y: number; width: number; height: number }): void {
+    this.lastLayout = area;
+    const active = this.tabs.find((t) => t.id === this.activeId);
+    if (active) this.applyLayout(active);
   }
 
   count(): number {

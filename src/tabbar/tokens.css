@@ -16,6 +16,8 @@
   --glass-tab-active: light-dark(rgba(0, 0, 0, 0.07), rgba(255, 255, 255, 0.1));
   --glass-tab-hover: light-dark(rgba(0, 0, 0, 0.04), rgba(255, 255, 255, 0.06));
   --glass-text: light-dark(rgba(0, 0, 0, 0.62), rgba(255, 255, 255, 0.62));
+  /* Page-loading fill inside the tab pill, over the pill's own background. */
+  --tab-progress: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.1));
   /* Brand pair is theme-independent; only the idle (background-tab) pair differs. */
   --agent-cursor: #0d99ff;
   --agent-cursor-rim: #ffffff;
