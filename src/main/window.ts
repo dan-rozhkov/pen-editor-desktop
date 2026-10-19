@@ -1041,7 +1041,8 @@ export function createMainWindow(
           pushTail();
         };
         wc.on("dom-ready", () => void sampleTail());
-        wc.on("did-navigate", () => void sampleTail());
+        // No sample on did-navigate: it fires with the still-empty new document, so the old colour stays until dom-ready.
+        wc.on("did-finish-load", () => void sampleTail());
         wc.on("did-navigate-in-page", () => void sampleTail());
         wc.once("destroyed", () => tailColors.delete(viewId));
       }
