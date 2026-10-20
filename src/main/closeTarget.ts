@@ -43,7 +43,6 @@ export const MENU_ACTION_SCOPE: Record<keyof MenuActions, "main" | "close" | "ap
   prevTab: "main",
   forwardToActiveTab: "main",
   useThisAppForMcp: "app",
-  setCursorMotion: "app",
   setCursorEnabled: "app",
   toggleAgentPanel: "main",
 };

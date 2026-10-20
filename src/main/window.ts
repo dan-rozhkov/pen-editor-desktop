@@ -1639,10 +1639,10 @@ export function createMainWindow(
     },
   });
   const browserTarget = makeBrowserTarget(undefined, session.fromPartition("persist:penbrowser"), fetchRouter);
-  // Agent cursor settings: the View menu's saved choice, with the env vars
-  // (PEN_DESKTOP_BROWSER_CURSOR / _CURSOR_MOTION) winning when set. The
-  // controller reads both through getters on every move, so a menu change
-  // applies with no restart.
+  // Agent cursor on/off: the View menu's saved choice, with the env var
+  // PEN_DESKTOP_BROWSER_CURSOR winning when set. The controller reads the
+  // getter once per command, so a menu change applies from the next command
+  // with no restart.
   const cursorSettingsPath = path.join(app.getPath("userData"), CURSOR_SETTINGS_FILE);
   let cursorSettings = readCursorSettings(cursorSettingsPath);
   const effectiveCursor = () => resolveCursorSettings(process.env, cursorSettings);
@@ -1655,7 +1655,6 @@ export function createMainWindow(
   const makeController = (target: BrowserTarget) =>
     new BrowserController(target, {
       cursor: () => effectiveCursor().enabled,
-      cursorMotion: () => effectiveCursor().motion,
     });
   const browserController = makeController(browserTarget);
 
@@ -2370,7 +2369,6 @@ export function createMainWindow(
             },
             useThisAppForMcp: () => void mcpService.forcePublish(),
             toggleAgentPanel: () => setPanelCollapsed(!panelCollapsed),
-            setCursorMotion: (motion) => updateCursorSettings({ motion }),
             setCursorEnabled: (enabled) => {
               updateCursorSettings({ enabled });
               // Unticked: hide the overlay on the current page right away

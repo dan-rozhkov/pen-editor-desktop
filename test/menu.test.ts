@@ -20,7 +20,6 @@ describe("buildMenuTemplate", () => {
       prevTab: vi.fn(),
       forwardToActiveTab: vi.fn(),
       useThisAppForMcp: vi.fn(),
-      setCursorMotion: vi.fn(),
       setCursorEnabled: vi.fn(),
       toggleAgentPanel: vi.fn(),
     };
@@ -133,52 +132,34 @@ describe("buildMenuTemplate", () => {
     }
   });
 
-  describe("View > Agent Cursor Motion", () => {
-    const state = { motion: "magnetic" as const, enabled: true, motionLocked: false, enabledLocked: false };
-    const submenu = (cursor = state) => {
+  describe("View > Show Agent Cursor", () => {
+    const state = { enabled: true, enabledLocked: false };
+    const cursorItem = (cursor = state) => {
       const view = buildMenuTemplate(actions, { isMac: true }, "off", cursor).find((m) => m.label === "View")!;
-      const sub = (view.submenu as MenuItemConstructorOptions[]).find((i) => i.label === "Agent Cursor Motion");
-      if (!sub) throw new Error("Agent Cursor Motion submenu missing");
-      return sub.submenu as MenuItemConstructorOptions[];
+      const found = (view.submenu as MenuItemConstructorOptions[]).find((i) => i.label === "Show Agent Cursor");
+      if (!found) throw new Error("Show Agent Cursor item missing");
+      return found;
     };
 
-    it("lists five radio styles, a separator and a Show Agent Cursor checkbox", () => {
-      const items = submenu();
-      expect(items.map((i) => i.label ?? i.type)).toEqual([
-        "Signature Arc",
-        "Spring Settle",
-        "Magnetic",
-        "Comet Swoop",
-        "Classic",
-        "separator",
-        "Show Agent Cursor",
-      ]);
-      expect(items.slice(0, 5).every((i) => i.type === "radio")).toBe(true);
-      expect(items[6].type).toBe("checkbox");
+    it("is a checkbox directly in the View menu; the motion submenu is gone", () => {
+      expect(cursorItem().type).toBe("checkbox");
+      const view = buildMenuTemplate(actions, { isMac: true }).find((m) => m.label === "View")!;
+      expect((view.submenu as MenuItemConstructorOptions[]).some((i) => i.label === "Agent Cursor Motion")).toBe(false);
     });
 
-    it("checks only the current style and the current enabled flag", () => {
-      const items = submenu();
-      expect(items.slice(0, 5).map((i) => i.checked)).toEqual([false, false, true, false, false]);
-      expect(items[6].checked).toBe(true);
-      expect(submenu({ ...state, enabled: false })[6].checked).toBe(false);
+    it("reflects the current enabled flag", () => {
+      expect(cursorItem().checked).toBe(true);
+      expect(cursorItem({ ...state, enabled: false }).checked).toBe(false);
     });
 
-    it("clicking forwards the style / the new checkbox state", () => {
-      const items = submenu();
-      (items[1].click as () => void)();
-      expect(actions.setCursorMotion).toHaveBeenCalledWith("spring_settle");
-      (items[6].click as (i: { checked: boolean }) => void)({ checked: false });
+    it("clicking forwards the new checkbox state", () => {
+      (cursorItem().click as (i: { checked: boolean }) => void)({ checked: false });
       expect(actions.setCursorEnabled).toHaveBeenCalledWith(false);
     });
 
-    it("disables the matching items when an env var locks the value", () => {
-      const locked = submenu({ ...state, motionLocked: true });
-      expect(locked.slice(0, 5).every((i) => i.enabled === false)).toBe(true);
-      expect(locked[6].enabled).toBe(true);
-      const off = submenu({ ...state, enabledLocked: true });
-      expect(off[6].enabled).toBe(false);
-      expect(off.slice(0, 5).every((i) => i.enabled === true)).toBe(true);
+    it("is disabled when an env var locks the value", () => {
+      expect(cursorItem({ ...state, enabledLocked: true }).enabled).toBe(false);
+      expect(cursorItem().enabled).toBe(true);
     });
   });
 
@@ -256,7 +237,7 @@ describe("buildNewTabMenuTemplate", () => {
 describe("View > Agent Panel", () => {
   const actions = {
     newTab: vi.fn(), newBrowserTab: vi.fn(), newDocTab: vi.fn(), openPasswords: vi.fn(), closeTab: vi.fn(), closeWindow: vi.fn(), nextTab: vi.fn(), prevTab: vi.fn(),
-    forwardToActiveTab: vi.fn(), useThisAppForMcp: vi.fn(), setCursorMotion: vi.fn(), setCursorEnabled: vi.fn(), toggleAgentPanel: vi.fn(),
+    forwardToActiveTab: vi.fn(), useThisAppForMcp: vi.fn(), setCursorEnabled: vi.fn(), toggleAgentPanel: vi.fn(),
   } as MenuActions;
   it("View menu has a Show/Hide Agent Panel item (Cmd/Ctrl+Alt+B) only with the agent layout", () => {
     const labels = (opts: Parameters<typeof buildMenuTemplate>[1]) => {

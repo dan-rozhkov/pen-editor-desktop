@@ -1,36 +1,28 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import {
-  DEFAULT_CURSOR_MOTION,
-  isCursorMotionStyle,
-  isEnvValueSet,
-  resolveBrowserCursorEnabled,
-  resolveBrowserCursorMotion,
-  type CursorMotionStyle,
-} from "./config";
+import { isEnvValueSet, resolveBrowserCursorEnabled } from "./config";
 
-/** The user's saved agent-cursor choices (menu: View > Agent Cursor Motion).
+/** The user's saved agent-cursor choices (menu: View > Show Agent Cursor).
  * Env vars override these (see window.ts). Pure file helpers: the caller
  * passes the path, so tests can use a temp dir. */
 export interface CursorSettings {
-  motion: CursorMotionStyle;
   enabled: boolean;
 }
 
 export const CURSOR_SETTINGS_FILE = "cursor-settings.json";
 
 export function defaultCursorSettings(): CursorSettings {
-  return { motion: DEFAULT_CURSOR_MOTION, enabled: true };
+  return { enabled: true };
 }
 
-/** Missing/corrupt file → defaults; each invalid field falls back alone. */
+/** Missing/corrupt file → defaults; an invalid field falls back alone. Unknown
+ * fields (e.g. the removed `motion`) are ignored. */
 export function readCursorSettings(filePath: string): CursorSettings {
   const settings = defaultCursorSettings();
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
     if (typeof parsed === "object" && parsed !== null) {
       const rec = parsed as Record<string, unknown>;
-      if (isCursorMotionStyle(rec.motion)) settings.motion = rec.motion;
       if (typeof rec.enabled === "boolean") settings.enabled = rec.enabled;
     }
   } catch {
@@ -53,20 +45,14 @@ export function writeCursorSettings(filePath: string, settings: CursorSettings):
 export interface EffectiveCursorSettings extends CursorSettings {
   /** An env var decides `enabled`: the menu's checkbox renders disabled. */
   enabledLocked: boolean;
-  /** An env var decides `motion`: the menu's radio items render disabled. */
-  motionLocked: boolean;
 }
 
 /** Precedence: a (non-empty) env var wins and locks its menu items; empty or
- * whitespace-only counts as unset; an invalid env motion is ignored (the
- * saved choice applies, unlocked). Otherwise the saved settings apply. */
+ * whitespace-only counts as unset; otherwise the saved settings apply. */
 export function resolveCursorSettings(env: NodeJS.ProcessEnv, saved: CursorSettings): EffectiveCursorSettings {
   const enabledLocked = isEnvValueSet(env.PEN_DESKTOP_BROWSER_CURSOR);
-  const envMotion = resolveBrowserCursorMotion(env);
   return {
     enabled: enabledLocked ? resolveBrowserCursorEnabled(env) : saved.enabled,
-    motion: envMotion ?? saved.motion,
     enabledLocked,
-    motionLocked: envMotion !== undefined,
   };
 }
