@@ -148,9 +148,11 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-// Desktop apps the agent launched must not outlive us. Synchronous SIGKILL and profile
-// removal, no preventDefault and no delay: an async close would be cut off when the
-// process exits (and close() unhooks the launcher's own exit handler first).
+// Desktop apps the agent launched must not outlive us. Synchronous and non-blocking, no
+// preventDefault and no delay (an async close would be cut off when the process exits):
+// temp-profile apps are SIGKILLed and their profile removed; the user's own apps (restarted
+// with their profile) get a detached helper that quits them and opens them again; nothing
+// of the user's is killed.
 app.on("before-quit", () => {
   appRegistry.killAllSync();
 });

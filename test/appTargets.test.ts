@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   APP_CONFIRM_BUTTONS,
+  APP_RESTART_BUTTONS,
+  USER_PROFILE_NOTE,
+  appRestartDetail,
+  appRestartMessage,
+  errAppDidNotQuit,
   ERR_APP_BAD_ROOT,
   ERR_APP_BUSY,
   ERR_APP_DENIED,
@@ -22,6 +27,16 @@ import {
   bundleOf,
   createAppConfirm,
   createAppRegistry,
+  filterUserPids,
+  intersectWorkspacePids,
+  parseWorkspacePids,
+  workspacePidsArgs,
+  WORKSPACE_PIDS_JXA,
+  ERR_APP_PROFILE_BUSY,
+  killHandleSync,
+  QUIT_REOPEN_SCRIPT,
+  ranAtRelease,
+  quitReopenShellArgs,
   ownedBySender,
   ownedBySession,
   planAppCommand,
@@ -141,6 +156,23 @@ describe("createAppConfirm", () => {
     expect(await c.confirm("w", { name: "Other", realPath: "/Applications/Other.app" }, 1)).toBe(false);
     expect(await c.confirm("w", app, 2)).toBe(false); // another sender asks again
     expect(showMessageBox).toHaveBeenCalledTimes(3);
+  });
+  it("restart confirm: own text and buttons, deny by default, ignores and never adds to the remembered answer", async () => {
+    const showMessageBox = vi.fn(async (_w: unknown, _o: unknown) => ({ response: 0 }));
+    const c = createAppConfirm({ showMessageBox });
+    expect(await c.confirm("w", app, 1)).toBe(true); // Allow once: nothing remembered
+    expect(await c.confirmRestart("w", app)).toBe(true);
+    const opts = showMessageBox.mock.calls[1][1] as { message: string; detail: string; buttons: string[]; defaultId: number; cancelId: number };
+    expect(opts.message).toBe(appRestartMessage("Orca"));
+    expect(opts.detail).toBe(appRestartDetail("/Applications/Orca.app"));
+    expect(opts.buttons).toEqual([...APP_RESTART_BUTTONS]);
+    expect(opts.defaultId).toBe(1);
+    expect(opts.cancelId).toBe(1);
+    await c.confirm("w", app, 1);
+    expect(showMessageBox).toHaveBeenCalledTimes(3); // restart did not remember
+    const remembering = createAppConfirm({ showMessageBox: vi.fn(async () => ({ response: 1 })) });
+    await remembering.confirm("w", app, 1);
+    expect(await remembering.confirmRestart("w", app)).toBe(false); // remembered allow does not skip it
   });
   it("deny is not remembered", async () => {
     const { c, showMessageBox } = make(2, 0);
@@ -310,7 +342,7 @@ describe("createAppRegistry", () => {
 });
 
 describe("createAppRegistry: races and quit", () => {
-  const make = (extra: { killSync?: (h: Fake) => void; isAlive?: (h: Fake) => boolean } = {}) => {
+  const make = (extra: { killSync?: (h: Fake) => void; isAlive?: (h: Fake) => boolean; reopenDetached?: (p: string) => void } = {}) => {
     const made: Fake[] = [];
     const reg = createAppRegistry<Fake>({ launch: async () => { const h = fakeHandle(); made.push(h); return h; }, ...extra });
     return { reg, made };
@@ -375,6 +407,31 @@ describe("createAppRegistry: races and quit", () => {
     reg.killAllSync();
     expect(killSync).toHaveBeenCalledTimes(2);
     expect(reg.state("2:")).toBe("none");
+  });
+  it("killAllSync reopens a flight marked user-app-quit that is not live, once", () => {
+    const reopenDetached = vi.fn();
+    const { reg } = make({ reopenDetached });
+    const b = reg.begin("1:");
+    const plain = reg.begin("2:");
+    if (b.ok) b.ticket.markUserAppQuit("/Applications/O.app");
+    reg.killAllSync();
+    reg.killAllSync();
+    expect(reopenDetached).toHaveBeenCalledTimes(1);
+    expect(reopenDetached).toHaveBeenCalledWith("/Applications/O.app");
+    expect(plain.ok && plain.ticket.cancelled).toBe(true);
+  });
+  it("killAllSync does not reopen a marked flight whose handle is live (killSync owns it)", async () => {
+    const reopenDetached = vi.fn();
+    const killSync = vi.fn();
+    const { reg } = make({ reopenDetached, killSync });
+    const b = reg.begin("1:");
+    if (b.ok) {
+      b.ticket.markUserAppQuit("/A");
+      await b.ticket.launch("/A");
+    }
+    reg.killAllSync();
+    expect(reopenDetached).not.toHaveBeenCalled();
+    expect(killSync).toHaveBeenCalledTimes(1);
   });
   it("killAllSync cancels pending flights", async () => {
     const { reg } = make();
@@ -481,12 +538,33 @@ describe("routing table and launch result", () => {
 
 describe("openApp", () => {
   const valid = { ok: true as const, realPath: "/Applications/Orca.app", name: "Orca" };
-  const setup = (over: { validate?: () => Promise<never | typeof valid | { ok: false; error: string }>; confirm?: () => Promise<boolean> } = {}) => {
+  const setup = (over: {
+    validate?: () => Promise<never | typeof valid | { ok: false; error: string }>;
+    confirm?: () => Promise<boolean>;
+    running?: number[];
+    confirmRestart?: () => Promise<boolean>;
+    quit?: (pid: number) => Promise<boolean>;
+    launch?: () => Promise<Fake>;
+  } = {}) => {
     const handles: Fake[] = [];
-    const reg = createAppRegistry<Fake>({ launch: async () => { const h = fakeHandle(); handles.push(h); return h; } });
+    const launch = vi.fn(async (p: string, o?: { userProfile?: boolean }) => {
+      const h = Object.assign(over.launch ? await over.launch() : fakeHandle(), { appPath: p, userProfile: o?.userProfile === true });
+      handles.push(h);
+      return h;
+    });
+    const reg = createAppRegistry<Fake>({ launch });
     const confirm = vi.fn(over.confirm ?? (async () => true));
+    const confirmRestart = vi.fn(over.confirmRestart ?? (async () => true));
     const validate = vi.fn(over.validate ?? (async () => valid));
-    return { reg, handles, confirm, validate, run: (key = "1:") => openApp(key, "/Applications/Orca.app", { registry: reg, validate, confirm }) };
+    const findRunning = vi.fn(async (_p: string) => over.running ?? []);
+    const quit = vi.fn(over.quit ?? (async () => true));
+    const reopen = vi.fn(async (_p: string) => {});
+    const cancelWaiters = vi.fn((_p: string) => {});
+    return {
+      reg, handles, confirm, confirmRestart, validate, findRunning, quit, reopen, launch,
+      cancelWaiters,
+      run: (key = "1:") => openApp(key, "/Applications/Orca.app", { registry: reg, validate, confirm, findRunning, confirmRestart, quit, reopen, cancelWaiters }),
+    };
   };
 
   it("validates, confirms, launches and shapes the result", async () => {
@@ -548,5 +626,412 @@ describe("openApp", () => {
     const { run, reg } = setup({ validate: async () => { throw new Error("boom"); } });
     expect(await run()).toEqual({ error: "boom" });
     expect(reg.state("1:")).toBe("none");
+  });
+
+  describe("the app is already open", () => {
+    it("not running: the normal path, temp profile, no restart confirm", async () => {
+      const t = setup();
+      const res = await t.run();
+      expect(res).not.toHaveProperty("profile");
+      expect(t.confirm).toHaveBeenCalledTimes(1);
+      expect(t.confirmRestart).not.toHaveBeenCalled();
+      expect(t.quit).not.toHaveBeenCalled();
+      expect(t.launch.mock.calls[0][1]).toBeUndefined();
+    });
+    it("running: asks the restart confirm (not the normal one), quits every pid, launches with the user profile", async () => {
+      const t = setup({ running: [11, 12] });
+      const res = await t.run();
+      expect(t.confirmRestart).toHaveBeenCalledTimes(1);
+      expect(t.confirm).not.toHaveBeenCalled();
+      expect(t.quit.mock.calls.map((c) => c[0])).toEqual([11, 12]);
+      expect(t.launch.mock.calls[0][1]).toEqual({ userProfile: true });
+      expect(res).toMatchObject({ app: "Orca", profile: "user", note: USER_PROFILE_NOTE });
+      expect(t.reopen).not.toHaveBeenCalled();
+    });
+    it("shows the restart confirm even when the normal one was remembered", async () => {
+      const showMessageBox = vi.fn(async (_w: unknown, _o: unknown) => ({ response: 1 }));
+      const c = createAppConfirm({ showMessageBox });
+      const app = { name: "Orca", realPath: "/Applications/Orca.app" };
+      await c.confirm("w", app, 1); // remembered
+      const t = setup({ running: [11] });
+      const res = await openApp("1:", "x", {
+        registry: t.reg, validate: t.validate, findRunning: t.findRunning, quit: t.quit, reopen: t.reopen,
+        confirm: () => c.confirm("w", app, 1),
+        confirmRestart: () => c.confirmRestart("w", app),
+      });
+      expect(showMessageBox).toHaveBeenCalledTimes(2);
+      expect(res).toEqual({ error: ERR_APP_DENIED });
+      expect(t.quit).not.toHaveBeenCalled();
+    });
+    it("denied: nothing is quit or launched", async () => {
+      const t = setup({ running: [11], confirmRestart: async () => false });
+      expect(await t.run()).toEqual({ error: ERR_APP_DENIED });
+      expect(t.quit).not.toHaveBeenCalled();
+      expect(t.launch).not.toHaveBeenCalled();
+      expect(t.reopen).not.toHaveBeenCalled();
+      expect(t.reg.state("1:")).toBe("none");
+    });
+    it("a pid that does not quit: error, no launch, nothing to reopen", async () => {
+      const t = setup({ running: [11], quit: async () => false });
+      expect(await t.run()).toEqual({ error: errAppDidNotQuit("Orca") });
+      expect(t.launch).not.toHaveBeenCalled();
+      expect(t.reopen).not.toHaveBeenCalled();
+      expect(t.reg.state("1:")).toBe("none");
+    });
+    it("a release during the quit: reopens the app and answers released", async () => {
+      let quitDone: (v: boolean) => void = () => {};
+      const t = setup({ running: [11], quit: () => new Promise<boolean>((r) => (quitDone = r)) });
+      const first = t.run();
+      await new Promise((r) => setTimeout(r, 0));
+      await t.reg.release("1:");
+      quitDone(true);
+      expect(await first).toEqual({ error: ERR_APP_RELEASED });
+      expect(t.reopen).toHaveBeenCalledWith("/Applications/Orca.app");
+      expect(t.launch).not.toHaveBeenCalled();
+    });
+    it("the first successful quit marks the flight, so a Sideform quit in the gap reopens the app", async () => {
+      const reopenDetached = vi.fn();
+      let release!: (h: Fake) => void;
+      const reg = createAppRegistry<Fake>({ launch: () => new Promise<Fake>((r) => { release = r; }), reopenDetached });
+      const t = setup({ running: [11] });
+      const p = openApp("1:", "/Applications/Orca.app", {
+        registry: reg, validate: t.validate, confirm: t.confirm, confirmRestart: t.confirmRestart,
+        findRunning: t.findRunning, quit: t.quit, reopen: t.reopen,
+      });
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      reg.killAllSync();
+      expect(reopenDetached).toHaveBeenCalledWith("/Applications/Orca.app");
+      release(fakeHandle());
+      await p;
+    });
+    it("a launch failure after the quit reopens the app and returns the error", async () => {
+      const t = setup({ running: [11], launch: async () => { throw new Error("no start"); } });
+      expect(await t.run()).toEqual({ error: "no start" });
+      expect(t.reopen).toHaveBeenCalledWith("/Applications/Orca.app");
+    });
+    it("marks the flight BEFORE the quit: a Sideform quit during a pending quit spawns the helper with that pid", async () => {
+      const quitReopenDetached = vi.fn();
+      const reopenDetached = vi.fn();
+      const reg = createAppRegistry<Fake>({ launch: async () => fakeHandle(), quitReopenDetached, reopenDetached });
+      let quitDone: (v: boolean) => void = () => {};
+      const t = setup({ running: [11], quit: () => new Promise<boolean>((r) => (quitDone = r)) });
+      const p = openApp("1:", "/Applications/Orca.app", {
+        registry: reg, validate: t.validate, confirm: t.confirm, confirmRestart: t.confirmRestart,
+        findRunning: t.findRunning, quit: t.quit, reopen: t.reopen,
+      });
+      await vi.waitFor(() => expect(t.quit).toHaveBeenCalledWith(11));
+      reg.killAllSync(); // the terminate may be in flight: the quit has NOT returned
+      expect(quitReopenDetached).toHaveBeenCalledTimes(1);
+      expect(quitReopenDetached).toHaveBeenCalledWith("/Applications/Orca.app", 11);
+      expect(reopenDetached).not.toHaveBeenCalled();
+      quitDone(true);
+      await p;
+    });
+    it("a quit that times out spawns reopenWhenGone(realPath, pid) and errors", async () => {
+      const t = setup({ running: [11], quit: async () => false });
+      const reopenWhenGone = vi.fn();
+      const res = await openApp("1:", "x", {
+        registry: t.reg, validate: t.validate, confirm: t.confirm, confirmRestart: t.confirmRestart,
+        findRunning: t.findRunning, quit: t.quit, reopen: t.reopen, reopenWhenGone,
+      });
+      expect(res).toEqual({ error: errAppDidNotQuit("Orca") });
+      expect(reopenWhenGone).toHaveBeenCalledWith("/Applications/Orca.app", 11);
+      expect(t.launch).not.toHaveBeenCalled();
+    });
+    it("re-reads the running pids after the restart confirm and quits the fresh ones", async () => {
+      const t = setup({ running: [11] });
+      t.findRunning.mockResolvedValueOnce([11]).mockResolvedValueOnce([22, 23]);
+      const res = await t.run();
+      expect(t.findRunning).toHaveBeenCalledTimes(2);
+      expect(t.quit.mock.calls.map((c) => c[0])).toEqual([22, 23]);
+      expect(res).toMatchObject({ profile: "user" });
+    });
+    it("the app closed during the restart dialog: still launches with the user profile", async () => {
+      const t = setup({ running: [11] });
+      t.findRunning.mockResolvedValueOnce([11]).mockResolvedValueOnce([]);
+      const res = await t.run();
+      expect(t.quit).not.toHaveBeenCalled();
+      expect(t.launch.mock.calls[0][1]).toEqual({ userProfile: true });
+      expect(res).toMatchObject({ profile: "user" });
+    });
+    it("user-profile lock: a second key does not treat the running user-profile app as the user's (temp-profile path)", async () => {
+      const t = setup({ running: [11] });
+      const first = await t.run("1:");
+      expect(first).toMatchObject({ profile: "user" });
+      t.findRunning.mockClear();
+      t.quit.mockClear();
+      t.confirmRestart.mockClear();
+      const second = await t.run("2:");
+      expect(t.findRunning).not.toHaveBeenCalled();
+      expect(t.confirmRestart).not.toHaveBeenCalled();
+      expect(t.quit).not.toHaveBeenCalled();
+      expect(t.confirm).toHaveBeenCalledTimes(1); // the normal confirm
+      expect(t.launch.mock.calls[1][1]).toBeUndefined();
+      expect(second).not.toHaveProperty("profile");
+    });
+    it("the lock is taken BEFORE the restart confirm: a second key during the first key's confirm takes the temp path and never quits", async () => {
+      let answer: (v: boolean) => void = () => {};
+      const t = setup({ running: [11], confirmRestart: () => new Promise<boolean>((r) => (answer = r)) });
+      const first = t.run("1:");
+      await vi.waitFor(() => expect(t.confirmRestart).toHaveBeenCalledTimes(1));
+      const second = await t.run("2:"); // while key 1's restart dialog is open
+      expect(second).not.toHaveProperty("profile");
+      expect(t.confirmRestart).toHaveBeenCalledTimes(1);
+      expect(t.quit).not.toHaveBeenCalled();
+      expect(t.launch.mock.calls.map((c) => c[1])).toEqual([undefined]);
+      answer(true);
+      expect(await first).toMatchObject({ profile: "user" });
+      expect(t.quit.mock.calls.map((c) => c[0])).toEqual([11]);
+    });
+    it("the lock is released when the restart confirm is denied", async () => {
+      const t = setup({ running: [11], confirmRestart: async () => false });
+      expect(await t.run("1:")).toEqual({ error: ERR_APP_DENIED });
+      const b = t.reg.begin("2:");
+      if (!b.ok) throw new Error("begin");
+      expect(b.ticket.userProfileHeldElsewhere("/Applications/Orca.app")).toBe(false);
+      expect(b.ticket.lockUserProfile("/Applications/Orca.app")).toBe(true);
+      b.ticket.abort();
+    });
+    it("the lock is released when the launch fails (after the app was put back)", async () => {
+      const t = setup({ running: [11], launch: async () => { throw new Error("no start"); } });
+      expect(await t.run("1:")).toEqual({ error: "no start" });
+      expect(t.reopen).toHaveBeenCalledWith("/Applications/Orca.app");
+      const b = t.reg.begin("2:");
+      if (!b.ok) throw new Error("begin");
+      expect(b.ticket.lockUserProfile("/Applications/Orca.app")).toBe(true);
+      b.ticket.abort();
+    });
+    it("the lock is released when the open is cancelled", async () => {
+      let quitDone: (v: boolean) => void = () => {};
+      const t = setup({ running: [11], quit: () => new Promise<boolean>((r) => (quitDone = r)) });
+      const first = t.run("1:");
+      await vi.waitFor(() => expect(t.quit).toHaveBeenCalled());
+      await t.reg.release("1:");
+      quitDone(true);
+      expect(await first).toEqual({ error: ERR_APP_RELEASED });
+      const b = t.reg.begin("2:");
+      if (!b.ok) throw new Error("begin");
+      expect(b.ticket.lockUserProfile("/Applications/Orca.app")).toBe(true);
+      b.ticket.abort();
+    });
+    it("on success the lock lives until the user-profile handle's close has fully finished", async () => {
+      let finishClose: () => void = () => {};
+      const t = setup({ running: [11] });
+      t.launch.mockImplementationOnce(async (p: string, o?: { userProfile?: boolean }) => {
+        const h = Object.assign(fakeHandle(), { appPath: p, userProfile: o?.userProfile === true });
+        h.close.mockImplementation(() => new Promise<void>((r) => (finishClose = r)));
+        return h;
+      });
+      await t.run("1:");
+      const probe = () => {
+        const b = t.reg.begin("2:");
+        if (!b.ok) throw new Error("begin");
+        const held = b.ticket.userProfileHeldElsewhere("/Applications/Orca.app");
+        b.ticket.abort();
+        return held;
+      };
+      expect(probe()).toBe(true);
+      const closing = t.reg.release("1:");
+      await new Promise((r) => setTimeout(r, 0));
+      expect(probe()).toBe(true); // close still running (e.g. the reopen)
+      finishClose();
+      await closing;
+      expect(probe()).toBe(false);
+    });
+    it("cancelWaiters(realPath) runs before the first quit", async () => {
+      const order: string[] = [];
+      const t = setup({ running: [11, 12], quit: async (pid) => { order.push(`quit${pid}`); return true; } });
+      t.cancelWaiters.mockImplementation((p: string) => void order.push(`cancel:${p}`));
+      await t.run();
+      expect(order).toEqual(["cancel:/Applications/Orca.app", "quit11", "quit12"]);
+    });
+    it("a quit that times out clears the flight's mark: killAllSync spawns nothing for it", async () => {
+      const quitReopenDetached = vi.fn();
+      const reopenDetached = vi.fn();
+      const reg = createAppRegistry<Fake>({ launch: async () => fakeHandle(), quitReopenDetached, reopenDetached });
+      const t = setup({ running: [11], quit: async () => false });
+      let onTimeout: () => void = () => {};
+      const reopenWhenGone = vi.fn();
+      const hold = new Promise<void>((r) => (onTimeout = r));
+      reopenWhenGone.mockImplementation(() => onTimeout());
+      const p = openApp("1:", "x", {
+        registry: reg, validate: t.validate, confirm: t.confirm, confirmRestart: t.confirmRestart,
+        findRunning: t.findRunning, quit: t.quit, reopen: t.reopen, reopenWhenGone,
+      });
+      await hold;
+      expect(await p).toEqual({ error: errAppDidNotQuit("Orca") });
+      reg.killAllSync();
+      expect(reopenWhenGone).toHaveBeenCalledTimes(1);
+      expect(quitReopenDetached).not.toHaveBeenCalled();
+      expect(reopenDetached).not.toHaveBeenCalled();
+    });
+    it("a denied or failed normal open never reopens", async () => {
+      const t = setup({ confirm: async () => false });
+      await t.run();
+      expect(t.reopen).not.toHaveBeenCalled();
+    });
+  });
+  it("registry livePids lists the pids of spawned apps (the service excludes them from the user's)", async () => {
+    let n = 100;
+    const reg = createAppRegistry<Fake & { pid: number }>({ launch: async () => ({ ...fakeHandle(), pid: n++ }) });
+    const b1 = reg.begin("1:");
+    const b2 = reg.begin("2:");
+    if (!b1.ok || !b2.ok) throw new Error("begin");
+    await b1.ticket.launch("/A");
+    await b2.ticket.launch("/B");
+    expect(reg.livePids().sort()).toEqual([100, 101]);
+    await reg.release("1:");
+    expect(reg.livePids()).toEqual([101]);
+  });
+  it("shapeLaunchResult leaves the temp-profile result unchanged", () => {
+    expect(shapeLaunchResult(undefined, "Orca", {})).toEqual({ url: "", title: "", app: "Orca" });
+    expect(shapeLaunchResult(undefined, "Orca", { userProfile: true })).toMatchObject({ profile: "user" });
+  });
+});
+
+describe("user-app helpers", () => {
+  it("filterUserPids keeps only default-profile instances that are not ours", () => {
+    const res = [
+      { pid: 1, userDataDir: null },
+      { pid: 2, userDataDir: "/tmp/sideform-app-x" },
+      { pid: 3, userDataDir: "/Users/u/other-profile" },
+      { pid: 4, userDataDir: null },
+    ];
+    expect(filterUserPids(res, [4])).toEqual([1]);
+    expect(filterUserPids(res, [])).toEqual([1, 4]);
+  });
+  it("shell helper args keep the path and the pid out of the script text", () => {
+    const path = "/Applications/Evil $(rm -rf ~) 'x'.app";
+    const args = quitReopenShellArgs(path, 4242);
+    expect(args).toEqual(["-c", QUIT_REOPEN_SCRIPT, "sh", path, "4242"]);
+    expect(args[1]).not.toContain("Evil");
+    expect(args[1]).not.toContain("4242");
+    expect(args[1]).toContain('"$SIDEFORM_QUIT_JXA"');
+    expect(args[1]).toContain('kill -0 "$2"');
+    expect(args[1]).toContain('open -g "$1"');
+  });
+  it("killHandleSync: temp-profile apps are killed and cleaned; user-profile apps go to the helper only", () => {
+    const deps = { kill: vi.fn(), rmProfile: vi.fn(), spawnQuitReopen: vi.fn() };
+    killHandleSync({ pid: 5, profileDir: "/tmp/p", appPath: "/A.app", userProfile: false }, deps);
+    expect(deps.kill).toHaveBeenCalledWith(5);
+    expect(deps.rmProfile).toHaveBeenCalledWith("/tmp/p");
+    expect(deps.spawnQuitReopen).not.toHaveBeenCalled();
+    const d2 = { kill: vi.fn(), rmProfile: vi.fn(), spawnQuitReopen: vi.fn() };
+    killHandleSync({ pid: 6, profileDir: null, appPath: "/B.app", userProfile: true }, d2);
+    expect(d2.spawnQuitReopen).toHaveBeenCalledWith("/B.app", 6);
+    expect(d2.kill).not.toHaveBeenCalled();
+    expect(d2.rmProfile).not.toHaveBeenCalled();
+  });
+  it("killHandleSync: a user-profile app whose link already dropped (the user quit it) gets no helper", () => {
+    const d = { kill: vi.fn(), rmProfile: vi.fn(), spawnQuitReopen: vi.fn() };
+    killHandleSync({ pid: 6, profileDir: null, appPath: "/B.app", userProfile: true, disconnected: true }, d);
+    expect(d.spawnQuitReopen).not.toHaveBeenCalled();
+    expect(d.kill).not.toHaveBeenCalled();
+    // a temp-profile app is still killed and cleaned even when disconnected
+    killHandleSync({ pid: 7, profileDir: "/tmp/q", appPath: "/C.app", userProfile: false, disconnected: true }, d);
+    expect(d.kill).toHaveBeenCalledWith(7);
+    expect(d.rmProfile).toHaveBeenCalledWith("/tmp/q");
+  });
+  it("registry killAllSync: a disconnected live user-profile handle spawns no helper, a connected one does", async () => {
+    for (const [disconnected, expected] of [[false, [["/B.app", 1]]], [true, []]] as const) {
+      const spawned: [string, number][] = [];
+      const mk = () => Object.assign(fakeHandle(), { pid: 1, appPath: "/B.app", userProfile: true, profileDir: null, disconnected });
+      const reg = createAppRegistry<ReturnType<typeof mk>>({
+        launch: async () => mk(),
+        isAlive: () => true,
+        killSync: (h) => killHandleSync(h, { kill: vi.fn(), rmProfile: vi.fn(), spawnQuitReopen: (p, pid) => void spawned.push([p, pid]) }),
+      });
+      const b = reg.begin("1:");
+      if (!b.ok) throw new Error("begin");
+      // `disconnected` is a plain field here: the registry's own onDisconnected is not fired
+      const r = await b.ticket.launch("/B.app", { userProfile: true });
+      if (!r.ok) throw new Error("launch");
+      reg.killAllSync();
+      expect(spawned).toEqual(expected);
+    }
+  });
+  describe("NSWorkspace intersect", () => {
+    it("parses the script output", () => {
+      expect(parseWorkspacePids("92421")).toEqual([92421]);
+      expect(parseWorkspacePids("1, 22,x,-3,0,")).toEqual([1, 22]);
+      expect(parseWorkspacePids("")).toEqual([]);
+      expect(parseWorkspacePids("\n")).toEqual([]);
+    });
+    it("keeps only ps pids that are also GUI apps of the bundle", () => {
+      expect(intersectWorkspacePids([593, 92421, 92458], "92421\n")).toEqual([92421]);
+      expect(intersectWorkspacePids([593, 92458], "92421")).toEqual([]);
+      expect(intersectWorkspacePids([593], "")).toEqual([]);
+      expect(intersectWorkspacePids([5, 6], "6,5")).toEqual([5, 6]);
+    });
+    it("passes the path as an argv entry, never inside the script", () => {
+      const evil = "/Applications/Evil'\");$(x).app";
+      const args = workspacePidsArgs(evil);
+      expect(args).toEqual(["-l", "JavaScript", "-e", WORKSPACE_PIDS_JXA, evil]);
+      expect(WORKSPACE_PIDS_JXA).not.toContain("Evil");
+      expect(WORKSPACE_PIDS_JXA).toContain("argv[0]");
+    });
+  });
+});
+
+describe("user-profile busy and the release decision", () => {
+  it("the user-profile lock: one key per real path, same key re-enters, held through the handle's close", async () => {
+    const reg = createAppRegistry<Fake & { appPath: string; userProfile: boolean }>({
+      launch: async (p, o) => ({ ...fakeHandle(), appPath: p, userProfile: o?.userProfile === true }),
+    });
+    const one = reg.begin("1:");
+    const two = reg.begin("2:");
+    if (!one.ok || !two.ok) throw new Error("begin");
+    expect(two.ticket.userProfileHeldElsewhere("/A.app")).toBe(false);
+    expect(one.ticket.lockUserProfile("/A.app")).toBe(true);
+    expect(one.ticket.lockUserProfile("/A.app")).toBe(true);
+    expect(two.ticket.userProfileHeldElsewhere("/A.app")).toBe(true);
+    expect(two.ticket.lockUserProfile("/A.app")).toBe(false);
+    expect(two.ticket.lockUserProfile("/B.app")).toBe(true); // other bundle is independent
+    const r = await one.ticket.launch("/A.app", { userProfile: true });
+    expect(r.ok).toBe(true);
+    expect(two.ticket.userProfileHeldElsewhere("/A.app")).toBe(true); // the live handle keeps it
+    await reg.release("1:");
+    expect(two.ticket.userProfileHeldElsewhere("/A.app")).toBe(false);
+    two.ticket.abort();
+  });
+  it("a user-profile launch without the lock takes it, or fails when another key holds it", async () => {
+    const reg = createAppRegistry<Fake & { appPath: string; userProfile: boolean }>({
+      launch: async (p, o) => ({ ...fakeHandle(), appPath: p, userProfile: o?.userProfile === true }),
+    });
+    const one = reg.begin("1:");
+    const two = reg.begin("2:");
+    if (!one.ok || !two.ok) throw new Error("begin");
+    expect((await one.ticket.launch("/A.app", { userProfile: true })).ok).toBe(true);
+    expect(await two.ticket.launch("/A.app", { userProfile: true })).toEqual({ ok: false, error: ERR_APP_PROFILE_BUSY });
+    two.ticket.abort();
+  });
+  it("the helper script skips osascript when the quit script is empty, and still waits and reopens", () => {
+    expect(QUIT_REOPEN_SCRIPT).toContain('[ -n "$SIDEFORM_QUIT_JXA" ] && osascript');
+    expect(QUIT_REOPEN_SCRIPT).toContain('kill -0 "$2"');
+    expect(QUIT_REOPEN_SCRIPT).toContain('open -g "$1"');
+  });
+  describe("ranAtRelease", () => {
+    const run = async (o: { userProfile?: boolean; disconnected: boolean; diesAfterMs?: number }) => {
+      let now = 0;
+      return ranAtRelease({
+        userProfile: o.userProfile ?? true,
+        disconnected: o.disconnected,
+        isAlive: () => o.diesAfterMs === undefined || now < o.diesAfterMs,
+        sleep: async (ms) => { now += ms; },
+      });
+    };
+    it("link still up and process alive: it ran", async () => {
+      expect(await run({ disconnected: false })).toBe(true);
+    });
+    it("temp-profile app or dead process: never reopened", async () => {
+      expect(await run({ userProfile: false, disconnected: false })).toBe(false);
+      expect(await run({ disconnected: false, diesAfterMs: 0 })).toBe(false);
+    });
+    it("link dropped and the process exits within 3 s (the user's Cmd+Q): no reopen", async () => {
+      expect(await run({ disconnected: true, diesAfterMs: 1500 })).toBe(false);
+    });
+    it("link dropped but the process stays alive past 3 s: treated as running", async () => {
+      expect(await run({ disconnected: true })).toBe(true);
+    });
   });
 });

@@ -1216,18 +1216,70 @@ the app-global wiring (registry, confirm memory, real launcher); `window.ts`'s
   "Allow once" / "Allow until Sideform quits" / "Don't allow" (default and cancel).
   "Until quits" is remembered in memory per realpath AND per owner sender (a new
   chat or reloaded panel asks again), never persisted.
+- **App already open.** `openApp` asks `findRunning(realPath)`. The service takes `findRunningElectronApp`,
+  keeps only default-profile instances (`userDataDir === null`, via `filterUserPids`), drops the pids in
+  `appRegistry.livePids()` (Sideform's own temp-profile instances, a user's second-profile instance) and
+  intersects the rest with the pids of NSWorkspace running applications whose bundle path equals the realpath
+  (one `osascript -l JavaScript -e <WORKSPACE_PIDS_JXA> <realPath>`, 5 s timeout, path as argv never in the
+  script; pure parse/intersect `intersectWorkspacePids`; if osascript fails the ps list alone decides), so
+  helper or daemon processes that share the bundle path are not "the user's app". If the user has it open, a different confirm is shown every time ("Restart and allow" / "Don't
+  allow"; the "until quits" memory neither skips it nor gets fed by it). Then each pid is quit with
+  `quitElectronApp` (graceful, 15 s; never SIGKILL first; a stuck save dialog gives `errAppDidNotQuit`),
+  and the app launches with `{ userProfile: true }` (`useAppProfile`: the user's real profile, no temp
+  dir, `profileDir` null) and the result carries `profile: "user"` plus a note. A cancel after the quit or
+  a failed launch reopens the app (`open -g`). Release (`close()`) relies on the package's `close()`
+  (disconnect, then a graceful quit; it never signals). The desktop decides the reopen on the process
+  alone: it reopens only if the process ran when the release began and is gone afterwards; if a save
+  dialog keeps it alive, it keeps running and nothing is done. In the gap between quitting the user's app
+  and the relaunched handle going live, the flight carries `markUserAppQuit(realPath, pid)`, set BEFORE
+  the first `quit(pid)` (the terminate may already be in flight when Sideform quits); `killAllSync`
+  spawns the detached helper for that pid (quit JXA again, harmless) instead of a bare `open -g`, so the
+  reopen waits until the original app is really gone. When `quit(pid)` times out the waiter owns the reopen,
+  so `openApp` clears that pid's mark (`unmarkUserAppQuit`): `killAllSync` then sends no second terminate
+  and spawns no second helper. The running pids are read again after the restart
+  confirm (the dialog can stay open), under the lock below; an empty fresh list still launches with the user profile.
+  The helper script (`QUIT_REOPEN_SCRIPT`) skips `osascript` when `SIDEFORM_QUIT_JXA` is empty, so the
+  same helper is a pure "wait until the pid is gone (60 s), then `open -g`" waiter. It is used when
+  `quit(pid)` times out (a save dialog: the terminate was sent, the user may still answer) via
+  `reopenWhenGone(realPath, pid)`, and in the service release when the process is still alive after
+  `close()` (the same call); the app then reopens normally once the user answers. The service has ONE
+  helper spawn (`spawnHelper(realPath, pid, sendQuit)`: the quit JXA is derived with `macQuitScript(pid)` from
+  the cached adapter module, not stored per handle) and tracks every helper it spawns per real path (removed on
+  `exit`). Before a restart quits the user's pids, `openApp` calls `cancelWaiters(realPath)`, which SIGTERMs those
+  `/bin/sh` helpers (our own shells, never the user's app), so a stale waiter cannot `open -g` the app in the
+  middle of the next restart. Helpers stay detached and `unref()`ed so they outlive Sideform when spawned in `killAllSync`.
+  Release decision (`ranAtRelease`, pure, tested): if the CDP link was already down when the release
+  starts, the process gets 3 s to exit; if it does, the user quit it (Cmd+Q drops CDP before the process
+  exits) and nothing is reopened. Still alive after 3 s counts as running (graceful quit + reopen).
+  Two chats, one app: the registry owns a per-realpath user-profile LOCK (realpath -> owner key, reference
+  counted). `openApp` takes it (`ticket.lockUserProfile`) in the same synchronous step that finds the user's pids,
+  BEFORE the restart confirm; if another key holds it (restarting, or running the app with the user profile) that
+  instance is Sideform's, not the user's: no `findRunning`, no restart confirm, no quit, and the open takes the
+  normal temp-profile path. It is released when the confirm is denied, the open fails or is cancelled (the flight
+  ends), or, on success, when the user-profile handle's `close()` has fully finished (including the reopen).
+  The same key can re-enter (a relaunch overlaps the old handle's close). A user-profile `launch` without the
+  lock takes it or fails with `ERR_APP_PROFILE_BUSY`. `killAllSync` spawns no helper for a live user-profile
+  handle whose CDP link already dropped (`handle.disconnected`, decided in the pure `killHandleSync`): the
+  user quit it, so it is not reopened.
+  Known limits: if Sideform quits while the user-profile relaunch still waits for its first window (up to
+  30 s), that instance keeps running with the debug port. An app that refuses to quit on release (save
+  dialog) also stays running with its debug port until it quits; then the waiter reopens it normally.
 - **Release points.** `closeSession` (releases that session's key; `closeSessionById`
   itself is unchanged), `closeSessionsOwnedBy` (releases everything of the owner and `forgetSender`s its
   "until quits" answers;
   covers the editor-tab orphan points, `releasePanelOrphans` and the window
   `closed` path via `tabs.destroyAll`), and `before-quit` in `index.ts`: it calls
-  `killAllSync()` (synchronous SIGKILL of every spawned app + profile removal, no
-  `preventDefault`, no delay). Async `close()` is not enough there: it unhooks the
+  `killAllSync()` (synchronous and non-blocking, no `preventDefault`, no delay: temp-profile apps
+  get SIGKILL + profile removal; user-profile apps get ONE detached `/bin/sh` helper that runs the
+  JXA quit script (env `SIDEFORM_QUIT_JXA`, path and pid are positional args, never in the script
+  text), polls `kill -0` for up to 60 s and runs `open -g` only if the process is gone. Nothing blocks,
+  nothing of the user's is killed). Async `close()` is not enough there: it unhooks the
   launcher's exit handler first and the process exits before the kill.
   `closeSession` awaits the app release (capped at 5 s) after `sessions.close`.
-- **Profile dir.** The service creates it (`mkdtempSync`, `sideform-app-*` under the OS
+- **Profile dir.** The service creates it for temp-profile apps (`mkdtempSync`, `sideform-app-*` under the OS
   temp dir) and passes it as `userDataDir`, so it can be removed on release, on a
-  failed launch and in `killAllSync`.
+  failed launch and in `killAllSync`. Apps restarted with the user's profile have no profile dir
+  (`profileDir` is null).
 - **`playwright-core` is a runtime dependency** (pinned 1.64.1): the adapter has it as
   a peer, and electron-builder drops dev deps, so the packaged app would fail at
   the first launch otherwise.

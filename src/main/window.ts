@@ -66,7 +66,7 @@ import { normalizeOrigin, type CredentialStore } from "./browser/credentialStore
 import type { FaviconCache } from "./browser/faviconCache";
 import type { PasswordsWindow } from "./passwordsWindow";
 import { appKey, errorForPlan, openApp, ownedBySender, ownedBySession, planAppCommand, routeAppCommand } from "./appTargets";
-import { appConfirm, appRegistry, validateRequestedApp } from "./appTargetsService";
+import { appConfirm, appRegistry, cancelWaiters, findUserRunningPids, quitUserApp, reopenApp, reopenWhenGone, validateRequestedApp } from "./appTargetsService";
 import { createTabAgentActivity, isAgentPageCommand } from "./agentActivity";
 import { decideCloseTarget, guardMenuActions } from "./closeTarget";
 import { focusAfterCollapse, isTabCreationSender, planEmptyViewUpdate, resolveFocusTarget, type EmptyViewState } from "./emptyView";
@@ -1830,6 +1830,12 @@ export function createMainWindow(
         registry: appRegistry,
         validate: validateRequestedApp,
         confirm: (target) => appConfirm.confirm(win, target, sender),
+        findRunning: findUserRunningPids,
+        confirmRestart: (target) => appConfirm.confirmRestart(win, target),
+        quit: quitUserApp,
+        reopen: reopenApp,
+        reopenWhenGone,
+        cancelWaiters,
       });
     }
     const running = appRegistry.get(key);
