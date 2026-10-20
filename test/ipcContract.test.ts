@@ -55,6 +55,10 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "canvas:open", direction: "renderer->main" },
   // Documents: the panel asks main to open/focus a markdown doc tab (`/doc`).
   { name: "doc:open", direction: "renderer->main" },
+  // Browse-run traces (invoke/handle): save/read stored traces, open a trace tab. See CLAUDE.md "Trace tabs".
+  { name: "traces:save", direction: "renderer->main" },
+  { name: "traces:read", direction: "renderer->main" },
+  { name: "traces:open", direction: "renderer->main" },
   { name: "canvas:activate", direction: "renderer->main" },
   { name: "canvas:to-tab", direction: "renderer->main" },
   { name: "canvas:from-tab", direction: "main->renderer" },

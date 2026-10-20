@@ -190,6 +190,51 @@ export function docIdOfUrl(rawUrl: string): string | null {
   }
 }
 
+/**
+ * The URL of a browse-trace tab: the last `app` path segment becomes `trace/<id>`
+ * (a path not ending in `app` gets `trace/<id>` beside its last segment). Query of the
+ * editor URL is kept except `chat` and `src`; `src=local&chat=off` are appended. The id is
+ * validated by the caller (`isValidTraceId`); it is still encoded here.
+ */
+export function resolveTraceTabUrl(editorUrl: string, traceId: string): string {
+  const url = new URL(editorUrl);
+  url.hash = "";
+  const segments = url.pathname.split("/");
+  if (segments.length > 2 && segments[segments.length - 1] === "" && segments[segments.length - 2] === "app") {
+    segments.pop();
+  }
+  segments[segments.length - 1] = "trace";
+  segments.push(encodeURIComponent(traceId));
+  url.pathname = segments.join("/");
+  const kept = url.search
+    .replace(/^\?/, "")
+    .split("&")
+    .filter((pair) => {
+      if (pair === "") return false;
+      const key = decodeURIComponent_safe(pair.split("=")[0]);
+      return key !== "chat" && key !== "src";
+    });
+  kept.push("src=local", "chat=off");
+  url.search = kept.join("&");
+  return url.toString();
+}
+
+/** A trace id the agent panel may ask to open: 1-64 of `A-Za-z0-9_-` (the browse-trace id format). */
+export function isValidTraceId(traceId: unknown): traceId is string {
+  return typeof traceId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(traceId);
+}
+
+/** The trace id in the path of a trace tab URL (`/trace/<id>`), or null. */
+export function traceIdOfUrl(rawUrl: string): string | null {
+  try {
+    const segments = new URL(rawUrl).pathname.split("/");
+    const id = decodeURIComponent_safe(segments[segments.length - 1] ?? "");
+    return segments[segments.length - 2] === "trace" && isValidTraceId(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 function decodeURIComponent_safe(s: string): string {
   try {
     return decodeURIComponent(s.replace(/\+/g, " "));

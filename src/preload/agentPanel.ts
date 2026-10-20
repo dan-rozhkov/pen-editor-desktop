@@ -137,7 +137,14 @@ const docs = {
   open: (docId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("doc:open", docId),
 };
 
-contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser, docs });
+// Browse-run traces: store a finished trace locally, open its viewer tab. Main checks the sender.
+const traces = {
+  save: (payload: { manifest: unknown; assets: { path: string; dataUrl: string }[] }): Promise<{ id: string } | { error: string }> =>
+    ipcRenderer.invoke("traces:save", payload),
+  open: (id: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("traces:open", id),
+};
+
+contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser, docs, traces });
 
 // Theme report for main (channel `panel:theme`): the page paints the stored editor theme as the
 // class `dark` on <html>. Initial read on DOMContentLoaded, then a MutationObserver on that class.

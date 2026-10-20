@@ -204,3 +204,23 @@ describe("preload/tab.ts isolated browser sessions", () => {
     expect(invokeMock).toHaveBeenCalledWith("browser:command", { command: "closeSession", session: "run-1" });
   });
 });
+
+describe("preload/tab.ts traces bridge", () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    invokeMock.mockClear();
+    exposedApi = undefined;
+    await import("../src/preload/tab");
+  });
+
+  it("exposes only save and read, over traces:save / traces:read", async () => {
+    expect(Object.keys(exposedApi.traces).sort()).toEqual(["read", "save"]);
+    const payload = { manifest: { id: "t1" }, assets: [] };
+    invokeMock.mockResolvedValueOnce({ id: "t1" });
+    await expect(exposedApi.traces.save(payload)).resolves.toEqual({ id: "t1" });
+    expect(invokeMock).toHaveBeenLastCalledWith("traces:save", payload);
+    invokeMock.mockResolvedValueOnce({ error: "trace not found" });
+    await expect(exposedApi.traces.read("t1")).resolves.toEqual({ error: "trace not found" });
+    expect(invokeMock).toHaveBeenLastCalledWith("traces:read", "t1");
+  });
+});

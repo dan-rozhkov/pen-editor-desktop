@@ -287,6 +287,53 @@ describe("TabManager", () => {
     });
   });
 
+  describe("trace tabs", () => {
+    it("load /trace/<id>?src=local&chat=off, start titled Trace, follow the page title and the theme", () => {
+      const id = tm.newTab("trace", undefined, { traceId: "t_1" });
+      expect(views[0].loadURL).toHaveBeenCalledWith("https://pen-editor.onrender.com/trace/t_1?src=local&chat=off");
+      expect(tm.getSnapshot()).toMatchObject({ activeId: id, activeKind: "trace" });
+      expect(tm.getSnapshot().tabs[0]).toMatchObject({ kind: "trace", title: "Trace" });
+      views[0].emitTitle("Run: find pricing");
+      expect(tm.getSnapshot().tabs[0].title).toBe("Run: find pricing");
+      views[0].emitTheme("dark");
+      expect(tm.getSnapshot().activeTheme).toBe("dark");
+    });
+
+    it("are not canvas tabs and never the MCP target", () => {
+      tm.newTab("trace", undefined, { traceId: "t1" });
+      expect(tm.editorTabsInfo().tabs).toEqual([]);
+      expect(tm.isEditorTab(views[0].getWebContentsId())).toBe(false);
+      expect(tm.getSnapshot().mcpActiveWebContentsId).toBeNull();
+    });
+
+    it("without a valid trace id no tab and no view is created", () => {
+      for (const bad of [undefined, "", "../x", "a b"]) {
+        expect(() => tm.newTab("trace", undefined, { traceId: bad })).toThrow(/trace id/);
+      }
+      expect(views).toHaveLength(0);
+      expect(tm.getSnapshot().tabs).toEqual([]);
+    });
+
+    it("findTraceTab falls back to the opened id when the live URL has none (offline page, redirect)", () => {
+      const a = tm.newTab("trace", undefined, { traceId: "a" });
+      (views[0].getURL as unknown as ReturnType<typeof vi.fn>).mockReturnValue("file:///app/assets/offline.html");
+      expect(tm.findTraceTab("a")).toBe(a);
+    });
+
+    it("findTraceTab matches the opened id, then the live URL; isTraceTab matches the webContents id", () => {
+      const a = tm.newTab("trace", undefined, { traceId: "a" });
+      tm.newTab("doc", undefined, { docId: "a" });
+      expect(tm.findTraceTab("a")).toBe(a);
+      expect(tm.findTraceTab("zzz")).toBeNull();
+      (views[0].getURL as unknown as ReturnType<typeof vi.fn>).mockReturnValue("https://pen-editor.onrender.com/trace/c?src=local&chat=off");
+      expect(tm.findTraceTab("a")).toBeNull();
+      expect(tm.findTraceTab("c")).toBe(a);
+      expect(tm.isTraceTab(views[0].getWebContentsId())).toBe(true);
+      expect(tm.isTraceTab(views[1].getWebContentsId())).toBe(false);
+      expect(tm.isTraceTab(99)).toBe(false);
+    });
+  });
+
   it("newTab with activate:false opens in the background without activating or emitting an activation", () => {
     const first = tm.newTab();
     const browser = tm.newTab("browser");

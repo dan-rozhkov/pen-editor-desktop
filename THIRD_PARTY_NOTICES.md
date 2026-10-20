@@ -2,7 +2,7 @@
 
 ## Phosphor Icons
 
-The tab bar glyphs ("PaintBrush" and "Globe", regular weight; `src/tabbar/renderer.ts`) are copied from Phosphor Icons (https://phosphoricons.com), used under the MIT License:
+The tab bar glyphs ("PaintBrush", "Globe", "FileText" and "Pulse"; `src/tabbar/renderer.ts`) are copied from Phosphor Icons (https://phosphoricons.com), used under the MIT License:
 
 ```
 MIT License

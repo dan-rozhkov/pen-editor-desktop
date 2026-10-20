@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, INITIAL_TABS } from "../src/main/config";
+import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, resolveTraceTabUrl, isValidTraceId, traceIdOfUrl, INITIAL_TABS } from "../src/main/config";
 
 describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
@@ -153,6 +153,35 @@ describe("isValidDocId / docIdOfUrl", () => {
     expect(docIdOfUrl("https://h/doc?id=abc&chat=off")).toBe("abc");
     expect(docIdOfUrl("https://h/doc?new=1&chat=off")).toBeNull();
     expect(docIdOfUrl("not a url")).toBeNull();
+  });
+});
+
+describe("resolveTraceTabUrl", () => {
+  it("swaps the /app path for /trace/<id> and adds src=local&chat=off", () => {
+    expect(resolveTraceTabUrl(DEFAULT_EDITOR_URL, "abc_1-X")).toBe("https://pen-editor.onrender.com/trace/abc_1-X?src=local&chat=off");
+  });
+  it("keeps the path prefix and other params, drops the hash, replaces src and chat", () => {
+    expect(resolveTraceTabUrl("https://h/pen/app?q=1&src=cloud&chat=on#f", "t1")).toBe("https://h/pen/trace/t1?q=1&src=local&chat=off");
+  });
+  it("handles /app/ and a path not ending in app", () => {
+    expect(resolveTraceTabUrl("https://h/app/", "t")).toBe("https://h/trace/t?src=local&chat=off");
+    expect(resolveTraceTabUrl("https://h/pen/x", "t")).toBe("https://h/pen/trace/t?src=local&chat=off");
+  });
+});
+
+describe("isValidTraceId / traceIdOfUrl", () => {
+  it("accepts 1-64 of A-Za-z0-9_- only", () => {
+    expect(isValidTraceId("a")).toBe(true);
+    expect(isValidTraceId("a".repeat(64))).toBe(true);
+    for (const bad of ["", "a".repeat(65), "a b", "a/b", "..", "../x", "a?b", 5, null, undefined]) expect(isValidTraceId(bad)).toBe(false);
+  });
+  it("reads the id from the path of a trace URL", () => {
+    expect(traceIdOfUrl("https://h/trace/abc?src=local&chat=off")).toBe("abc");
+    expect(traceIdOfUrl("https://h/pen/trace/abc")).toBe("abc");
+    expect(traceIdOfUrl("https://h/doc?id=abc")).toBeNull();
+    expect(traceIdOfUrl("https://h/trace/")).toBeNull();
+    expect(traceIdOfUrl("https://h/trace/a%20b")).toBeNull();
+    expect(traceIdOfUrl("not a url")).toBeNull();
   });
 });
 

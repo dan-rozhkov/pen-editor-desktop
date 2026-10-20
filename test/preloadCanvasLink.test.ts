@@ -66,8 +66,8 @@ describe("agent panel preload", () => {
     await import("../src/preload/agentPanel");
   });
 
-  it("exposes version 2 with canvas, browser and docs only", () => {
-    expect(Object.keys(exposed.penAgentPanel).sort()).toEqual(["browser", "canvas", "docs", "version"]);
+  it("exposes version 2 with canvas, browser, docs and traces only", () => {
+    expect(Object.keys(exposed.penAgentPanel).sort()).toEqual(["browser", "canvas", "docs", "traces", "version"]);
     expect(exposed.penAgentPanel.version).toBe(2);
   });
 
@@ -98,6 +98,17 @@ describe("agent panel preload", () => {
     invoke.mockResolvedValueOnce({ ok: true } as never);
     await expect(exposed.penAgentPanel.docs.open("abc_1")).resolves.toEqual({ ok: true });
     expect(invoke).toHaveBeenLastCalledWith("doc:open", "abc_1");
+  });
+
+  it("traces.save and traces.open invoke their channels and return main's reply", async () => {
+    const payload = { manifest: { id: "t1" }, assets: [{ path: "frames/0.jpg", dataUrl: "data:image/jpeg;base64,AA==" }] };
+    invoke.mockResolvedValueOnce({ id: "t1" } as never);
+    await expect(exposed.penAgentPanel.traces.save(payload)).resolves.toEqual({ id: "t1" });
+    expect(invoke).toHaveBeenLastCalledWith("traces:save", payload);
+    invoke.mockResolvedValueOnce({ ok: true } as never);
+    await expect(exposed.penAgentPanel.traces.open("t1")).resolves.toEqual({ ok: true });
+    expect(invoke).toHaveBeenLastCalledWith("traces:open", "t1");
+    expect(Object.keys(exposed.penAgentPanel.traces).sort()).toEqual(["open", "save"]);
   });
 
   it("browser goes through browser:command, shared, isolated and closeSession", async () => {

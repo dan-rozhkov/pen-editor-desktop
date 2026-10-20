@@ -1,5 +1,5 @@
 import type { BrowserTabInfo } from "@sideform/browser-agent/controller";
-import { docIdOfUrl, resolveDocTabUrl } from "./config";
+import { docIdOfUrl, isValidTraceId, resolveDocTabUrl, resolveTraceTabUrl, traceIdOfUrl } from "./config";
 export type UITheme = "light" | "dark";
 
 /** How a tab becomes the active one. `focus: false` shows it without moving keyboard focus into it. */
@@ -43,7 +43,7 @@ export type McpStatus = "listening" | "not-published" | "off" | "error";
  * is NOT a canvas tab: never in the canvas link, the MCP active tab or
  * `lastEditorWebContentsId`.
  */
-export type TabKind = "editor" | "browser" | "doc";
+export type TabKind = "editor" | "browser" | "doc" | "trace";
 
 /** The navigation state a browser tab reports back into its TabState. */
 export interface BrowserNavState {
@@ -365,6 +365,8 @@ interface TabEntry {
   theme: UITheme | null;
   /** Doc tabs only: the document id the tab was opened with (`doc:open`). */
   docId?: string;
+  /** Trace tabs only: the trace id the tab was opened with (`traces:open`). */
+  traceId?: string;
   url?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
@@ -440,17 +442,20 @@ export class TabManager {
    * That tab is shown without taking keyboard focus (`ActivationOptions`).
    * `opts.focus: false` makes a normally activated tab visible without taking keyboard focus (`doc:open`).
    */
-  newTab(kind: TabKind = "editor", session?: string, opts: { activate?: boolean; docId?: string; focus?: boolean } = {}): number {
+  newTab(kind: TabKind = "editor", session?: string, opts: { activate?: boolean; docId?: string; traceId?: string; focus?: boolean } = {}): number {
+    // A trace tab is always opened for one trace (`traces:open`): no id, no tab (and no view is created).
+    if (kind === "trace" && !isValidTraceId(opts.traceId)) throw new Error("trace tab needs a valid trace id");
     const id = this.nextId++;
     const view = this.opts.createView(kind, kind === "browser" ? session : undefined);
     const entry: TabEntry = {
       id,
       session: kind === "browser" ? session : undefined,
-      title: kind === "browser" ? "New Tab" : kind === "doc" ? "Document" : "Untitled",
+      title: kind === "browser" ? "New Tab" : kind === "doc" ? "Document" : kind === "trace" ? "Trace" : "Untitled",
       kind,
       view,
       theme: null,
       docId: kind === "doc" ? opts.docId : undefined,
+      traceId: kind === "trace" ? opts.traceId : undefined,
       url: kind === "browser" ? "" : undefined,
       canGoBack: kind === "browser" ? false : undefined,
       canGoForward: kind === "browser" ? false : undefined,
@@ -462,7 +467,7 @@ export class TabManager {
       // `this.tabs`: record it, and let the push that adds the tab carry it.
       if (this.tabs.includes(entry)) this.emit();
     });
-    if (kind === "editor" || kind === "doc") {
+    if (kind === "editor" || kind === "doc" || kind === "trace") {
       view.onDocumentTitleChanged((title) => {
         entry.title = title;
         this.emit();
@@ -478,7 +483,12 @@ export class TabManager {
         // tab's live `entry.theme` on every `getSnapshot()` call.
         this.emit();
       });
-      const target = kind === "doc" ? resolveDocTabUrl(this.opts.editorUrl, opts.docId) : this.opts.editorUrl;
+      const target =
+        kind === "doc"
+          ? resolveDocTabUrl(this.opts.editorUrl, opts.docId)
+          : kind === "trace"
+            ? resolveTraceTabUrl(this.opts.editorUrl, opts.traceId as string)
+            : this.opts.editorUrl;
       view.loadURL(target).catch((err) => {
         console.error(`TabManager: ${kind} tab failed to load`, err);
       });
@@ -747,6 +757,22 @@ export class TabManager {
     return null;
   }
 
+  /** The id of the open trace tab showing `traceId`, or null. The live URL wins, like `findDocTab`. */
+  findTraceTab(traceId: string): number | null {
+    for (const t of this.tabs) {
+      if (t.kind !== "trace") continue;
+      const live = t.view.getURL();
+      // Fall back to the opened id when the live URL has none (offline fallback page, redirect).
+      if ((traceIdOfUrl(live) ?? t.traceId) === traceId) return t.id;
+    }
+    return null;
+  }
+
+  /** True when the webContents is one of this window's trace tabs. */
+  isTraceTab(webContentsId: number): boolean {
+    return this.tabs.some((t) => t.kind === "trace" && t.view.getWebContentsId() === webContentsId);
+  }
+
   /** The webContents id of a tab, or null. */
   webContentsIdOf(id: number): number | null {
     return this.tabs.find((t) => t.id === id)?.view.getWebContentsId() ?? null;
@@ -823,12 +849,12 @@ export class TabManager {
    * of which tab is active — is picked up by the very next snapshot.
    */
   private resolveActiveTheme(active: TabEntry | undefined): UITheme | null {
-    if (active?.kind === "editor" || active?.kind === "doc") return active.theme;
+    if (active?.kind === "editor" || active?.kind === "doc" || active?.kind === "trace") return active.theme;
     const lastEditor = this.tabs.find(
       (t) => t.kind === "editor" && t.view.getWebContentsId() === this.lastEditorWebContentsId,
     );
     if (lastEditor?.theme) return lastEditor.theme;
-    const anyEditorWithTheme = this.tabs.find((t) => (t.kind === "editor" || t.kind === "doc") && t.theme !== null);
+    const anyEditorWithTheme = this.tabs.find((t) => (t.kind === "editor" || t.kind === "doc" || t.kind === "trace") && t.theme !== null);
     return anyEditorWithTheme?.theme ?? null;
   }
 

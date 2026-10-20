@@ -55,6 +55,9 @@ import { FixtureOwners } from "./fixtureOwners";
 import { isBrowserOwner as isBrowserOwnerId, isOrphaningEvent } from "./orphanRelease";
 import { CanvasLinkRouter } from "./canvasLink";
 import { openDocTab } from "./docOpen";
+import { openTraceTab } from "./traceOpen";
+import { handleTraceRead, handleTraceSave, type TraceIpcDeps } from "./traceIpc";
+import { createTraceStore, nodeTraceFs, TRACE_DIR } from "./traceStore";
 import { FetchRouter } from "./fetchRouting";
 import { BLANK_DOCUMENT_URL, createCommitGate } from "./commitGate";
 import * as fixtureSession from "./fixtureSession";
@@ -303,8 +306,8 @@ export function createMainWindow(
   let rememberedEditorTheme: UITheme | null = null;
   // True while `rememberedEditorTheme` came from the agent panel page, not from an editor tab (an editor's own report always wins).
   let rememberedFromPanel = false;
-  // Doc tabs report the editor theme like canvas tabs do (same preload), so they count here.
-  const editorTabCount = (s: TabsSnapshot) => s.tabs.filter((t) => t.kind === "editor" || t.kind === "doc").length;
+  // Doc and trace tabs report the editor theme like canvas tabs do (same preload), so they count here.
+  const editorTabCount = (s: TabsSnapshot) => s.tabs.filter((t) => t.kind === "editor" || t.kind === "doc" || t.kind === "trace").length;
   let lastResolvedForTint: UITheme = FALLBACK_THEME;
   const emptyView = new WebContentsView({
     webPreferences: secureWebPreferences(path.join(__dirname, "../preload/empty.js")),
@@ -1002,7 +1005,8 @@ export function createMainWindow(
         });
       }
 
-      if (kind === "doc") {
+      if (kind === "doc" || kind === "trace") {
+        // A trace tab is the same kind of plain frontend page (`/trace/<id>`) as a document tab.
         // A document tab is a plain frontend page (`/doc`): same origin clamp and offline
         // fallback as a canvas tab, but NOT a canvas tab: no MCP registration, no fixtures,
         // no canvas link. Its title follows the page title (the page sets document.title and
@@ -1010,7 +1014,7 @@ export function createMainWindow(
         attachNavigationPolicy(view.webContents, editorOrigin, (url) => void shell.openExternal(url));
         attachOfflineFallback(view.webContents, offlineFile);
         view.webContents.on("page-title-updated", (_e, title) => {
-          titleCallbacks.get(viewId)?.(title.trim().slice(0, 200) || "Document");
+          titleCallbacks.get(viewId)?.(title.trim().slice(0, 200) || (kind === "trace" ? "Trace" : "Document"));
         });
       }
 
@@ -2073,6 +2077,28 @@ export function createMainWindow(
     ),
   );
 
+  // Browse-run traces: stored under userData; sender rules in traceIpc.ts, opening in traceOpen.ts.
+  const traceIpc: TraceIpcDeps = {
+    store: createTraceStore({ rootDir: path.join(app.getPath("userData"), TRACE_DIR), fs: nodeTraceFs }),
+    isPanel: (id) => panelWc()?.id === id,
+    isEditorTab: (id) => tabs.isEditorTab(id),
+    isTraceTab: (id) => tabs.isTraceTab(id),
+  };
+  ipcMain.handle("traces:save", (event, payload: unknown) => handleTraceSave(traceIpc, event.sender.id, payload));
+  ipcMain.handle("traces:read", (event, id: unknown) => handleTraceRead(traceIpc, event.sender.id, id));
+  ipcMain.handle("traces:open", (event, id: unknown) =>
+    openTraceTab(
+      {
+        isPanel: (wcId) => panelWc()?.id === wcId,
+        findTraceTab: (traceId) => tabs.findTraceTab(traceId),
+        activate: (tabId, opts) => tabs.activate(tabId, opts),
+        newTraceTab: (traceId, opts) => tabs.newTab("trace", undefined, { traceId, focus: opts.focus }),
+      },
+      event.sender.id,
+      id,
+    ),
+  );
+
   // --- layout ---
   // computeLayout is pure geometry (layout.ts); pushState calls it BEFORE it builds the tab bar
   // snapshot, so the strip offset and island numbers the tab bar receives are always the ones
@@ -2320,6 +2346,9 @@ export function createMainWindow(
     ipcMain.removeHandler("canvas:list");
     ipcMain.removeHandler("canvas:open");
     ipcMain.removeHandler("doc:open");
+    ipcMain.removeHandler("traces:save");
+    ipcMain.removeHandler("traces:read");
+    ipcMain.removeHandler("traces:open");
     canvasLink.dispose();
     // The panel's fixture, checkpoint journals and browser sessions die with the window.
     releasePanelOrphans(true);

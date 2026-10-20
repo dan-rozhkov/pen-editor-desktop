@@ -216,6 +216,13 @@ const canvasHost = {
   },
 };
 
+// Browse-run traces: editor tabs store the trace of a run they drove; trace tabs read it. Main checks the sender.
+const traces = {
+  save: (payload: { manifest: unknown; assets: { path: string; dataUrl: string }[] }): Promise<{ id: string } | { error: string }> =>
+    ipcRenderer.invoke("traces:save", payload),
+  read: (id: string): Promise<{ trace: unknown } | { error: string }> => ipcRenderer.invoke("traces:read", id),
+};
+
 const api = {
   setDocumentTitle(title: string | null): void {
     ipcRenderer.send("editor:document-title", title);
@@ -229,6 +236,7 @@ const api = {
   browser,
   agentLayout: true as const,
   canvasHost,
+  traces,
 };
 
 contextBridge.exposeInMainWorld("penDesktop", api);
