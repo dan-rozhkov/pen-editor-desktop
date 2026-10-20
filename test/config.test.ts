@@ -5,7 +5,7 @@ describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
     expect(resolveEditorUrl({})).toBe(DEFAULT_EDITOR_URL);
     // "/app" — "/" is the showcase gallery, not the editor.
-    expect(DEFAULT_EDITOR_URL).toBe("https://pen-editor.onrender.com/app");
+    expect(DEFAULT_EDITOR_URL).toBe("https://app.sideform.pro/app");
   });
 
   it("honors PEN_DESKTOP_URL", () => {
@@ -96,7 +96,7 @@ describe("resolveStorageIdentity", () => {
 
 describe("resolveAgentPanelUrl", () => {
   it("replaces /app with /agent on the default URL", () => {
-    expect(resolveAgentPanelUrl(DEFAULT_EDITOR_URL)).toBe("https://pen-editor.onrender.com/agent");
+    expect(resolveAgentPanelUrl(DEFAULT_EDITOR_URL)).toBe("https://app.sideform.pro/agent");
   });
   it("keeps origin and port but drops the editor's query and hash", () => {
     expect(resolveAgentPanelUrl("http://localhost:5173/app?x=1&y=2#h")).toBe("http://localhost:5173/agent");
@@ -124,7 +124,7 @@ describe("resolveAgentPanelUrl", () => {
 
 describe("resolveDocTabUrl", () => {
   it("swaps the /app path for /doc and adds chat=off", () => {
-    expect(resolveDocTabUrl(DEFAULT_EDITOR_URL)).toBe("https://pen-editor.onrender.com/doc?new=1&chat=off");
+    expect(resolveDocTabUrl(DEFAULT_EDITOR_URL)).toBe("https://app.sideform.pro/doc?new=1&chat=off");
   });
   it("drops a stray new param when an id is given", () => {
     expect(resolveDocTabUrl("https://h/app?new=1", "n1")).toBe("https://h/doc?id=n1&chat=off");
@@ -158,7 +158,7 @@ describe("isValidDocId / docIdOfUrl", () => {
 
 describe("resolveTraceTabUrl", () => {
   it("swaps the /app path for /trace/<id> and adds src=local&chat=off", () => {
-    expect(resolveTraceTabUrl(DEFAULT_EDITOR_URL, "abc_1-X")).toBe("https://pen-editor.onrender.com/trace/abc_1-X?src=local&chat=off");
+    expect(resolveTraceTabUrl(DEFAULT_EDITOR_URL, "abc_1-X")).toBe("https://app.sideform.pro/trace/abc_1-X?src=local&chat=off");
   });
   it("keeps the path prefix and other params, drops the hash, replaces src and chat", () => {
     expect(resolveTraceTabUrl("https://h/pen/app?q=1&src=cloud&chat=on#f", "t1")).toBe("https://h/pen/trace/t1?q=1&src=local&chat=off");
@@ -187,7 +187,7 @@ describe("isValidTraceId / traceIdOfUrl", () => {
 
 describe("resolveCanvasTabUrl", () => {
   it("adds chat=off to the default editor URL", () => {
-    expect(resolveCanvasTabUrl(DEFAULT_EDITOR_URL)).toBe("https://pen-editor.onrender.com/app?chat=off");
+    expect(resolveCanvasTabUrl(DEFAULT_EDITOR_URL)).toBe("https://app.sideform.pro/app?chat=off");
   });
   it("keeps other params and merges chat=off", () => {
     const u = new URL(resolveCanvasTabUrl("http://localhost:5173/app?q=1&x=a%20b"));

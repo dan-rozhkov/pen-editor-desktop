@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { app, BaseWindow, safeStorage, session } from "electron";
+import { app, BaseWindow, safeStorage, session, shell } from "electron";
 import { DISPLAY_APP_NAME, STORAGE_IDENTITY_FILE, resolveEditorUrl, resolveStorageIdentity, storageIdentityFileText } from "./config";
 import { createMainWindow } from "./window";
 import { appRegistry } from "./appTargetsService";
@@ -11,6 +11,9 @@ import { FAVICONS_FILE, createFaviconCache, createIconFetcher } from "./browser/
 import { createLoginCapture } from "./browser/loginCapture";
 import { createPasswordsWindow } from "./passwordsWindow";
 import { shouldReopenMainWindow } from "./closeTarget";
+import { DEEP_LINK_SCHEME, createDesktopAuth, parseDeepLinkArg, resolveProtocolRegistration, shouldRegisterProtocol, systemDeps } from "./desktopAuth";
+import { runOriginMigrationOnStartup } from "./originMigrationRunner";
+import { createMigrationGuard } from "./migrationGuard";
 
 const editorUrl = resolveEditorUrl(process.env);
 
@@ -62,9 +65,72 @@ try {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 }
-app.on("second-instance", () => {
+
+// Deep link sign-in (desktopAuth.ts). The state of a sign-in attempt lives in memory only, so a link
+// that arrives without a matching attempt (a cold start, a stale link) is ignored by design.
+const desktopAuth = createDesktopAuth({
+  ...systemDeps,
+  editorOrigin: new URL(editorUrl).origin,
+  openExternal: (url) => shell.openExternal(url),
+  log: (m) => console.log(`[auth] ${m}`),
+});
+// Links that arrive before the main window exists wait here; `open-url` on macOS can fire
+// before `ready`, so the listener is registered now, at module level.
+let windowCreated = false;
+const queuedDeepLinks: string[] = [];
+// The one way to open a main window after startup (dock "activate", a deep link or a second launch
+// while every window is closed on macOS). Needs the services created further down, hence a function.
+function openMainWindowIfNone(): void {
+  if (startup.active) return; // the hidden migration window is not a main window
+  // The Passwords window is not a main window: it must not count here.
+  if (shouldReopenMainWindow(BaseWindow.getAllWindows(), (w) => loginServices.passwordsWindow.owns(w))) createMainWindow(editorUrl, mcpService, loginServices, desktopAuth);
+}
+function dispatchDeepLink(url: string): void {
+  // Validate FIRST: only a well-formed sideform://auth link whose state matches the pending attempt may
+  // queue, open a window or reach the editor. handleDeepLink logs why anything else is ignored.
+  if (!desktopAuth.wouldAccept(url)) {
+    desktopAuth.handleDeepLink(url);
+    return;
+  }
+  if (!windowCreated) {
+    queuedDeepLinks.push(url);
+    return;
+  }
+  // macOS: the app can be alive with no window. Open one; a token no view listens to yet is held
+  // in desktopAuth and delivered when the new window's page calls auth.onToken.
+  openMainWindowIfNone();
+  desktopAuth.handleDeepLink(url);
+}
+function markWindowCreated(): void {
+  windowCreated = true;
+  for (const url of queuedDeepLinks.splice(0)) desktopAuth.handleDeepLink(url);
+}
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  dispatchDeepLink(url);
+});
+{
+  // An unpackaged run (npm run dev, Playwright e2e) would steal sideform:// from the installed app:
+  // it registers only with PEN_DESKTOP_REGISTER_PROTOCOL=1.
+  if (shouldRegisterProtocol(process.defaultApp, process.env)) {
+    const reg = resolveProtocolRegistration(process.defaultApp, process.execPath, process.argv[1], path.resolve);
+    const ok = reg.args ? app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME, reg.args[0], reg.args[1]) : app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
+    if (!ok) console.warn("[auth] could not register the sideform:// protocol; browser sign-in will not return to the app");
+  }
+  const initial = parseDeepLinkArg(process.argv);
+  if (initial) dispatchDeepLink(initial);
+}
+
+app.on("second-instance", (_event, argv) => {
+  const link = parseDeepLinkArg(argv);
+  if (link) dispatchDeepLink(link);
+  // While the startup guard is active the only window is the hidden migration window: never show it.
+  if (startup.active) return;
   const win = BaseWindow.getAllWindows().find((w) => !loginServices.passwordsWindow.owns(w));
-  if (!win) return;
+  if (!win) {
+    openMainWindowIfNone();
+    return;
+  }
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
@@ -75,6 +141,13 @@ app.on("second-instance", () => {
 // "activate" reopen, so the HTTP server/token/handshake ownership survive a
 // window close/reopen cycle instead of dying with the window.
 const mcpService = createMcpService();
+
+// Set by before-quit; checked after the migration await so a quit during startup creates nothing.
+let quitting = false;
+
+// The hidden migration window is the only window until the main one exists; destroying it would fire
+// window-all-closed and quit the app (Windows/Linux). The guard covers the whole startup phase.
+const startup = createMigrationGuard();
 
 // Saved logins for the built-in browser — app-scoped for the same reason as
 // mcpService: one store (and one "a save prompt is open" flag) for the whole
@@ -111,7 +184,7 @@ app.whenReady().then(async () => {
   app.setName(DISPLAY_APP_NAME);
   app.setAboutPanelOptions({ applicationName: DISPLAY_APP_NAME });
   // The editor must always open — MCP is a background convenience, not a
-  // prerequisite. createMainWindow() runs first and unconditionally, before
+  // prerequisite. createMainWindow() runs first (only the bounded, never-throwing origin migration precedes it) and unconditionally, before
   // mcpService.start() is even called, so neither a rejected start() (e.g.
   // startHttpServer failing to bind) nor probeHandshakeOwner's up-to-1500ms
   // liveness probe (handshake.ts, run when a stale handshake file points at
@@ -129,12 +202,23 @@ app.whenReady().then(async () => {
   // here rather than inside TabManager's per-tab createView.
   denyAllPermissions(session.fromPartition("persist:penbrowser"));
 
-  createMainWindow(editorUrl, mcpService, loginServices);
-
+  // Registered BEFORE the migration is awaited. Until the first main window exists it does nothing:
+  // opening an editor window earlier would let the new origin mint its own pen.userId before the import.
   app.on("activate", () => {
-    // The Passwords window is not a main window: it must not count here.
-    if (shouldReopenMainWindow(BaseWindow.getAllWindows(), (w) => loginServices.passwordsWindow.owns(w))) createMainWindow(editorUrl, mcpService, loginServices);
+    openMainWindowIfNone();
   });
+
+  // Copy the old origin's localStorage/IndexedDB into the new one (once). Bounded to 5 s, never throws,
+  // fails fast offline; a failure only means "try again next launch". The main window waits for it:
+  // the import must land before the editor on the new origin can create its own pen.userId.
+  await runOriginMigrationOnStartup(editorUrl, process.env);
+
+  // The user quit while the migration ran: do not create a window or start MCP behind their back.
+  if (quitting) return;
+
+  createMainWindow(editorUrl, mcpService, loginServices, desktopAuth);
+  markWindowCreated();
+  startup.end();
 
   try {
     // Bind → probe → publish or not (design doc §5).
@@ -145,6 +229,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
+  if (startup.active) return; // the hidden migration window was the only window
   if (process.platform !== "darwin") app.quit();
 });
 
@@ -154,6 +239,7 @@ app.on("window-all-closed", () => {
 // with their profile) get a detached helper that quits them and opens them again; nothing
 // of the user's is killed.
 app.on("before-quit", () => {
+  quitting = true;
   appRegistry.killAllSync();
 });
 

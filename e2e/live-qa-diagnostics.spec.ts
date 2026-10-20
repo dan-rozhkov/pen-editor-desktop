@@ -7,7 +7,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { writeFileSync } from "node:fs";
 
-const PROD_EDITOR = process.env.PEN_LIVE_URL ?? "https://pen-editor.onrender.com/app";
+const PROD_EDITOR = process.env.PEN_LIVE_URL ?? "https://app.sideform.pro/app";
 const editorOrigin = new URL(PROD_EDITOR).origin;
 
 const FORM_HTML = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Signup</title></head>

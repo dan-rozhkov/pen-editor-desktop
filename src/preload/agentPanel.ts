@@ -149,7 +149,32 @@ const traces = {
     opts === undefined ? ipcRenderer.invoke("traces:read", id) : ipcRenderer.invoke("traces:read", id, opts),
 };
 
-contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser, docs, traces });
+// Desktop sign-in (src/main/desktopAuth.ts): same shape as `penDesktop.auth` in tab.ts.
+// The token goes to this panel first (main picks one receiver), the panel then
+// completes the exchange and tells the other views. Main checks the sender.
+let listeners = 0;
+const auth = {
+  signIn(): void {
+    ipcRenderer.send("auth:sign-in");
+  },
+  onToken(cb: (payload: { token: string; verifier: string }) => void): () => void {
+    const listener = (_e: IpcRendererEvent, payload: { token: string; verifier: string }) => cb(payload);
+    ipcRenderer.on("auth:token", listener);
+    // Tells main this view can take a token (a held one is delivered now). Re-sent per subscriber;
+    // main keeps a set, so the unsubscribe of the LAST one is what matters.
+    listeners++;
+    ipcRenderer.send("auth:listen");
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      ipcRenderer.removeListener("auth:token", listener);
+      if (--listeners === 0) ipcRenderer.send("auth:unlisten");
+    };
+  },
+};
+
+contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser, docs, traces, auth });
 
 // Theme report for main (channel `panel:theme`): the page paints the stored editor theme as the
 // class `dark` on <html>. Initial read on DOMContentLoaded, then a MutationObserver on that class.

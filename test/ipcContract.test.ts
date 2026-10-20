@@ -68,6 +68,13 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "canvas:unregister", direction: "renderer->main" },
   { name: "canvas:to-panel", direction: "renderer->main" },
   { name: "canvas:from-panel", direction: "main->renderer" },
+  // Desktop sign-in (desktopAuth.ts): a view asks main to open the system browser; main hands the
+  // deep-link token (+ PKCE verifier) to ONE view. Sender-checked, see CLAUDE.md "Desktop sign-in".
+  { name: "auth:sign-in", direction: "renderer->main" },
+  { name: "auth:token", direction: "main->renderer" },
+  // A view tells main it has an auth.onToken subscriber (listener-aware delivery); sender-checked like auth:sign-in.
+  { name: "auth:listen", direction: "renderer->main" },
+  { name: "auth:unlisten", direction: "renderer->main" },
 ];
 
 const SRC = resolve(__dirname, "../src");

@@ -66,8 +66,8 @@ describe("agent panel preload", () => {
     await import("../src/preload/agentPanel");
   });
 
-  it("exposes version 2 with canvas, browser, docs and traces only", () => {
-    expect(Object.keys(exposed.penAgentPanel).sort()).toEqual(["browser", "canvas", "docs", "traces", "version"]);
+  it("exposes version 2 with canvas, browser, docs, traces and auth only", () => {
+    expect(Object.keys(exposed.penAgentPanel).sort()).toEqual(["auth", "browser", "canvas", "docs", "traces", "version"]);
     expect(exposed.penAgentPanel.version).toBe(2);
   });
 

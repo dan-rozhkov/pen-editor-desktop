@@ -48,6 +48,7 @@ import {
 import { resolveAgentPanelUrl, resolveCanvasTabUrl, INITIAL_TABS } from "./config";
 import { secureWebPreferences } from "./webPreferences";
 import { ADDRESS_ROW_HEIGHT, ISLAND_GAP, ISLAND_RADIUS, TAB_ROW_HEIGHT, agentPanelWidthFor, computeWindowLayout, type WindowLayout } from "./layout";
+import { activeTabChanged, isAuthSignInSender, pickAuthReceiver, type AuthTokenPayload, type DesktopAuth } from "./desktopAuth";
 import { AGENT_PANEL_SETTINGS_FILE, readAgentPanelSettings, writeAgentPanelSettings } from "./agentPanelSettings";
 import { isRecord, parseJournalOrigins, parseToken, rawToken } from "./checkpointArgs";
 import { JournalOwners } from "./journalOwners";
@@ -177,6 +178,7 @@ export function createMainWindow(
   editorUrl: string,
   mcpService: McpService,
   loginServices: LoginServices,
+  desktopAuth: DesktopAuth,
 ): BaseWindow {
   // Idempotent — see registerAppLevelIpc's own doc comment. Safe to call on
   // every window (re)creation, including the macOS dock "activate" reopen.
@@ -479,7 +481,10 @@ export function createMainWindow(
     // through here — those must never yank focus away from whatever the
     // user is doing.
     const focusAddressBar = shouldFocusAddressBar(previousSnapshot, s);
+    const tabSwitched = activeTabChanged(previousSnapshot, s);
     previousSnapshot = s;
+    // A held sign-in token may now have an eligible receiver (the newly active tab can be the listening one).
+    if (tabSwitched) desktopAuth.notifyListening();
     const geometry = computeLayout(s.activeKind);
     // Mid-slide the tab bar gets the CURRENT strip offset (tabbar:strip-left then moves it every frame).
     tabStripLeft = animationFrame()?.tabArea.x ?? geometry.tabStripLeft;
@@ -2050,6 +2055,92 @@ export function createMainWindow(
     return tabs.revealAgentBrowserTab(parsed.id);
   });
 
+  // --- desktop sign-in (desktopAuth.ts) ---
+  // `auth:sign-in`: only an editor tab or the agent panel, top frame, on the editor origin.
+  // Who may use the auth channels: an editor tab or the agent panel, top frame, on the editor origin.
+  const isAuthSender = (event: Electron.IpcMainEvent): boolean =>
+    isAuthSignInSender({
+      senderId: event.sender.id,
+      panelId: panelWc()?.id ?? null,
+      isEditorTab: tabs.isEditorTab(event.sender.id),
+      isMainFrame: event.senderFrame != null && event.senderFrame === event.sender.mainFrame,
+      frameUrl: event.senderFrame?.url,
+      editorOrigin,
+    });
+  const onAuthSignIn = (event: Electron.IpcMainEvent) => {
+    if (isAuthSender(event)) desktopAuth.beginSignIn();
+  };
+  ipcMain.on("auth:sign-in", onAuthSignIn);
+  // `auth:listen` / `auth:unlisten`: a view tells main it has an `auth.onToken` subscriber. A token
+  // is only ever sent to a listening view; with none, desktopAuth holds it and `notifyListening`
+  // delivers it to the first view that starts listening. Ids are dropped on destroy and on a
+  // COMMITTED main-frame cross-document navigation (the new page must call onToken again;
+  // did-start-navigation would also fire for denied navigations, 204s and downloads).
+  const authListeners = new Map<number, () => void>();
+  const dropAuthListener = (id: number) => {
+    authListeners.get(id)?.();
+    authListeners.delete(id);
+  };
+  const onAuthListen = (event: Electron.IpcMainEvent) => {
+    if (!isAuthSender(event)) return;
+    const wc = event.sender;
+    const id = wc.id;
+    if (!authListeners.has(id)) {
+      const onNav = (_e: Electron.Event, _url: string, _code: number, _text: string, isMainFrame: boolean) => {
+        if (isMainFrame) dropAuthListener(id);
+      };
+      // A still-listening view that reaches an eligible document by an in-page navigation (the panel
+      // document check in sendAuthToken) can now take a held token.
+      const onInPage = (_e: Electron.Event, _url: string, isMainFrame: boolean) => {
+        if (isMainFrame) desktopAuth.notifyListening();
+      };
+      const onDestroyed = () => dropAuthListener(id);
+      wc.on("did-frame-navigate", onNav);
+      wc.on("did-navigate-in-page", onInPage);
+      wc.once("destroyed", onDestroyed);
+      authListeners.set(id, () => {
+        if (!wc.isDestroyed()) {
+          wc.removeListener("did-frame-navigate", onNav);
+          wc.removeListener("did-navigate-in-page", onInPage);
+        }
+        wc.removeListener("destroyed", onDestroyed);
+      });
+    }
+    desktopAuth.notifyListening();
+  };
+  const onAuthUnlisten = (event: Electron.IpcMainEvent) => dropAuthListener(event.sender.id);
+  ipcMain.on("auth:listen", onAuthListen);
+  ipcMain.on("auth:unlisten", onAuthUnlisten);
+  // `auth:token`: ONE receiver among LISTENING views. The agent panel if it listens (it is always
+  // mounted, collapsed or not), else the active canvas tab, else any other listening canvas tab.
+  // Every other view learns of the new session from the receiver (the page broadcasts it).
+  const listeningWc = (id: number | null): Electron.WebContents | null => {
+    if (id === null || !authListeners.has(id)) return null;
+    const wc = webContents.fromId(id);
+    return wc && !wc.isDestroyed() ? wc : null;
+  };
+  const sendAuthToken = (payload: AuthTokenPayload): boolean => {
+    const panel = panelWc();
+    const snap = tabs.getSnapshot();
+    const activeWcId = snap.activeKind === "editor" && snap.activeId !== null ? tabs.webContentsIdOf(snap.activeId) : null;
+    let other: Electron.WebContents | null = null;
+    for (const id of authListeners.keys()) {
+      if (id !== panel?.id && tabs.isEditorTab(id) && (other = listeningWc(id))) break;
+    }
+    const target = pickAuthReceiver<Electron.WebContents>({
+      panel: panel && isPanelDocument(panel.getURL(), panelUrl) ? listeningWc(panel.id) : null,
+      activeEditorTab: listeningWc(activeWcId),
+      otherEditorTab: other,
+    });
+    if (!target) return false;
+    target.send("auth:token", payload);
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    return true;
+  };
+  desktopAuth.setReceiver(sendAuthToken);
+
   // --- canvas link IPC ---
   const onCanvasRegister = (event: Electron.IpcMainEvent) => canvasLink.register(event.sender.id);
   const onCanvasUnregister = (event: Electron.IpcMainEvent) => canvasLink.unregister(event.sender.id);
@@ -2343,6 +2434,11 @@ export function createMainWindow(
     ipcMain.removeListener("editor:document-title", onEditorDocumentTitle);
     ipcMain.removeHandler("browser:command");
     ipcMain.removeHandler("browser:reveal-agent-tab");
+    ipcMain.removeListener("auth:sign-in", onAuthSignIn);
+    ipcMain.removeListener("auth:listen", onAuthListen);
+    ipcMain.removeListener("auth:unlisten", onAuthUnlisten);
+    for (const id of [...authListeners.keys()]) dropAuthListener(id);
+    desktopAuth.clearReceiver(sendAuthToken);
     ipcMain.removeListener("canvas:register", onCanvasRegister);
     ipcMain.removeListener("canvas:unregister", onCanvasUnregister);
     ipcMain.removeListener("canvas:to-panel", onCanvasToPanel);
@@ -2387,6 +2483,7 @@ export function createMainWindow(
             newBrowserTab: newUserBrowserTab,
             newDocTab: () => void tabs.newTab("doc"),
             openPasswords: () => loginServices.passwordsWindow.open(),
+            signIn: () => desktopAuth.beginSignIn(),
             closeTab: () => {
               const target = decideCloseTarget({
                 passwordsFocused: false,

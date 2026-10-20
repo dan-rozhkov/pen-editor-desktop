@@ -228,6 +228,30 @@ const docs = {
   open: (docId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("doc:open", docId),
 };
 
+// Desktop sign-in (src/main/desktopAuth.ts): `signIn` asks main to open the system browser;
+// the token comes back as `auth:token` once the user finishes there. Main checks the sender.
+let listeners = 0;
+const auth = {
+  signIn(): void {
+    ipcRenderer.send("auth:sign-in");
+  },
+  onToken(cb: (payload: { token: string; verifier: string }) => void): () => void {
+    const listener = (_e: IpcRendererEvent, payload: { token: string; verifier: string }) => cb(payload);
+    ipcRenderer.on("auth:token", listener);
+    // Tells main this view can take a token (a held one is delivered now). Re-sent per subscriber;
+    // main keeps a set, so the unsubscribe of the LAST one is what matters.
+    listeners++;
+    ipcRenderer.send("auth:listen");
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      ipcRenderer.removeListener("auth:token", listener);
+      if (--listeners === 0) ipcRenderer.send("auth:unlisten");
+    };
+  },
+};
+
 const api = {
   setDocumentTitle(title: string | null): void {
     ipcRenderer.send("editor:document-title", title);
@@ -242,6 +266,7 @@ const api = {
   agentLayout: true as const,
   canvasHost,
   traces,
+  auth,
   // Only the trace viewer page may open documents (main refuses other senders), so other tabs do not advertise it.
   ...(typeof location !== "undefined" && location.pathname.includes("/trace/") ? { docs } : {}),
 };

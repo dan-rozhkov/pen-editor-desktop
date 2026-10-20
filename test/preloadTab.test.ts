@@ -247,3 +247,50 @@ describe("preload/tab.ts docs bridge", () => {
     expect(exposedApi.docs).toBeUndefined();
   });
 });
+
+describe("desktop sign-in bridge (auth) in both preloads", () => {
+  const cases: [string, string, string][] = [
+    ["editor tab preload", "../src/preload/tab", "penDesktop"],
+    ["agent panel preload", "../src/preload/agentPanel", "penAgentPanel"],
+  ];
+  for (const [label, file] of cases) {
+    describe(label, () => {
+      beforeEach(async () => {
+        vi.resetModules();
+        sendMock.mockClear();
+        onMock.mockClear();
+        removeListenerMock.mockClear();
+        exposedApi = undefined;
+        await import(/* @vite-ignore */ file);
+      });
+
+      it("signIn() sends auth:sign-in with no payload", () => {
+        exposedApi.auth.signIn();
+        expect(sendMock).toHaveBeenCalledWith("auth:sign-in");
+        expect(sendMock.mock.calls.at(-1)).toHaveLength(1);
+      });
+
+      it("onToken(cb) delivers { token, verifier } from auth:token and the returned function unsubscribes", () => {
+        const cb = vi.fn();
+        const off = exposedApi.auth.onToken(cb) as () => void;
+        expect(onMock).toHaveBeenCalledWith("auth:token", expect.any(Function));
+        const listener = onMock.mock.calls.find((c) => c[0] === "auth:token")![1];
+        listener({}, { token: "t", verifier: "v" });
+        expect(cb).toHaveBeenCalledWith({ token: "t", verifier: "v" });
+        off();
+        expect(removeListenerMock).toHaveBeenCalledWith("auth:token", listener);
+      });
+
+      it("onToken sends auth:listen on subscribe and auth:unlisten only when the last subscriber leaves", () => {
+        const offA = exposedApi.auth.onToken(vi.fn()) as () => void;
+        const offB = exposedApi.auth.onToken(vi.fn()) as () => void;
+        expect(sendMock.mock.calls.filter((c) => c[0] === "auth:listen")).toHaveLength(2);
+        offA();
+        offA(); // double unsubscribe is a no-op
+        expect(sendMock.mock.calls.some((c) => c[0] === "auth:unlisten")).toBe(false);
+        offB();
+        expect(sendMock.mock.calls.filter((c) => c[0] === "auth:unlisten")).toHaveLength(1);
+      });
+    });
+  }
+});

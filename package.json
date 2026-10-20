@@ -32,6 +32,14 @@
     "directories": {
       "output": "release"
     },
+    "protocols": [
+      {
+        "name": "Sideform",
+        "schemes": [
+          "sideform"
+        ]
+      }
+    ],
     "files": [
       "dist/**",
       "THIRD_PARTY_NOTICES.md"

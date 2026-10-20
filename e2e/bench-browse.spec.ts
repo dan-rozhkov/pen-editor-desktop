@@ -61,7 +61,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { startBenchShopServer, type OrderRecord } from "./fixtures/bench-shop/server";
 
-const PROD_EDITOR = process.env.PEN_LIVE_URL ?? "https://pen-editor.onrender.com/app";
+const PROD_EDITOR = process.env.PEN_LIVE_URL ?? "https://app.sideform.pro/app";
 const editorOrigin = new URL(PROD_EDITOR).origin;
 
 type BenchMode = "jev" | "nojev" | "task" | "taskexact";

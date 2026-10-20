@@ -15,6 +15,7 @@ describe("buildMenuTemplate", () => {
       newBrowserTab: vi.fn(),
       newDocTab: vi.fn(),
       openPasswords: vi.fn(),
+      signIn: vi.fn(),
       closeTab: vi.fn(), closeWindow: vi.fn(),
       nextTab: vi.fn(),
       prevTab: vi.fn(),
@@ -65,6 +66,16 @@ describe("buildMenuTemplate", () => {
     const i = item("Passwords…");
     (i.click as () => void)();
     expect(actions.openPasswords).toHaveBeenCalledTimes(1);
+    expect(actions.forwardToActiveTab).not.toHaveBeenCalled();
+  });
+
+  it("Sign In… sits in the File menu and starts the browser sign-in without forwarding a menu command", () => {
+    const file = buildMenuTemplate(actions, { isMac: true }).find((m) => m.label === "File")!;
+    const labels = (file.submenu as MenuItemConstructorOptions[]).map((i) => i.label);
+    expect(labels).toContain("Sign In…");
+    const i = item("Sign In…");
+    (i.click as () => void)();
+    expect(actions.signIn).toHaveBeenCalledTimes(1);
     expect(actions.forwardToActiveTab).not.toHaveBeenCalled();
   });
 
@@ -236,7 +247,7 @@ describe("buildNewTabMenuTemplate", () => {
 
 describe("View > Agent Panel", () => {
   const actions = {
-    newTab: vi.fn(), newBrowserTab: vi.fn(), newDocTab: vi.fn(), openPasswords: vi.fn(), closeTab: vi.fn(), closeWindow: vi.fn(), nextTab: vi.fn(), prevTab: vi.fn(),
+    newTab: vi.fn(), newBrowserTab: vi.fn(), newDocTab: vi.fn(), openPasswords: vi.fn(), signIn: vi.fn(), closeTab: vi.fn(), closeWindow: vi.fn(), nextTab: vi.fn(), prevTab: vi.fn(),
     forwardToActiveTab: vi.fn(), useThisAppForMcp: vi.fn(), setCursorEnabled: vi.fn(), toggleAgentPanel: vi.fn(),
   } as MenuActions;
   it("View menu has a Show/Hide Agent Panel item (Cmd/Ctrl+Alt+B) only with the agent layout", () => {

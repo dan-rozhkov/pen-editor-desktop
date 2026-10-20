@@ -18,6 +18,8 @@ export interface MenuActions {
   newDocTab(): void;
   /** Opens (or focuses) the Passwords window. A local action: it forwards no `menu:command` id. */
   openPasswords(): void;
+  /** Starts the sign-in in the system browser (desktopAuth.ts). A local action: no `menu:command` id. */
+  signIn(): void;
   /** Closes the active tab; does nothing with no tab (never the window). */
   closeTab(): void;
   /** Closes the focused window (File > Close Window, Cmd/Ctrl+Shift+W). */
@@ -93,6 +95,7 @@ export function buildMenuTemplate(
       { label: "New Browser Tab", click: () => actions.newBrowserTab() },
       { label: "New Document Tab", accelerator: "CmdOrCtrl+Shift+D", click: () => actions.newDocTab() },
       { label: "Passwords…", click: () => actions.openPasswords() },
+      { label: "Sign In…", click: () => actions.signIn() },
       {
         label: "Open…",
         accelerator: "CmdOrCtrl+O",

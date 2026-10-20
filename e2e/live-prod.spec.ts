@@ -7,7 +7,7 @@
 // command-palette id, a frontend built against the wrong backend). Nothing in
 // this repo's unit tests or pen-editor's cross-repo contract tests can see
 // that — they check source and working trees, never what is actually serving
-// at https://pen-editor.onrender.com.
+// at https://app.sideform.pro.
 //
 // Therefore: NOT part of `npm run test:e2e` (playwright.config.ts ignores
 // `live-*.spec.ts`). Run it deliberately with `npm run test:e2e:live`, after
@@ -22,7 +22,7 @@ import { isCanvasPage, launchShell } from "./launch";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
-const PROD_EDITOR = process.env.PEN_LIVE_URL ?? "https://pen-editor.onrender.com/app";
+const PROD_EDITOR = process.env.PEN_LIVE_URL ?? "https://app.sideform.pro/app";
 const editorOrigin = new URL(PROD_EDITOR).origin;
 const editorPathname = new URL(PROD_EDITOR).pathname;
 

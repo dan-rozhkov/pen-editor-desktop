@@ -11,7 +11,7 @@ import {
   shouldForwardNavigationEvent,
 } from "../src/main/navigation";
 
-const ORIGIN = "https://pen-editor.onrender.com";
+const ORIGIN = "https://app.sideform.pro";
 
 describe("decideNavigation", () => {
   it("allows same-origin", () => {

@@ -2,7 +2,12 @@
 // "/app" — the shell must open the editor, never the gallery. An explicit
 // PEN_DESKTOP_URL override is used verbatim, so it has to carry "/app" too
 // (see the `dev` script in package.json).
-export const DEFAULT_EDITOR_URL = "https://pen-editor.onrender.com/app";
+export const DEFAULT_EDITOR_URL = "https://app.sideform.pro/app";
+
+/** The origin the desktop loaded before 2026-10-20 (it is the same static site, now
+ * also served on app.sideform.pro). Only the one-time storage migration reads it
+ * (originMigration.ts); nothing loads it as the editor any more. */
+export const LEGACY_EDITOR_ORIGIN = "https://pen-editor.onrender.com";
 
 /** Editor URL: PEN_DESKTOP_URL override (http/https only), else production. */
 export function resolveEditorUrl(env: NodeJS.ProcessEnv): string {
