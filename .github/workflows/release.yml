@@ -1,0 +1,25 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # The release PR is made with GITHUB_TOKEN, so ci.yml does not run on it.
+      # It changes only package.json, package-lock.json, the manifest and CHANGELOG.md.
+      # Merging it tags vX.Y.Z and makes the GitHub release. The app build
+      # (npm run dist) stays manual.
+      - uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

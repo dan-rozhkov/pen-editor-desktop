@@ -21,6 +21,12 @@ npm run lint      # tsc --noEmit (src) + tsc -p tsconfig.e2e.json (e2e/ + config
 npm run dist      # electron-builder → release/ (mac dmg+zip, unsigned)
 ```
 
+Releases: release-please (`.github/workflows/release.yml`). Every push to `main`
+updates a release PR from Conventional Commits (`feat:` → minor while on 0.x,
+`fix:` → patch, `feat!:` → minor). Merging it bumps `package.json`, writes
+`CHANGELOG.md`, tags `vX.Y.Z` and makes the GitHub release. Do not run
+`npm version` by hand. The app build (`npm run dist`) stays manual.
+
 ## Architecture
 
 `src/main/window.ts` wires one `BaseWindow`: a tab-bar `WebContentsView`
