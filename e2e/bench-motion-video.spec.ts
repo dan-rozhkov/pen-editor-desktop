@@ -6,7 +6,8 @@
 // macOS only. The OS recorder is not used (see record): main composites per-view capturePage() frames and
 // ffmpeg (on PATH) encodes them. Output: MOTION_VIDEO_DIR (default test-results/motion-video), one .mp4 per scene.
 
-import { test, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
+import { test, _electron as electron, type ElectronApplication } from "@playwright/test";
+import { reportCrashes, waitForShellViews } from "./launch";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -16,14 +17,6 @@ const SITES = ["https://en.wikipedia.org/wiki/Electron_(software_framework)", "h
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function tabbarPage(app: ElectronApplication): Promise<Page> {
-  for (let i = 0; i < 200; i++) {
-    const p = app.windows().find((w) => w.url().endsWith("/tabbar/tabbar.html"));
-    if (p) return p;
-    await sleep(100);
-  }
-  throw new Error("tab bar page never appeared");
-}
 
 type Layer = { x: number; y: number; width: number; height: number; radius: number; file: string };
 type Frame = { t: number; layers: Layer[] };
@@ -129,8 +122,9 @@ test("record shell micro-animations", async () => {
   test.setTimeout(300_000);
   fs.mkdirSync(OUT, { recursive: true });
   const app = await electron.launch({ args: ["."], env: { ...process.env } as Record<string, string> });
+  reportCrashes(app);
   try {
-    const bar = await tabbarPage(app);
+    const bar = await waitForShellViews(app);
     await app.evaluate(({ BaseWindow }) => {
       BaseWindow.getAllWindows()[0].setBounds({ x: 80, y: 80, width: 1280, height: 800 });
     });

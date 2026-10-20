@@ -1200,6 +1200,12 @@ without sharing cookies, tabs, fixtures or mocks. The shared browser
 
 **e2e launch helper.** The window starts with zero tabs, so specs that need an editor page launch with `launchShell` (`e2e/launch.ts`: waits for the tab bar, then sends `tabbar:new` like the "+" button). Specs about the empty start use `electron.launch` directly. `e2e/bench-browse.spec.ts` (opt-in, network + tokens) drives the chat in the agent panel (`/agent` view). Verified live 2026-10-19 (`BENCH_MODE=nojev`, 1 run: order placed, 33 s, 21 chat requests).
 
+**Do not run main-process code (`app.evaluate`) while main may be creating views.** Node's inspector runs an evaluate as a V8 interrupt, in the middle of synchronous main code. If it lands while main constructs a `WebContentsView` (the shell views at launch, or a tab just requested), Electron 43 dies with SIGSEGV, and Playwright reports only "Target page, context or browser has been closed" at the next call. That was the "random test fails at launch" CI flake (2026-10-20, Linux container under load: 10 SIGSEGV in 270 browser-tab tests, every one inside the tab bar's `new WebContentsView`; 0 in 540 after the fix, and 3 full suites green). Rules:
+  - After `electron.launch`, call `waitForShellViews(app)` (`e2e/launch.ts`) before any `app.evaluate`. It waits on Playwright's page list and "window" events (CDP, no main-process code) for the tab bar and the empty start, returns the tab bar page, and rejects at once if the app exits. `launchShell` does this.
+  - Drive the UI from the renderer where you can (`tabbar.evaluate(() => penTabbar.newTab())`, as `launchShell` now does), and wait for the new page's "window" event before the next `app.evaluate`.
+  - `reportCrashes(app)` prints `Electron pid=… crashed with SIGSEGV`; `launchShell` and the benches call it.
+  - Reproduce Linux-only issues in `mcr.microsoft.com/playwright:v1.64.1-noble` with `xvfb-run -a` (run three containers at once: the load makes timing flakes show up).
+
 ## External desktop apps (`open({ app })` / `releaseApp`)
 
 The chat agent can launch and drive another Electron app (e.g. Orca). Same

@@ -12,6 +12,7 @@
 // Screenshots: macOS `screencapture -l <CGWindowID>` of the whole BaseWindow, else a composite of per-view
 // capturePage() images. Output: AGENT_SHOTS_DIR (default test-results/agent-layout-shots).
 
+import { reportCrashes, waitForShellViews } from "./launch";
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
 import http from "node:http";
 import fs from "node:fs";
@@ -281,8 +282,10 @@ async function launch(opts: { dark?: boolean; tag: string; emptyShot?: string })
       throw e;
     }
   };
+  reportCrashes(app);
   const panel = await find(isPanel);
-  const tabbar = await find((p) => p.url().endsWith("/tabbar/tabbar.html"));
+  // No main-process code before the shell views exist (see waitForShellViews).
+  const tabbar = await waitForShellViews(app);
   // Empty start: the window opens with zero tabs. Size it first, capture the placeholder (optional), then open a canvas tab.
   await app.evaluate(({ BaseWindow }) => {
     const w = (() => {
