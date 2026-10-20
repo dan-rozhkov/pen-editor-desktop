@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.9.0](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.8.1...v0.9.0) (2026-10-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cursor:** one agent cursor motion, no motion setting
+
+### Features
+
+* **apps:** drive an app the user already has open ([fecacec](https://github.com/dan-rozhkov/pen-editor-desktop/commit/fecaceccd86ad7f2d2ff79c4349f4b395a722218))
+* **apps:** expose launchApp on the preload browser bridge ([4e45936](https://github.com/dan-rozhkov/pen-editor-desktop/commit/4e459365750709e365fed18d5261a10e24bbf1c9))
+* **apps:** the agent launches and drives external Electron apps ([e4fa2a7](https://github.com/dan-rozhkov/pen-editor-desktop/commit/e4fa2a74d0aeb17fcf86d27811d1899afb9d420c))
+* **cursor:** one agent cursor motion, no motion setting ([319974c](https://github.com/dan-rozhkov/pen-editor-desktop/commit/319974cd9a18d19af0fe938cd770820ea77321d6))
+* **empty:** card-based start screen for the tab area ([83cf659](https://github.com/dan-rozhkov/pen-editor-desktop/commit/83cf659f14e8318c70026d13239b86371a7c0609))
+* **motion:** panel slide, tab loading fill, tab enter/exit ([9edcb51](https://github.com/dan-rozhkov/pen-editor-desktop/commit/9edcb5171ad7f47a319204f7addedc2b092c9eb6))
+* **panel:** reveal the agent's browser tab on request ([83b2625](https://github.com/dan-rozhkov/pen-editor-desktop/commit/83b2625bef796bcef3c3e85ad18b65e37aefde9f))
+* **tabbar:** drag tabs to reorder them ([6997451](https://github.com/dan-rozhkov/pen-editor-desktop/commit/699745111b24f0c6412a2d57053d934c2462462a))
+* **tabs:** document tab kind for the /doc editor ([b137297](https://github.com/dan-rozhkov/pen-editor-desktop/commit/b13729796e6f04ae98e3a6ce2a55ca1eca8f30e1))
+
+
+### Bug Fixes
+
+* **tabbar:** address-row tail takes the browser page background ([00c34ca](https://github.com/dan-rozhkov/pen-editor-desktop/commit/00c34ca9c1b61e9ec449b82cfe5a66848fd7ab15))
+* **tabbar:** close button overlays the title instead of reserving room ([3b3a482](https://github.com/dan-rozhkov/pen-editor-desktop/commit/3b3a482bf9487502fc5ad4c4fc77d9ee97d76a2e))
+* **tabbar:** sample the page colour through a canvas, honour dark color-scheme ([f01f07b](https://github.com/dan-rozhkov/pen-editor-desktop/commit/f01f07bdb6631c5a435eb2e99f24f79df8a5ee5b))
+
 ## [0.8.1] - 2026-10-19
 
 ### Changed
