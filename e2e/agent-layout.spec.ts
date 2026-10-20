@@ -36,7 +36,7 @@ test("the window has a left /agent panel; tabs still work", async () => {
   // The panel keeps the sandboxed preload bridge: canvas link + browser, nothing else.
   expect(await agentPage.evaluate(() => (window as never as { penAgentPanel?: { version: number } }).penAgentPanel)).toMatchObject({ version: 2 });
   // Canvas link + browser only (no MCP, no menu).
-  expect(await agentPage.evaluate(() => Object.keys((window as never as { penAgentPanel: object }).penAgentPanel).sort())).toEqual(["browser", "canvas", "docs", "version"]);
+  expect(await agentPage.evaluate(() => Object.keys((window as never as { penAgentPanel: object }).penAgentPanel).sort())).toEqual(["browser", "canvas", "docs", "traces", "version"]);
   expect(await agentPage.evaluate(() => typeof (window as never as { penDesktop?: unknown }).penDesktop)).toBe("undefined");
 
   // Empty start: no canvas tab until one is opened (here: the tab bar's newTab, as the "+" menu does).
