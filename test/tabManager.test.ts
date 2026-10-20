@@ -314,6 +314,18 @@ describe("TabManager", () => {
       expect(tm.getSnapshot().tabs).toEqual([]);
     });
 
+    it("listTraceTabs keeps strip order, prefers the live URL id, flags the active tab and skips non-trace tabs", () => {
+      const a = tm.newTab("trace", undefined, { traceId: "a" });
+      tm.newTab("doc", undefined, { docId: "d" });
+      tm.newTab("trace", undefined, { traceId: "b" });
+      (views[2].getURL as unknown as ReturnType<typeof vi.fn>).mockReturnValue("https://pen-editor.onrender.com/trace/z?src=local&chat=off");
+      tm.activate(a);
+      expect(tm.listTraceTabs()).toEqual([
+        { traceId: "a", title: "Trace", active: true },
+        { traceId: "z", title: "Trace", active: false },
+      ]);
+    });
+
     it("findTraceTab falls back to the opened id when the live URL has none (offline page, redirect)", () => {
       const a = tm.newTab("trace", undefined, { traceId: "a" });
       (views[0].getURL as unknown as ReturnType<typeof vi.fn>).mockReturnValue("file:///app/assets/offline.html");

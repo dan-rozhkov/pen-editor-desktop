@@ -56,7 +56,7 @@ import { isBrowserOwner as isBrowserOwnerId, isOrphaningEvent } from "./orphanRe
 import { CanvasLinkRouter } from "./canvasLink";
 import { openDocTab } from "./docOpen";
 import { openTraceTab } from "./traceOpen";
-import { handleTraceRead, handleTraceSave, type TraceIpcDeps } from "./traceIpc";
+import { handleTraceListTabs, handleTraceRead, handleTraceSave, type TraceIpcDeps } from "./traceIpc";
 import { createTraceStore, nodeTraceFs, TRACE_DIR } from "./traceStore";
 import { FetchRouter } from "./fetchRouting";
 import { BLANK_DOCUMENT_URL, createCommitGate } from "./commitGate";
@@ -2087,7 +2087,10 @@ export function createMainWindow(
     isTraceTab: (id) => tabs.isTraceTab(id),
   };
   ipcMain.handle("traces:save", (event, payload: unknown) => handleTraceSave(traceIpc, event.sender.id, payload));
-  ipcMain.handle("traces:read", (event, id: unknown) => handleTraceRead(traceIpc, event.sender.id, id));
+  ipcMain.handle("traces:read", (event, id: unknown, opts?: unknown) => handleTraceRead(traceIpc, event.sender.id, id, opts));
+  ipcMain.handle("traces:list-tabs", (event) =>
+    handleTraceListTabs({ isPanel: (id) => panelWc()?.id === id, listTraceTabs: () => tabs.listTraceTabs() }, event.sender.id),
+  );
   ipcMain.handle("traces:open", (event, id: unknown) =>
     openTraceTab(
       {
@@ -2351,6 +2354,7 @@ export function createMainWindow(
     ipcMain.removeHandler("traces:save");
     ipcMain.removeHandler("traces:read");
     ipcMain.removeHandler("traces:open");
+    ipcMain.removeHandler("traces:list-tabs");
     canvasLink.dispose();
     // The panel's fixture, checkpoint journals and browser sessions die with the window.
     releasePanelOrphans(true);

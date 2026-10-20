@@ -768,6 +768,18 @@ export class TabManager {
     return null;
   }
 
+  /** Open trace tabs in strip order; id resolved like `findTraceTab`, tabs without a valid id are skipped. */
+  listTraceTabs(): { traceId: string; title: string; active: boolean }[] {
+    const out: { traceId: string; title: string; active: boolean }[] = [];
+    for (const t of this.tabs) {
+      if (t.kind !== "trace") continue;
+      const traceId = traceIdOfUrl(t.view.getURL()) ?? t.traceId;
+      if (!traceId) continue;
+      out.push({ traceId, title: t.title, active: t.id === this.activeId });
+    }
+    return out;
+  }
+
   /** True when the webContents is one of this window's trace tabs. */
   isTraceTab(webContentsId: number): boolean {
     return this.tabs.some((t) => t.kind === "trace" && t.view.getWebContentsId() === webContentsId);

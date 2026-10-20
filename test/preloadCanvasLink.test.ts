@@ -108,7 +108,13 @@ describe("agent panel preload", () => {
     invoke.mockResolvedValueOnce({ ok: true } as never);
     await expect(exposed.penAgentPanel.traces.open("t1")).resolves.toEqual({ ok: true });
     expect(invoke).toHaveBeenLastCalledWith("traces:open", "t1");
-    expect(Object.keys(exposed.penAgentPanel.traces).sort()).toEqual(["open", "save"]);
+    expect(Object.keys(exposed.penAgentPanel.traces).sort()).toEqual(["listTabs", "open", "read", "save"]);
+    await expect(exposed.penAgentPanel.traces.listTabs()).resolves.toBeDefined();
+    expect(invoke).toHaveBeenLastCalledWith("traces:list-tabs");
+    await exposed.penAgentPanel.traces.read("t1");
+    expect(invoke).toHaveBeenLastCalledWith("traces:read", "t1");
+    await exposed.penAgentPanel.traces.read("t1", { frames: false });
+    expect(invoke).toHaveBeenLastCalledWith("traces:read", "t1", { frames: false });
   });
 
   it("browser goes through browser:command, shared, isolated and closeSession", async () => {

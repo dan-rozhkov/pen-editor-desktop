@@ -111,11 +111,16 @@ export interface TraceStoreOptions {
 export type TraceSaveResult = { id: string } | { error: string };
 export type TraceReadResult = { trace: BrowseTrace } | { error: string };
 
+/** Options of `read`. `frames: false` skips loading the frame files: `frame.src` stays the stored asset path. */
+export interface TraceReadOptions {
+  frames?: boolean;
+}
+
 export interface TraceStore {
   /** Validates and stores a trace. Never throws. */
   save(payload: unknown): Promise<TraceSaveResult>;
-  /** The manifest with every frame `src` turned into a data URL. Never throws. */
-  read(id: unknown): Promise<TraceReadResult>;
+  /** The manifest with every frame `src` turned into a data URL (or left as the asset path with `{ frames: false }`). Never throws. */
+  read(id: unknown, opts?: TraceReadOptions): Promise<TraceReadResult>;
 }
 
 const MIME_BY_EXT: Record<string, string> = { jpg: "image/jpeg", png: "image/png", webp: "image/webp" };
@@ -238,7 +243,7 @@ export function createTraceStore(opts: TraceStoreOptions): TraceStore {
     return { id: trace.id };
   }
 
-  async function read(id: unknown): Promise<TraceReadResult> {
+  async function read(id: unknown, opts?: TraceReadOptions): Promise<TraceReadResult> {
     if (typeof id !== "string" || !BROWSE_TRACE_ID.test(id)) return { error: "invalid trace id" };
     try {
       const dir = dirOf(id);
@@ -254,8 +259,13 @@ export function createTraceStore(opts: TraceStoreOptions): TraceStore {
       if ("error" in parsed) return { error: `invalid trace: ${parsed.error}` };
       if (parsed.trace.id !== id) return { error: "invalid trace: id mismatch" };
       const frames = [];
+      const withFrames = opts?.frames !== false;
       for (const frame of parsed.trace.frames) {
         if (!BROWSE_TRACE_ASSET_PATH.test(frame.src)) return { error: `frame ${frame.id}: invalid src` };
+        if (!withFrames) {
+          frames.push(frame); // no file I/O: the src stays the stored asset path (a valid frame src for parseBrowseTrace)
+          continue;
+        }
         const bytes = await io.read(path.join(dir, frame.src));
         if (bytes === null) return { error: `frame ${frame.id}: file is missing` };
         frames.push({ ...frame, src: `data:${MIME_BY_EXT[extOf(frame.src)]};base64,${bytes.toString("base64")}` });

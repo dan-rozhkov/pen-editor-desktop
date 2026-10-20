@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { openTraceTab, type TraceOpenDeps } from "../src/main/traceOpen";
-import { handleTraceRead, handleTraceSave, type TraceIpcDeps } from "../src/main/traceIpc";
+import { handleTraceListTabs, handleTraceRead, handleTraceSave, type TraceIpcDeps } from "../src/main/traceIpc";
 
 function deps(over: Partial<TraceOpenDeps> = {}): TraceOpenDeps {
   return {
@@ -76,11 +76,41 @@ describe("traces:save / traces:read sender rules", () => {
     expect(d.store.read).toHaveBeenCalledTimes(3);
   });
 
+  it("read: forwards only a plain { frames: boolean } option", async () => {
+    const d = ipcDeps();
+    await handleTraceRead(d, 1, "t1", { frames: false });
+    expect(d.store.read).toHaveBeenLastCalledWith("t1", { frames: false });
+    await handleTraceRead(d, 1, "t1", { frames: true, extra: 1 });
+    expect(d.store.read).toHaveBeenLastCalledWith("t1", { frames: true });
+    for (const bad of [undefined, null, "x", 5, [], [false], { frames: "no" }, { frames: 0 }, {}, new Map(), Object.create({ frames: false })]) {
+      await handleTraceRead(d, 1, "t1", bad);
+      expect(d.store.read, String(bad)).toHaveBeenLastCalledWith("t1");
+    }
+  });
+
   it("a throwing store becomes {error}", async () => {
     const d = ipcDeps();
     d.store.save.mockImplementation(async () => { throw new Error("disk"); });
     d.store.read.mockImplementation(async () => { throw new Error("disk"); });
     expect(await handleTraceSave(d, 1, {})).toEqual({ error: "disk" });
     expect(await handleTraceRead(d, 1, "t1")).toEqual({ error: "disk" });
+  });
+});
+
+describe("traces:list-tabs", () => {
+  const tabs = [{ traceId: "a", title: "A", active: false }, { traceId: "b", title: "B", active: true }];
+  it("returns the tabs to the panel", () => {
+    expect(handleTraceListTabs({ isPanel: (id) => id === 1, listTraceTabs: () => tabs }, 1)).toEqual({ tabs });
+  });
+  it("rejects other senders without listing", () => {
+    const listTraceTabs = vi.fn(() => tabs);
+    expect(handleTraceListTabs({ isPanel: (id) => id === 1, listTraceTabs }, 2)).toEqual({
+      error: "traces:list-tabs is only allowed from the agent panel",
+    });
+    expect(listTraceTabs).not.toHaveBeenCalled();
+  });
+  it("never throws", () => {
+    const r = handleTraceListTabs({ isPanel: () => true, listTraceTabs: () => { throw new Error("boom"); } }, 1);
+    expect(r).toEqual({ error: "boom" });
   });
 });

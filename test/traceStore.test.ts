@@ -248,6 +248,24 @@ describe("traceStore.read", () => {
     expect(r.trace.frames.map((f) => f.src)).toEqual([JPG, PNG]);
   });
 
+  it("{ frames: false } keeps the asset paths and reads no frame file", async () => {
+    const { io, store: s } = store();
+    await s.save(payload(manifest("t1", [{ id: 0, src: "frames/0.jpg" }, { id: 1, src: "frames/1.png" }]), [{ path: "frames/0.jpg", dataUrl: JPG }, { path: "frames/1.png", dataUrl: PNG }]));
+    const reads: string[] = [];
+    const orig = io.read;
+    io.read = async (p) => {
+      reads.push(p);
+      return orig(p);
+    };
+    const r = await s.read("t1", { frames: false });
+    if (!("trace" in r)) throw new Error("expected a trace");
+    expect(r.trace.frames.map((f) => f.src)).toEqual(["frames/0.jpg", "frames/1.png"]);
+    expect(reads).toHaveLength(1); // trace.json only
+    const full = await s.read("t1", { frames: true });
+    if (!("trace" in full)) throw new Error("expected a trace");
+    expect(full.trace.frames.map((f) => f.src)).toEqual([JPG, PNG]);
+  });
+
   it("rejects ids that are not trace ids before touching the fs", async () => {
     const { io, store: s } = store();
     io.read = async () => { throw new Error("must not read"); };

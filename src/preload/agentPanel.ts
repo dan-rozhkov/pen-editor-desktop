@@ -142,6 +142,11 @@ const traces = {
   save: (payload: { manifest: unknown; assets: { path: string; dataUrl: string }[] }): Promise<{ id: string } | { error: string }> =>
     ipcRenderer.invoke("traces:save", payload),
   open: (id: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("traces:open", id),
+  listTabs: (): Promise<{ tabs: { traceId: string; title: string; active: boolean }[] } | { error: string }> =>
+    ipcRenderer.invoke("traces:list-tabs"),
+  // `opts.frames === false` skips the frame files (no base64 over IPC). Main validates `opts`.
+  read: (id: string, opts?: { frames?: boolean }): Promise<{ trace: unknown } | { error: string }> =>
+    opts === undefined ? ipcRenderer.invoke("traces:read", id) : ipcRenderer.invoke("traces:read", id, opts),
 };
 
 contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser, docs, traces });

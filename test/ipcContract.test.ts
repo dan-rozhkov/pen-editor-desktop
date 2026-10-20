@@ -59,6 +59,7 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "traces:save", direction: "renderer->main" },
   { name: "traces:read", direction: "renderer->main" },
   { name: "traces:open", direction: "renderer->main" },
+  { name: "traces:list-tabs", direction: "renderer->main" },
   { name: "canvas:activate", direction: "renderer->main" },
   { name: "canvas:to-tab", direction: "renderer->main" },
   { name: "canvas:from-tab", direction: "main->renderer" },
