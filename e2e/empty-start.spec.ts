@@ -46,6 +46,7 @@ test("agent layout opens with the panel only; the placeholder opens and returns 
     // Zero tabs, placeholder visible with its text and the three cards (whole card = button, named by its CTA).
     await expect(tabbar.locator(".tab")).toHaveCount(0);
     expect(app.windows().some((p) => p.url().startsWith(`${baseUrl}/app`))).toBe(false);
+    await expect(empty.getByRole("heading", { level: 1 })).toHaveText("Where shall we start?");
     await expect(empty.locator(".hint")).toHaveText("Canvas, browser and document tabs open here.");
     await expect(empty.locator("#new-canvas .cta-label")).toHaveText("New canvas tab");
     await expect(empty.locator("#new-browser .cta-label")).toHaveText("New browser tab");
