@@ -345,6 +345,14 @@ describe("TabManager", () => {
       expect(tm.isTraceTab(99)).toBe(false);
     });
 
+    it("isDocTab matches only doc tabs by webContents id", () => {
+      tm.newTab("trace", undefined, { traceId: "a" });
+      tm.newTab("doc", undefined, { docId: "d" });
+      expect(tm.isDocTab(views[0].getWebContentsId())).toBe(false);
+      expect(tm.isDocTab(views[1].getWebContentsId())).toBe(true);
+      expect(tm.isDocTab(99)).toBe(false);
+    });
+
     it("isTraceViewer needs a trace tab that still shows /trace/<id>; isActiveTabWebContents follows the active tab", () => {
       const a = tm.newTab("trace", undefined, { traceId: "a" });
       const doc = tm.newTab("doc", undefined, { docId: "d" });

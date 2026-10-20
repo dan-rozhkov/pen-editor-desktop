@@ -135,6 +135,9 @@ const canvas = {
 // Documents (markdown tabs at `/doc`): ask main to open or focus one. Main checks the sender.
 const docs = {
   open: (docId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("doc:open", docId),
+  list: (): Promise<{ docs: unknown[] } | { error: string }> => ipcRenderer.invoke("docs:list"),
+  save: (doc: unknown): Promise<{ ok: true; rev: number; stale?: true } | { error: string }> => ipcRenderer.invoke("docs:save", doc),
+  remove: (id: string): Promise<{ ok: true } | { error: string }> => ipcRenderer.invoke("docs:delete", id),
 };
 
 // Browse-run traces: store a finished trace locally, open its viewer tab. Main checks the sender.

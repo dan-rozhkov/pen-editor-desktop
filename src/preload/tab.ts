@@ -223,8 +223,14 @@ const traces = {
   read: (id: string): Promise<{ trace: unknown } | { error: string }> => ipcRenderer.invoke("traces:read", id),
 };
 
-// Documents (markdown tabs at `/doc`): a trace tab asks main to open or focus one. Main checks the sender.
+// Documents (markdown tabs at `/doc`): disk mirror on every tab; `open` (below) only on the trace viewer page. Main checks the sender.
+const docStorage = {
+  list: (): Promise<{ docs: unknown[] } | { error: string }> => ipcRenderer.invoke("docs:list"),
+  save: (doc: unknown): Promise<{ ok: true; rev: number; stale?: true } | { error: string }> => ipcRenderer.invoke("docs:save", doc),
+  remove: (id: string): Promise<{ ok: true } | { error: string }> => ipcRenderer.invoke("docs:delete", id),
+};
 const docs = {
+  ...docStorage,
   open: (docId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("doc:open", docId),
 };
 
@@ -267,8 +273,8 @@ const api = {
   canvasHost,
   traces,
   auth,
-  // Only the trace viewer page may open documents (main refuses other senders), so other tabs do not advertise it.
-  ...(typeof location !== "undefined" && location.pathname.includes("/trace/") ? { docs } : {}),
+  // Only the trace viewer page may open documents (main refuses other senders), so other tabs do not advertise `open`.
+  docs: typeof location !== "undefined" && location.pathname.includes("/trace/") ? docs : docStorage,
 };
 
 contextBridge.exposeInMainWorld("penDesktop", api);

@@ -785,6 +785,11 @@ export class TabManager {
     return this.tabs.some((t) => t.kind === "trace" && t.view.getWebContentsId() === webContentsId);
   }
 
+  /** True when the webContents is one of this window's doc (Markdown) tabs. */
+  isDocTab(webContentsId: number): boolean {
+    return this.tabs.some((t) => t.kind === "doc" && t.view.getWebContentsId() === webContentsId);
+  }
+
   /** True when the webContents is a trace tab that still shows the trace viewer (`/trace/<id>`), not a page it navigated to. */
   isTraceViewer(webContentsId: number): boolean {
     return this.tabs.some(

@@ -234,17 +234,32 @@ describe("preload/tab.ts docs bridge", () => {
     await import("../src/preload/tab");
   }
 
-  it("on the trace viewer page exposes only open, over doc:open", async () => {
+  it("on every page exposes list, save and remove over docs:list / docs:save / docs:delete", async () => {
+    await load("/app");
+    expect(Object.keys(exposedApi.docs).sort()).toEqual(["list", "remove", "save"]);
+    invokeMock.mockResolvedValueOnce({ docs: [] });
+    await expect(exposedApi.docs.list()).resolves.toEqual({ docs: [] });
+    expect(invokeMock).toHaveBeenLastCalledWith("docs:list");
+    const doc = { id: "a", title: "t", markdown: "m", updatedAt: 1, rev: 1 };
+    invokeMock.mockResolvedValueOnce({ ok: true, rev: 1 });
+    await expect(exposedApi.docs.save(doc)).resolves.toEqual({ ok: true, rev: 1 });
+    expect(invokeMock).toHaveBeenLastCalledWith("docs:save", doc);
+    invokeMock.mockResolvedValueOnce({ ok: true });
+    await expect(exposedApi.docs.remove("a")).resolves.toEqual({ ok: true });
+    expect(invokeMock).toHaveBeenLastCalledWith("docs:delete", "a");
+  });
+
+  it("on the trace viewer page adds open, over doc:open", async () => {
     await load("/trace/abc");
-    expect(Object.keys(exposedApi.docs)).toEqual(["open"]);
+    expect(Object.keys(exposedApi.docs).sort()).toEqual(["list", "open", "remove", "save"]);
     invokeMock.mockResolvedValueOnce({ ok: true });
     await expect(exposedApi.docs.open("abc_1")).resolves.toEqual({ ok: true });
     expect(invokeMock).toHaveBeenLastCalledWith("doc:open", "abc_1");
   });
 
-  it("is absent on other pages (main refuses them anyway)", async () => {
+  it("has no open on other pages (main refuses them anyway)", async () => {
     await load("/app");
-    expect(exposedApi.docs).toBeUndefined();
+    expect(exposedApi.docs.open).toBeUndefined();
   });
 });
 

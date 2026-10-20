@@ -94,6 +94,17 @@ describe("agent panel preload", () => {
     expect(tcb).toHaveBeenCalledWith([1]);
   });
 
+  it("docs.list / save / remove invoke their channels; docs has exactly open, list, save, remove", async () => {
+    expect(Object.keys(exposed.penAgentPanel.docs).sort()).toEqual(["list", "open", "remove", "save"]);
+    await exposed.penAgentPanel.docs.list();
+    expect(invoke).toHaveBeenLastCalledWith("docs:list");
+    const doc = { id: "a", title: "t", markdown: "m", updatedAt: 1, rev: 1 };
+    await exposed.penAgentPanel.docs.save(doc);
+    expect(invoke).toHaveBeenLastCalledWith("docs:save", doc);
+    await exposed.penAgentPanel.docs.remove("a");
+    expect(invoke).toHaveBeenLastCalledWith("docs:delete", "a");
+  });
+
   it("docs.open invokes doc:open with the id and returns main's reply", async () => {
     invoke.mockResolvedValueOnce({ ok: true } as never);
     await expect(exposed.penAgentPanel.docs.open("abc_1")).resolves.toEqual({ ok: true });

@@ -45,7 +45,7 @@ import {
   type BrowserPageHandle,
   isFetchableStylesheetUrl,
 } from "@sideform/browser-agent/controller";
-import { resolveAgentPanelUrl, resolveCanvasTabUrl, INITIAL_TABS } from "./config";
+import { resolveAgentPanelUrl, resolveCanvasTabUrl, INITIAL_TABS, isEnvValueSet } from "./config";
 import { secureWebPreferences } from "./webPreferences";
 import { ADDRESS_ROW_HEIGHT, ISLAND_GAP, ISLAND_RADIUS, TAB_ROW_HEIGHT, agentPanelWidthFor, computeWindowLayout, type WindowLayout } from "./layout";
 import { activeTabChanged, isAuthSignInSender, pickAuthReceiver, type AuthTokenPayload, type DesktopAuth } from "./desktopAuth";
@@ -56,6 +56,8 @@ import { FixtureOwners } from "./fixtureOwners";
 import { isBrowserOwner as isBrowserOwnerId, isOrphaningEvent } from "./orphanRelease";
 import { CanvasLinkRouter } from "./canvasLink";
 import { openDocTab } from "./docOpen";
+import { handleDocDelete, handleDocList, handleDocSave, type DocIpcDeps } from "./docIpc";
+import { createDocStore, docDirFor, nodeDocFs, type DocStore } from "./docStore";
 import { openTraceTab } from "./traceOpen";
 import { handleTraceListTabs, handleTraceRead, handleTraceSave, type TraceIpcDeps } from "./traceIpc";
 import { createTraceStore, nodeTraceFs, TRACE_DIR } from "./traceStore";
@@ -92,6 +94,17 @@ import {
  * App-wide, shared by every window: the partitions `qa-0`..`qa-5` that isolated
  * sessions take turns in. The wait for a free slot is tunable for tests.
  */
+// One document store per PROCESS: its rev cache and per-id chains must outlive any window,
+// or a reopened window (macOS dock) could race the closed window's pending writes.
+let processDocStore: DocStore | null = null;
+function getDocStore(): DocStore {
+  processDocStore ??= createDocStore({
+    rootDir: path.join(app.getPath("userData"), docDirFor(isEnvValueSet(process.env.PEN_DESKTOP_URL))),
+    fs: nodeDocFs,
+  });
+  return processDocStore;
+}
+
 const partitionPool = new PartitionPool(undefined, Number(process.env.PEN_DESKTOP_SESSION_SLOT_WAIT_MS) || undefined);
 
 /** Per-session state of an isolated browser session (see browserSessions.ts). */
@@ -2170,6 +2183,18 @@ export function createMainWindow(
     ),
   );
 
+  // Document storage: the frontend mirrors its localStorage documents to userData; sender rules in docIpc.ts.
+  const docIpc: DocIpcDeps = {
+    store: getDocStore(),
+    isPanel: (id) => panelWc()?.id === id,
+    isEditorTab: (id) => tabs.isEditorTab(id),
+    isDocTab: (id) => tabs.isDocTab(id),
+    isTraceTab: (id) => tabs.isTraceTab(id),
+  };
+  ipcMain.handle("docs:list", (event) => handleDocList(docIpc, event.sender.id));
+  ipcMain.handle("docs:save", (event, doc: unknown) => handleDocSave(docIpc, event.sender.id, doc));
+  ipcMain.handle("docs:delete", (event, id: unknown) => handleDocDelete(docIpc, event.sender.id, id));
+
   // Browse-run traces: stored under userData; sender rules in traceIpc.ts, opening in traceOpen.ts.
   const traceIpc: TraceIpcDeps = {
     store: createTraceStore({ rootDir: path.join(app.getPath("userData"), TRACE_DIR), fs: nodeTraceFs }),
@@ -2447,6 +2472,9 @@ export function createMainWindow(
     ipcMain.removeHandler("canvas:list");
     ipcMain.removeHandler("canvas:open");
     ipcMain.removeHandler("doc:open");
+    ipcMain.removeHandler("docs:list");
+    ipcMain.removeHandler("docs:save");
+    ipcMain.removeHandler("docs:delete");
     ipcMain.removeHandler("traces:save");
     ipcMain.removeHandler("traces:read");
     ipcMain.removeHandler("traces:open");
