@@ -224,3 +224,26 @@ describe("preload/tab.ts traces bridge", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("traces:read", "t1");
   });
 });
+
+describe("preload/tab.ts docs bridge", () => {
+  async function load(pathname: string) {
+    vi.resetModules();
+    invokeMock.mockClear();
+    exposedApi = undefined;
+    (globalThis as unknown as { location: unknown }).location = { pathname };
+    await import("../src/preload/tab");
+  }
+
+  it("on the trace viewer page exposes only open, over doc:open", async () => {
+    await load("/trace/abc");
+    expect(Object.keys(exposedApi.docs)).toEqual(["open"]);
+    invokeMock.mockResolvedValueOnce({ ok: true });
+    await expect(exposedApi.docs.open("abc_1")).resolves.toEqual({ ok: true });
+    expect(invokeMock).toHaveBeenLastCalledWith("doc:open", "abc_1");
+  });
+
+  it("is absent on other pages (main refuses them anyway)", async () => {
+    await load("/app");
+    expect(exposedApi.docs).toBeUndefined();
+  });
+});

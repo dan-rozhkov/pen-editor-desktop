@@ -223,6 +223,11 @@ const traces = {
   read: (id: string): Promise<{ trace: unknown } | { error: string }> => ipcRenderer.invoke("traces:read", id),
 };
 
+// Documents (markdown tabs at `/doc`): a trace tab asks main to open or focus one. Main checks the sender.
+const docs = {
+  open: (docId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("doc:open", docId),
+};
+
 const api = {
   setDocumentTitle(title: string | null): void {
     ipcRenderer.send("editor:document-title", title);
@@ -237,6 +242,8 @@ const api = {
   agentLayout: true as const,
   canvasHost,
   traces,
+  // Only the trace viewer page may open documents (main refuses other senders), so other tabs do not advertise it.
+  ...(typeof location !== "undefined" && location.pathname.includes("/trace/") ? { docs } : {}),
 };
 
 contextBridge.exposeInMainWorld("penDesktop", api);

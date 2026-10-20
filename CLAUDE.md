@@ -232,11 +232,14 @@ partition. Preload: the same `preload/tab.ts` (harmless: the page never calls
 `canvasHost.register`); it also publishes `editor:theme`, so doc tabs take part in theme
 sync (`editorTabCount`, `resolveActiveTheme`). The tab title follows `document.title`
 (main listens to `page-title-updated`; the preload's `setDocumentTitle` is not used). Same
-origin clamp, offline fallback and window-open policy as editor tabs (external links go to the system browser; the browser-tab popup policy applies to `kind === "browser"` only). File-menu palette commands (`forwardToActiveTab`) reach editor tabs only (`menuTarget.ts`); with a doc tab active they are a no-op. **`doc:open`** (invoke, agent panel only,
-`window.penAgentPanel.docs.open(docId)` -> `{ok, error?}`; logic in `src/main/docOpen.ts`):
+origin clamp, offline fallback and window-open policy as editor tabs (external links go to the system browser; the browser-tab popup policy applies to `kind === "browser"` only). File-menu palette commands (`forwardToActiveTab`) reach editor tabs only (`menuTarget.ts`); with a doc tab active they are a no-op. **`doc:open`** (invoke, `docId` -> `{ok, error?}`, logic in `src/main/docOpen.ts`), two senders:
+  - the agent panel: `window.penAgentPanel.docs.open(docId)`;
+  - a trace tab that still shows `/trace/<id>` (`tabs.isTraceViewer`): `window.penDesktop.docs.open(docId)`, which `preload/tab.ts` exposes only when the page is at `/trace/`. Editor, doc and browser tabs are refused.
+
+  Behaviour:
 `docId` must match `/^[A-Za-z0-9_-]{1,64}$/`; an open doc tab whose URL has `id=<docId>`
 (`TabManager.findDocTab`; a `new=1` tab never matches) is activated, else a new doc tab opens at `/doc?id=<docId>&chat=off`
-and is shown as the active tab; it resolves once the tab exists, not when the page has loaded. **Focus rule:** `doc:open` is agent-initiated, so the doc tab becomes the visible active tab but does NOT take keyboard focus (`activate(id, {focus:false})` / `newTab("doc", undefined, {docId, focus:false})`); typing stays in the panel composer. User-driven activation (click, menu, empty-start button) keeps focusing. Glyph:
+and is shown as the active tab; it resolves once the tab exists, not when the page has loaded. **Focus rule:** `doc:open` is agent-initiated, so the doc tab becomes the visible active tab but does NOT take keyboard focus (`activate(id, {focus:false})` / `newTab("doc", undefined, {docId, focus:false})`); typing stays in the panel composer. A trace tab's open is a user click: when that trace tab is the ACTIVE tab, the doc tab is activated WITH focus (`{focus:true}`); from a background trace tab it opens without focus. User-driven activation (click, menu, empty-start button) keeps focusing. Glyph:
 Phosphor "FileText" (regular). Tests: `docOpen.test.ts`, `tabManager.test.ts` ("doc tabs"),
 `config.test.ts`, `menu.test.ts`, `preloadCanvasLink.test.ts`, `ipcContract.test.ts`.
 
@@ -257,7 +260,7 @@ or placeholder card. Glyph: Phosphor "Pulse" (regular).
 - **IPC** (all invoke/handle, errors come back as values): `traces:save` (sender: the agent panel or an editor tab) -> `{id}` | `{error}`;
   `traces:read` (sender: a trace tab, the panel or an editor tab) -> `{trace}` | `{error}`; `traces:open` (sender: the panel only; `id` -> `{ok, error?}`;
   logic in `src/main/traceOpen.ts`, like `doc:open`: an open tab for the id is activated, else a new one opens, both WITHOUT keyboard focus). Sender rules of save/read are
-  in `src/main/traceIpc.ts`. Preloads: `penAgentPanel.traces = { save, open }`, `penDesktop.traces = { save, read }`.
+  in `src/main/traceIpc.ts`. Preloads: `penAgentPanel.traces = { save, open }`, `penDesktop.traces = { save, read }`. Trace tabs may open Markdown documents in a Document tab via `penDesktop.docs.open(docId)` (`doc:open`, see "Document tabs"); the frontend writes the doc to `localStorage` first.
 - Tests: `traceStore.test.ts`, `traceOpen.test.ts` (open + sender rules), `tabManager.test.ts` ("trace tabs"), `config.test.ts`,
   `preloadCanvasLink.test.ts`, `preloadTab.test.ts`, `ipcContract.test.ts`.
 
@@ -365,7 +368,7 @@ CI of its own. `Close Window` is a local action like Passwords (no forwarded id)
 - `tabbar:toggle-panel` tabbar→main (sender-checked) — the sidebar button: show/hide the agent panel (see "Sidebar toggle"); the new state returns as `panelCollapsed` on `tabbar:state`
 - `tabbar:new-browser` tabbar/empty-state→main (sender-checked) — a user-driven browser tab (`newUserBrowserTab`); sent by the empty-state placeholder only (`preload/empty.ts`)
 - `tabbar:new-doc` tabbar/empty-state→main (sender-checked) — a new document tab (`/doc?new=1&chat=off`); sent by the empty-state Document card (`#new-doc`) only (the "+" menu item calls `tabs.newTab("doc")` directly); File > New Document Tab (`CmdOrCtrl+Shift+D`) runs the same action locally
-- `doc:open` agent panel→main (invoke, panel-only; `docId` → `{ok, error?}`) — activates the doc tab showing that document or opens `/doc?id=<docId>&chat=off`; see "Document tabs"
+- `doc:open` agent panel or trace tab→main (invoke, panel or trace-tab sender; `docId` → `{ok, error?}`) — activates the doc tab showing that document or opens `/doc?id=<docId>&chat=off`; see "Document tabs"
 - `traces:save` / `traces:read` renderer→main (invoke, sender-checked: save = panel or editor tab, read = trace tab, panel or editor tab; payload errors return `{error}`) and `traces:open` panel→main (invoke, panel-only; `id` → `{ok, error?}`) — browse-run traces, see "Trace tabs"
 - `tabbar:new-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the "+" button: main pops a native menu (New Canvas Tab / New Browser Tab / New Document), since an HTML popup would be clipped to the tab bar view's height. `tabbar:new` is sent by the empty-state placeholder's Canvas card (`#new-canvas`); e2e also drives it through `penTabbar.newTab()`, which a native menu can't be clicked through
 - `tabbar:tools-menu` tabbar→main (sender-checked; `{x, y}` window coords) — the browser chrome row's gear button: native menu (Viewport emulation via CDP, Open/Close Developer Tools, Zoom) for the active browser tab; builder in `src/main/browserToolsMenu.ts`

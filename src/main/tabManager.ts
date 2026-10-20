@@ -773,6 +773,18 @@ export class TabManager {
     return this.tabs.some((t) => t.kind === "trace" && t.view.getWebContentsId() === webContentsId);
   }
 
+  /** True when the webContents is a trace tab that still shows the trace viewer (`/trace/<id>`), not a page it navigated to. */
+  isTraceViewer(webContentsId: number): boolean {
+    return this.tabs.some(
+      (t) => t.kind === "trace" && t.view.getWebContentsId() === webContentsId && traceIdOfUrl(t.view.getURL()) !== null,
+    );
+  }
+
+  /** True when the webContents belongs to the active tab. */
+  isActiveTabWebContents(webContentsId: number): boolean {
+    return this.tabs.some((t) => t.id === this.activeId && t.view.getWebContentsId() === webContentsId);
+  }
+
   /** The webContents id of a tab, or null. */
   webContentsIdOf(id: number): number | null {
     return this.tabs.find((t) => t.id === id)?.view.getWebContentsId() ?? null;

@@ -53,7 +53,7 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "browser:reveal-agent-tab", direction: "renderer->main" },
   { name: "canvas:list", direction: "renderer->main" },
   { name: "canvas:open", direction: "renderer->main" },
-  // Documents: the panel asks main to open/focus a markdown doc tab (`/doc`).
+  // Documents: the panel or a trace tab asks main to open/focus a markdown doc tab (`/doc`).
   { name: "doc:open", direction: "renderer->main" },
   // Browse-run traces (invoke/handle): save/read stored traces, open a trace tab. See CLAUDE.md "Trace tabs".
   { name: "traces:save", direction: "renderer->main" },

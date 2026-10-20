@@ -332,6 +332,22 @@ describe("TabManager", () => {
       expect(tm.isTraceTab(views[1].getWebContentsId())).toBe(false);
       expect(tm.isTraceTab(99)).toBe(false);
     });
+
+    it("isTraceViewer needs a trace tab that still shows /trace/<id>; isActiveTabWebContents follows the active tab", () => {
+      const a = tm.newTab("trace", undefined, { traceId: "a" });
+      const doc = tm.newTab("doc", undefined, { docId: "d" });
+      const traceWc = views[0].getWebContentsId();
+      (views[0].getURL as unknown as ReturnType<typeof vi.fn>).mockReturnValue("https://pen-editor.onrender.com/trace/a?src=local");
+      (views[1].getURL as unknown as ReturnType<typeof vi.fn>).mockReturnValue("https://pen-editor.onrender.com/trace/a?src=local");
+      expect(tm.isTraceViewer(traceWc)).toBe(true);
+      expect(tm.isTraceViewer(views[1].getWebContentsId())).toBe(false);
+      (views[0].getURL as unknown as ReturnType<typeof vi.fn>).mockReturnValue("https://pen-editor.onrender.com/app");
+      expect(tm.isTraceViewer(traceWc)).toBe(false);
+      tm.activate(a);
+      expect(tm.isActiveTabWebContents(traceWc)).toBe(true);
+      tm.activate(doc);
+      expect(tm.isActiveTabWebContents(traceWc)).toBe(false);
+    });
   });
 
   it("newTab with activate:false opens in the background without activating or emitting an activation", () => {

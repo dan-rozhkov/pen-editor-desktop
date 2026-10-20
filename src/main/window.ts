@@ -2063,11 +2063,13 @@ export function createMainWindow(
   ipcMain.on("canvas:activate", onCanvasActivate);
   ipcMain.handle("canvas:list", (event) => canvasLink.list(event.sender.id));
   ipcMain.handle("canvas:open", (event, opts: unknown) => canvasLink.open(event.sender.id, opts));
-  // Documents: the agent panel asks to open one. Panel-only, like canvas:open; logic in docOpen.ts.
+  // Documents: the agent panel or a trace tab asks to open one; logic in docOpen.ts.
   ipcMain.handle("doc:open", (event, docId: unknown) =>
     openDocTab(
       {
         isPanel: (id) => panelWc()?.id === id,
+        isTraceTab: (id) => tabs.isTraceViewer(id),
+        isActive: (id) => tabs.isActiveTabWebContents(id),
         findDocTab: (id) => tabs.findDocTab(id),
         activate: (tabId, opts) => tabs.activate(tabId, opts),
         newDocTab: (id, opts) => tabs.newTab("doc", undefined, { docId: id, focus: opts.focus }),
