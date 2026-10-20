@@ -87,6 +87,10 @@ view and no 1px edge (`WINDOW_EDGE` and `WindowLayout.rim` are gone).
 the tab bar view is `#00000000` and `tabbar.css` makes body/rows
 transparent. Non-macOS: no vibrancy, `win.setBackgroundColor(GLASS_SOLID[theme])`. `tabbar.css` has plain selectors (one layout): a transparent body, tabs on the glass, the address row as the island top.
 
+*Controls (match the frontend ghost IconButton).* Nav buttons and the URL field (the island row) share tokens in `tokens.css`: `--btn-radius` = `calc(0.45rem - 2px)` (the frontend's `rounded-md`, 5.2px), `--btn-hover` = the frontend `--secondary` in light and `--color-surface-hover` (#4a4a4a) in dark, disabled opacity 0.5. The sidebar toggle and "+" sit on the glass like the tabs, so they keep the tab radius (8px) and `--glass-tab-hover`. Focus ring everywhere (tabs, close "x", "+", nav buttons, URL field, sidebar toggle, empty-start cards): `outline: none; box-shadow: 0 0 0 2px var(--focus-ring)`, where `--focus-ring` = the frontend `--ring` = the accent `#0d99ff` in both themes (a grey ring failed the 3:1 contrast rule). pen-editor's `desktopTokensContract.test.ts` pins these values to the frontend's. Header icons are Phosphor LIGHT (back, forward, reload, sidebar toggle, "+"); the Browser tools "⋮" is BOLD DotsThreeVertical, as in the frontend. All 16px inline SVGs. Tooltips stay native `title` and the menus stay native (an HTML popup would be clipped to the tab bar view's height).
+
+*Font.* The tab bar and the empty start use the system UI font, like the frontend (its body is `system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`; on macOS both are SF). No font file is bundled. Sizes: tab labels 12px, URL field 14px, empty start 13px.
+
 *Colours: one place each.* TS: `windowTheme.ts` (`ISLAND_BG` light `#ffffff` / dark
 `#2a2a2a` = the frontend's `--color-surface-panel`, `GLASS_SOLID`, `contentBackground`,
 `FALLBACK_THEME`, `glassTint`). CSS: `tokens.css` (`--island-bg`, same values, pinned equal by
@@ -100,7 +104,7 @@ area's x-range, rounded top corners, and it mirrors the agent chat header row of
 (pen-editor `ChatPanel` `OpenChatHeader`: `px-2 py-1.5 gap-1 border-b border-border-default`, 28px
 icon buttons, title `text-sm text-text-primary` (regular weight)): height `ADDRESS_ROW_HEIGHT` = 41
 (28 + 2*6 + 1px border; `layout.ts`, sent as `addressRowHeight` -> CSS `--address-row-height`),
-padding 0 8px, gap 4px, `border-bottom: 1px solid var(--border)` (#e0e0e0 / #404040), URL text 14px/400, always centered, in a field shaped like the nav buttons (28px high, 6px radius, `--glass-tab-hover` fill on hover/focus)
+padding 0 8px, gap 4px, `border-bottom: 1px solid var(--border)` (#e0e0e0 / #404040), URL text 14px/400, left-aligned right after the reload button (a normal flex item, `flex: 1`; the Browser tools button sits at the far end), in a field shaped like the nav buttons (28px high, `--btn-radius`, `--btn-hover` fill on hover/focus)
 in `--text-active`. Panel header and address row both start at the tab row height (38), so their
 bottom borders share one line (y = 78). Gap and radius are NOT hardcoded in CSS: `layout.ts`
 returns them (`gap`, `radius`), `window.ts` sends them on `tabbar:state` (`islandGap`,
@@ -164,8 +168,8 @@ or a launch never auto-expands a collapsed panel: only the user's toggle changes
 Tests: `layout.test.ts`, `agentPanelSettings.test.ts`, `menu.test.ts`, `e2e/agent-panel-toggle.spec.ts`.
 
 **Tab icons.** Every tab has a leading glyph keyed by `TabState.kind` in
-`tabbar/renderer.ts` (one mapping): editor (canvas) tabs a Phosphor "PaintBrush" (light weight), doc tabs a Phosphor "FileText" (regular), trace tabs a Phosphor "Pulse" (regular), browser tabs a
-Phosphor "Globe" ALWAYS, never the site favicon. Phosphor is MIT: the notice lives in
+`tabbar/renderer.ts` (one mapping): editor (canvas) tabs a Phosphor "PaintBrush", doc tabs a Phosphor "FileText", trace tabs a Phosphor "Pulse", browser tabs a
+Phosphor "Globe" ALWAYS (all LIGHT weight), never the site favicon. Phosphor is MIT: the notice lives in
 `THIRD_PARTY_NOTICES.md` (shipped via the electron-builder `files` list; keep it there). Just the glyph,
 monochrome `currentColor` (tab text color), no background square. The tab bar CSP has no `img-src`:
 the tab bar draws no images. The agent's
@@ -240,7 +244,7 @@ origin clamp, offline fallback and window-open policy as editor tabs (external l
 `docId` must match `/^[A-Za-z0-9_-]{1,64}$/`; an open doc tab whose URL has `id=<docId>`
 (`TabManager.findDocTab`; a `new=1` tab never matches) is activated, else a new doc tab opens at `/doc?id=<docId>&chat=off`
 and is shown as the active tab; it resolves once the tab exists, not when the page has loaded. **Focus rule:** `doc:open` is agent-initiated, so the doc tab becomes the visible active tab but does NOT take keyboard focus (`activate(id, {focus:false})` / `newTab("doc", undefined, {docId, focus:false})`); typing stays in the panel composer. A trace tab's open is a user click: when that trace tab is the ACTIVE tab, the doc tab is activated WITH focus (`{focus:true}`); from a background trace tab it opens without focus. User-driven activation (click, menu, empty-start button) keeps focusing. Glyph:
-Phosphor "FileText" (regular). Tests: `docOpen.test.ts`, `tabManager.test.ts` ("doc tabs"),
+Phosphor "FileText" (light). Tests: `docOpen.test.ts`, `tabManager.test.ts` ("doc tabs"),
 `config.test.ts`, `menu.test.ts`, `preloadCanvasLink.test.ts`, `ipcContract.test.ts`.
 
 **Trace tabs (`TabKind` `"trace"`).** A fourth tab kind: the frontend's viewer for a recorded browse run
@@ -250,7 +254,7 @@ becomes `trace/<id>`; other params kept, `chat` and `src` replaced). It is handl
 tab** (absent from `editorTabsInfo()`, the canvas link, MCP), default session, same preload (`preload/tab.ts`, so it
 takes part in theme sync and gets `penDesktop.traces.read`), same origin clamp / offline fallback, title from
 `page-title-updated` (fallback "Trace"). Opens ONLY from a run (`traces:open`; `TabManager.newTab("trace")` throws without a valid trace id): there is no "+" menu item, menu entry
-or placeholder card. Glyph: Phosphor "Pulse" (regular).
+or placeholder card. Glyph: Phosphor "Pulse" (light).
 - **Store** — `src/main/traceStore.ts` (pure, fs port, tests in `traceStore.test.ts`): `<userData>/browse-traces/<id>/trace.json` + `frames/<n>.<ext>`.
   `save({manifest, assets:[{path, dataUrl}]})` validates with `parseBrowseTrace` from `@sideform/browser-agent/agent/session` (the
   package is ESM-only; the CommonJS main process `require()`s it, types via `typesVersions`), the id and asset-path regexes
@@ -599,7 +603,9 @@ input also resyncs to the tab's latest known url on blur — while focused,
 incoming `tabbar:state` pushes don't overwrite it (so as not to clobber
 mid-typing), but nothing used to catch it up afterwards, leaving it stale
 indefinitely if a state change (e.g. an agent-driven `browse_open`) landed
-while the user had the address bar focused.
+while the user had the address bar focused. When the active tab's url goes from empty to non-empty and the user has not typed
+(`userEditingUrl` false), `renderer.ts` also blurs the input (`shouldBlurAddressBar`, `urlNormalization.ts`, unit-tested), so a tab
+that was auto-focused and then navigated by the agent does not stay focused and grey.
 
 **A fresh, empty-URL browser tab becoming active auto-focuses the address
 bar**, the way every real browser does on a new tab — File ▸ New Browser Tab

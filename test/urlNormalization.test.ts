@@ -12,9 +12,25 @@ import { describe, it, expect } from "vitest";
 const urlNorm = require("../src/tabbar/urlNormalization.ts") as {
   normalizeTypedUrl: (input: string) => string;
   isNavigableUrl: (value: string) => boolean;
+  shouldBlurAddressBar: (previous: string | undefined, next: string, userEditing: boolean) => boolean;
 };
 
-const { normalizeTypedUrl, isNavigableUrl } = urlNorm;
+const { normalizeTypedUrl, isNavigableUrl, shouldBlurAddressBar } = urlNorm;
+
+describe("shouldBlurAddressBar", () => {
+  it("blurs when an empty tab gets a url and the user has not typed", () => {
+    expect(shouldBlurAddressBar("", "https://example.com/", false)).toBe(true);
+    expect(shouldBlurAddressBar(undefined, "https://example.com/", false)).toBe(true);
+  });
+  it("keeps focus while the user is typing", () => {
+    expect(shouldBlurAddressBar("", "https://example.com/", true)).toBe(false);
+  });
+  it("keeps focus when the url did not go from empty to non-empty", () => {
+    expect(shouldBlurAddressBar("", "", false)).toBe(false);
+    expect(shouldBlurAddressBar("https://a.com/", "https://b.com/", false)).toBe(false);
+    expect(shouldBlurAddressBar("https://a.com/", "", false)).toBe(false);
+  });
+});
 
 // Finding 5: the address row's typed-input normalizer only routed to a
 // Pinterest search when the input had neither a "." nor a ":", so an

@@ -104,21 +104,21 @@ body {
 }
 :is(.tab, .tab-ghost) .close::before { transform: rotate(45deg); }
 :is(.tab, .tab-ghost) .close::after { transform: rotate(-45deg); }
+/* "+" sits on the glass like the tabs, so it keeps the tab radius and the glass hover. */
 #new-tab {
-  position: relative; flex: 0 0 28px; width: 28px; height: 28px; border-radius: 8px;
+  flex: 0 0 28px; width: 28px; height: 28px; border-radius: 8px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
   border: 0; background: none; color: var(--glass-text); cursor: pointer;
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
 #new-tab:hover { color: var(--text-active); background: var(--glass-tab-hover); }
-#new-tab::before, #new-tab::after {
-  content: ""; position: absolute; left: 8px; top: 13.5px;
-  width: 12px; height: 1px; border-radius: 1px; background: currentColor;
-}
-#new-tab::after { transform: rotate(90deg); }
-.tab .close:focus-visible, #new-tab:focus-visible {
-  outline: 1px solid currentColor;
-  outline-offset: -2px;
+#new-tab svg { width: 16px; height: 16px; }
+/* One focus ring everywhere: the frontend Button's 2px ring in --ring (the accent colour). */
+:is(.tab, .tab-ghost):focus-visible, .tab .close:focus-visible, #new-tab:focus-visible,
+.nav-btn:focus-visible, .sidebar-toggle:focus-visible, .url-input:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 /* --- address row (row 2, browser tabs only — design doc §2) --- */
@@ -147,25 +147,19 @@ body {
   flex: 0 0 28px; width: 28px; height: 28px;
   display: inline-flex; align-items: center; justify-content: center;
   border: 0; background: none; color: var(--text-active); cursor: pointer;
-  border-radius: 6px; padding: 0;
+  border-radius: var(--btn-radius); padding: 0;
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
 .browser-tools-btn { margin-left: auto; }
 .nav-btn svg { width: 16px; height: 16px; }
-.nav-btn:hover:not(:disabled) { background: var(--glass-tab-hover); }
-.nav-btn:disabled { opacity: 0.35; cursor: default; }
-.nav-btn:focus-visible { outline: 1px solid currentColor; outline-offset: -2px; }
-/* Centered on the whole row, not on the space left of the nav buttons —
-   capped at 80% and kept clear of the buttons (6px pad + 3×28px + 2×2px
-   gaps ≈ 94px, mirrored on the right) in narrow windows. The 100px right
-   reserve also covers the Browser tools button (28px, margin-left: auto). */
+.nav-btn:hover:not(:disabled) { background: var(--btn-hover); }
+.nav-btn:disabled { opacity: 0.5; cursor: default; }
+/* A normal flex item, left-aligned right after the reload button like the title of every other
+   surface (the chat header). The Browser tools button follows with margin-left: auto. */
 .url-form {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: min(80%, calc(100% - 2 * 100px));
+  flex: 1;
+  min-width: 0;
   margin: 0;
   app-region: no-drag;
   -webkit-app-region: no-drag;
@@ -174,22 +168,21 @@ body {
   display: block;
   width: 100%;
   box-sizing: border-box;
-  /* Same box as the .nav-btn buttons beside it: 28px high, 6px radius, their hover fill. */
+  /* Same box as the .nav-btn buttons beside it: 28px high, their radius and hover fill. */
   height: 28px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--btn-radius);
   background: transparent;
   color: var(--text-active);
   /* The chat header title size (text-sm), in regular weight. */
   font-family: inherit;
   font-size: 14px;
   font-weight: 400;
-  text-align: center;
+  text-align: left;
   text-overflow: ellipsis;
   padding: 0 10px;
 }
-.url-input:hover, .url-input:focus { background: var(--glass-tab-hover); }
-/* The text stays centered while editing too. */
+.url-input:hover, .url-input:focus { background: var(--btn-hover); }
 .url-input:focus { outline: none; }
 /* Finding 5: a rejected submission (couldn't be normalized into a
    navigable http(s) URL) stays visible instead of silently doing nothing. */
@@ -211,7 +204,6 @@ body {
 }
 .sidebar-toggle:hover { background: var(--glass-tab-hover); color: var(--text-active); }
 .sidebar-toggle[aria-pressed="true"] { color: var(--text-active); }
-.sidebar-toggle:focus-visible { outline: 1px solid currentColor; outline-offset: -2px; }
 .tab-icon {
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 18px; width: 18px; height: 18px;
   color: var(--glass-text);

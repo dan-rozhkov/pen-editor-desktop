@@ -56,7 +56,15 @@ function isNavigableUrl(value: string): boolean {
   }
 }
 
+/** True when the address field must give up focus: the active tab's url went from empty to
+ * non-empty and the user has not typed (the focus came from the auto-focus of a fresh blank
+ * tab, then an agent navigated it). `previous` undefined = no snapshot seen yet. */
+function shouldBlurAddressBar(previous: string | undefined, next: string, userEditing: boolean): boolean {
+  return !userEditing && !previous && next !== "";
+}
+
 if (typeof module !== "undefined" && module.exports) {
+  module.exports.shouldBlurAddressBar = shouldBlurAddressBar;
   module.exports.normalizeTypedUrl = normalizeTypedUrl;
   module.exports.isNavigableUrl = isNavigableUrl;
 }
