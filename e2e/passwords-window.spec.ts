@@ -109,9 +109,10 @@ test("passwords window: add, list, detail, search, edit, delete; light and dark"
     pw.on("pageerror", (err) => pageErrors.push(String(err)));
 
     // Seeded content: four logins, one never-saved host.
-    await expect(pw.locator("#count-all")).toHaveText("4");
-    await expect(pw.locator("#count-never")).toHaveText("1");
     await expect(pw.locator(".row")).toHaveCount(4);
+    await expect(pw.locator("#never-link")).toHaveText("1 site never asks to save");
+    await expect(pw.locator("#storage-note")).toBeVisible();
+    await expect(pw.locator("#never-head")).toBeHidden();
     // Sorted by origin; the first one is selected by default and its detail is shown.
     await expect(pw.locator(".row[aria-selected=true] .row-title")).toHaveText("localhost:3000");
 
@@ -124,7 +125,7 @@ test("passwords window: add, list, detail, search, edit, delete; light and dark"
     await pw.fill('input[aria-label="Label"]', "reader");
     await pw.press('input[aria-label="Label"]', "Enter");
 
-    await expect(pw.locator("#count-all")).toHaveText("5");
+    await expect(pw.locator(".row")).toHaveCount(5);
     await expect(pw.locator(".row[aria-selected=true] .row-title")).toHaveText("news.ycombinator.com");
     await expect(pw.locator(".row[aria-selected=true] .chip")).toHaveText("reader");
     await expect(pw.locator(".hero-title")).toHaveText("news.ycombinator.com");
@@ -164,10 +165,10 @@ test("passwords window: add, list, detail, search, edit, delete; light and dark"
     );
     await expect(pw.locator("button[type=submit]")).toHaveText("Replace");
     await expect(pw.locator(".hero-title")).toHaveText("New login");
-    await expect(pw.locator("#count-all")).toHaveText("5");
+    await expect(pw.locator(".row")).toHaveCount(5);
     await pw.click("button[type=submit]");
     await expect(pw.locator(".hero-title")).toHaveText("news.ycombinator.com");
-    await expect(pw.locator("#count-all")).toHaveText("5");
+    await expect(pw.locator(".row")).toHaveCount(5);
     expect(await pw.content()).not.toContain("e2e-Secret-Password-2");
 
     // Search by label, then clear.
@@ -200,16 +201,28 @@ test("passwords window: add, list, detail, search, edit, delete; light and dark"
     await expect(pw.locator(".confirm-text")).toHaveText("Delete this login?");
     await pw.keyboard.press("Escape");
     await expect(pw.locator(".confirm-text")).toHaveCount(0);
-    await expect(pw.locator("#count-all")).toHaveText("5");
+    await expect(pw.locator(".row")).toHaveCount(5);
     await pw.click("text=Delete");
     await pw.locator(".btn-destructive").click();
-    await expect(pw.locator("#count-all")).toHaveText("4");
+    await expect(pw.locator(".row")).toHaveCount(4);
     await expect(pw.locator(".row", { hasText: "figma.com" })).toHaveCount(0);
 
     // Never saved view.
-    await pw.click("#nav-never");
+    await pw.click("#never-link");
     await expect(pw.locator(".row-title")).toHaveText("ads.example.net");
-    await pw.click("#nav-all");
+    await expect(pw.locator("#never-head")).toBeVisible();
+    await expect(pw.locator("#never-link")).toBeHidden();
+    await expect(pw.locator("#storage-note")).toBeVisible();
+    // The link hides itself, so focus moves to Back (and back to the link on return).
+    await expect(pw.locator("#never-back")).toBeFocused();
+    if (process.env.PW_SHOTS_DIR) {
+      mkdirSync(process.env.PW_SHOTS_DIR, { recursive: true });
+      await pw.waitForTimeout(300);
+      await pw.screenshot({ path: path.join(process.env.PW_SHOTS_DIR, "shot-never.png") });
+    }
+    await pw.click("#never-back");
+    await expect(pw.locator("#never-head")).toBeHidden();
+    await expect(pw.locator("#never-link")).toBeFocused();
     await pw.locator(".row", { hasText: "github.com" }).click();
     // Tiles: the cached icon through <img>, a globe elsewhere; never the password.
     await expect(pw.locator(".row", { hasText: "github.com" }).locator("img.tile-img")).toHaveCount(1);
@@ -226,7 +239,7 @@ test("passwords window: add, list, detail, search, edit, delete; light and dark"
     await pw.press('input[aria-label="Password"]', "Enter");
     await expect(pw.locator(".form-warning")).toBeVisible();
     await pw.press('input[aria-label="Password"]', "Enter");
-    await expect(pw.locator("#count-all")).toHaveText("4");
+    await expect(pw.locator(".row")).toHaveCount(4);
     await expect(pw.locator("#search")).toHaveValue("");
     await expect(pw.locator(".row[aria-selected=true] .row-title")).toHaveText("github.com");
     await expect(pw.locator(".hero-title")).toHaveText("github.com");
@@ -309,17 +322,19 @@ test("passwords window: add, list, detail, search, edit, delete; light and dark"
     await pw.click("text=Delete");
     await pw.locator(".btn-destructive").click();
     await expect(pw.locator("#status")).toHaveText("Could not delete the login.");
-    await expect(pw.locator("#count-all")).toHaveText("4");
+    await expect(pw.locator(".row")).toHaveCount(4);
 
     // Without encryption only a typed password is blocked: label-only edits still save.
     await app.evaluate(({ safeStorage }) => {
       (safeStorage as unknown as Record<string, unknown>).isEncryptionAvailable = () => false;
     });
-    await pw.click("#nav-never"); // refresh through a successful call: removeNever
+    await pw.click("#never-link"); // refresh through a successful call: removeNever
     await pw.getByRole("button", { name: /^Remove/ }).click();
-    await expect(pw.locator("#count-never")).toHaveText("0");
+    await expect(pw.locator("#list-empty-title")).toHaveText("No sites on the list");
     await expect(pw.locator("#unavailable")).toBeVisible();
-    await pw.click("#nav-all");
+    await pw.keyboard.press("Escape"); // Escape in the never section goes back
+    await expect(pw.locator("#never-head")).toBeHidden();
+    await expect(pw.locator("#never-link")).toBeHidden();
     await pw.locator(".row", { hasText: "localhost" }).click();
     await pw.getByRole("button", { name: "Edit", exact: true }).click();
     await expect(pw.locator("button[type=submit]")).toBeEnabled();

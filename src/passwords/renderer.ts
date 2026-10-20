@@ -42,16 +42,15 @@
   document.documentElement.toggleAttribute("data-macos", api.isMac);
   api.onTheme(({ theme, vibrancyMatches }) => {
     document.documentElement.dataset.theme = theme;
-    // macOS vibrancy follows the OS appearance: with another editor theme the sidebar goes opaque.
+    // macOS vibrancy follows the OS appearance: with another editor theme the list pane goes opaque.
     document.documentElement.toggleAttribute("data-opaque-sidebar", !vibrancyMatches);
   });
   const storageNote = api.isMac ? "Encrypted with a key in your macOS Keychain" : "Encrypted on this device";
-  $("sidebar-note").textContent = storageNote;
+  $("storage-note").textContent = storageNote;
 
-  const navAll = $("nav-all");
-  const navNever = $("nav-never");
-  const countAll = $("count-all");
-  const countNever = $("count-never");
+  const neverLink = $<HTMLButtonElement>("never-link");
+  const neverHead = $("never-head");
+  const neverBack = $<HTMLButtonElement>("never-back");
   const searchEl = $<HTMLInputElement>("search");
   const addBtn = $<HTMLButtonElement>("add-btn");
   const unavailableEl = $("unavailable");
@@ -140,14 +139,13 @@
     if (!visible.some((e) => e.id === selectedId)) selectedId = visible.length > 0 ? visible[0].id : null;
   }
 
-  // ---- render: sidebar + list ----
+  // ---- render: chrome + list ----
 
-  function renderSidebar(): void {
-    countAll.textContent = String(data.entries.length);
-    countNever.textContent = String(data.never.length);
-    navAll.removeAttribute("aria-current");
-    navNever.removeAttribute("aria-current");
-    (section === "all" ? navAll : navNever).setAttribute("aria-current", "page");
+  function renderChrome(): void {
+    const n = data.never.length;
+    neverLink.hidden = section !== "all" || n === 0;
+    neverLink.textContent = n === 1 ? "1 site never asks to save" : n + " sites never ask to save";
+    neverHead.hidden = section !== "never";
     unavailableEl.hidden = data.encryptionAvailable;
   }
 
@@ -460,7 +458,7 @@
   }
 
   function renderAll(): void {
-    renderSidebar();
+    renderChrome();
     renderList();
     renderDetail();
   }
@@ -563,14 +561,14 @@
   }
 
   /**
-   * Re-reads the list without touching an open form: sidebar and rows always,
+   * Re-reads the list without touching an open form: chrome and rows always,
    * the detail pane only in view mode. Used for a late save reply and for
    * `passwords:changed` (an icon arrived).
    */
   async function reloadList(): Promise<void> {
     data = await api.list();
     if (mode === "view") normalizeSelection();
-    renderSidebar();
+    renderChrome();
     renderList();
     if (mode === "view") renderDetail();
   }
@@ -583,14 +581,24 @@
 
   // ---- wiring ----
 
-  navAll.addEventListener("click", () => guardNav(() => setSection("all")));
-  navNever.addEventListener("click", () => guardNav(() => setSection("never")));
+  // Each control hides itself, so focus moves to the control that undoes it.
+  neverLink.addEventListener("click", () =>
+    guardNav(() => {
+      setSection("never");
+      neverBack.focus();
+    }),
+  );
+  function leaveNever(): void {
+    setSection("all");
+    (neverLink.hidden ? searchEl : neverLink).focus();
+  }
+  neverBack.addEventListener("click", leaveNever);
   addBtn.addEventListener("click", () => guardNav(startAdd));
   addBtn.disabled = false;
   searchEl.addEventListener("input", () => {
     query = searchEl.value;
     if (mode === "view") normalizeSelection();
-    renderSidebar();
+    renderChrome();
     renderList();
     if (mode === "view") renderDetail();
   });
@@ -634,6 +642,9 @@
         query = "";
         normalizeSelection();
         renderAll();
+      } else if (section === "never") {
+        event.preventDefault();
+        leaveNever();
       }
       return;
     }

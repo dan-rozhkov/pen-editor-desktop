@@ -37,7 +37,7 @@ export function createPasswordsWindow(store: CredentialStore, icons?: PasswordsI
   const sendTheme = (force = false): void => {
     const theme = themeSource.current();
     // macOS vibrancy follows the OS appearance, not the editor theme: when they
-    // differ the renderer paints the sidebar opaque instead of glass.
+    // differ the renderer paints the list pane opaque instead of glass.
     const vibrancyMatches = theme === systemTheme();
     if (!force && lastSent && lastSent.theme === theme && lastSent.vibrancyMatches === vibrancyMatches) return;
     lastSent = { theme, vibrancyMatches };
@@ -79,16 +79,19 @@ export function createPasswordsWindow(store: CredentialStore, icons?: PasswordsI
         return;
       }
       const created = new BaseWindow({
-        width: 980,
+        width: 772,
         height: 620,
-        minWidth: 860,
+        minWidth: 652,
         minHeight: 540,
         title: "Passwords",
+        // A utility window: in fullscreen the list head would keep an empty
+        // inset where the hidden traffic lights were (passwords.css).
+        fullscreenable: false,
         ...(process.platform === "darwin"
           ? {
-              // Traffic lights sit over the sidebar. A vibrant window is
-              // non-opaque: the sidebar's translucent tint shows the blur,
-              // the list and detail panes paint opaque (passwords.css).
+              // Traffic lights sit over the list pane. A vibrant window is
+              // non-opaque: the list pane's translucent tint shows the blur,
+              // the detail pane paints opaque (passwords.css).
               titleBarStyle: "hiddenInset" as const,
               // 12px lights centred in the 52px top strip shared with the
               // search field and the Edit/Delete row (passwords.css).
