@@ -173,7 +173,7 @@
     row.setAttribute("role", "option");
     row.setAttribute("aria-selected", "false");
     const text = el("span", "row-text");
-    text.append(el("span", "row-title", host), el("span", "row-sub", "No save prompt"));
+    text.append(el("span", "row-title", host));
     const remove = button("Remove", "btn btn-ghost btn-sm", () => {
       void runAndRefresh(api.removeNever(host), "Could not remove the site.");
     });
@@ -206,9 +206,9 @@
 
   // ---- render: detail pane ----
 
-  function field(label: string, value: string, muted?: boolean): HTMLElement {
+  function field(label: string, value: string): HTMLElement {
     const f = el("div", "field");
-    f.append(el("span", "field-label", label), el("span", muted ? "field-value muted" : "field-value", value));
+    f.append(el("span", "field-label", label), el("span", "field-value", value));
     return f;
   }
 
@@ -225,11 +225,9 @@
     } else if (data.entries.length === 0) {
       box.append(
         el("p", "empty-title", "Your logins live here"),
-        el("p", "empty-text", storageNote + ". The agent can sign in for you without ever seeing a password."),
+        el("p", "empty-text", "The agent can sign in for you without ever seeing a password."),
       );
       box.appendChild(button("Add login", "btn btn-accent", startAdd, "i-plus"));
-    } else {
-      box.append(el("p", "empty-title", "No login selected"), el("p", "empty-text", "Pick one from the list."));
     }
     detailEl.replaceChildren(el("div", "detail-head drag"), box);
   }
@@ -266,19 +264,14 @@
 
     const hero = el("div", "hero");
     const heroText = el("div", "hero-text");
-    heroText.append(el("h1", "hero-title", host), el("p", "hero-sub", entry.label ? entry.label : "Login"));
+    heroText.appendChild(el("h1", "hero-title", host));
+    if (entry.label) heroText.appendChild(el("p", "hero-sub", entry.label));
     hero.append(tile(true, entry.icon), heroText);
 
     const body = el("div", "detail-body");
-    const pw = el("div", "field filled");
-    pw.append(el("span", "field-label", "Password"), el("span", "field-value dots", "•".repeat(12)));
-    pw.setAttribute("aria-label", "Password hidden");
     body.append(
       field("Username", entry.username),
-      pw,
       field("Website", entry.origin),
-      field("Label", entry.label || "None", !entry.label),
-      el("hr", "sep"),
       field("Last used", helpers.formatLastUsed(entry.lastUsedAt, Date.now())),
     );
     detailEl.replaceChildren(head, hero, body);
@@ -312,10 +305,8 @@
     const glyph = el("div", "tile tile-lg tile-plain");
     glyph.appendChild(icon("i-key"));
     const heroText = el("div", "hero-text");
-    heroText.append(
-      el("h1", "hero-title", adding ? "New login" : "Edit login"),
-      el("p", "hero-sub", adding ? storageNote : helpers.displayHost(existing.origin)),
-    );
+    heroText.appendChild(el("h1", "hero-title", adding ? "New login" : "Edit login"));
+    if (!adding) heroText.appendChild(el("p", "hero-sub", helpers.displayHost(existing.origin)));
     hero.append(glyph, heroText);
 
     const form = el("form", "detail-body form");

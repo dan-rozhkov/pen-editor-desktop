@@ -129,7 +129,7 @@ test("passwords window: add, list, detail, search, edit, delete; light and dark"
     await expect(pw.locator(".row[aria-selected=true] .chip")).toHaveText("reader");
     await expect(pw.locator(".hero-title")).toHaveText("news.ycombinator.com");
     await expect(pw.locator(".hero-sub")).toHaveText("reader");
-    await expect(pw.locator(".dots")).toHaveText("•".repeat(12));
+    await expect(pw.locator(".field-label")).toHaveText(["Username", "Website", "Last used"]);
     await expect(pw.locator(".field-value", { hasText: "https://news.ycombinator.com" })).toBeVisible();
     // The password never shows up in the page.
     expect(await pw.content()).not.toContain("e2e-Secret-Password-1");
