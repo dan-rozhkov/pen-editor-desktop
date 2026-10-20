@@ -17,6 +17,7 @@ export const ERR_APP_NOT_FOUND = "The app was not found.";
 export const ERR_APP_BAD_ROOT = "The app must be inside /Applications or ~/Applications.";
 export const ERR_APP_NOT_ELECTRON = "The app is not an Electron app (no Electron Framework found).";
 export const ERR_APP_OWN_BUNDLE = "The app is Sideform Desktop itself.";
+export const ERR_APP_BLOCKED = "This app is blocked: the AI agent may not control password managers.";
 export const ERR_APP_DENIED = "The user did not allow launching this app.";
 export const ERR_APP_BUSY = "An app launch is already in progress for this chat.";
 export const ERR_APP_CAP = `At most ${MAX_RUNNING_APPS} desktop apps can run at once. Release one first.`;
@@ -40,9 +41,58 @@ export interface AppPathDeps {
   ownExecutable: string;
   isPackaged: boolean;
   env: Record<string, string | undefined>;
+  /** CFBundleIdentifier of the bundle; null when it cannot be read (then the app counts as normal risk). */
+  readBundleId(realPath: string): Promise<string | null>;
 }
 
-export type AppPathResult = { ok: true; realPath: string; name: string } | { ok: false; error: string };
+export type AppRisk = "high" | "normal";
+export type AppPathResult = { ok: true; realPath: string; name: string; risk: AppRisk } | { ok: false; error: string };
+
+// Best effort, matched on the macOS bundle identifier (lowercased). Electron apps only:
+// other apps are refused earlier. Not a complete list: a readable id missing here is normal risk.
+/** Password managers: the agent may never launch or control these. */
+export const BLOCKED_BUNDLE_IDS: ReadonlySet<string> = new Set(
+  [
+    "com.1password.1password",
+    "com.agilebits.onepassword7",
+    "com.agilebits.onepassword-osx",
+    "com.bitwarden.desktop",
+    "com.dashlane.dashlanephonefinal",
+    "com.dashlane.Dashlane",
+    "com.keepersecurity.passwordmanager",
+    "me.proton.pass.electron",
+    "in.sinew.Enpass-Desktop",
+    "com.nordsec.nordpass",
+    "com.siber.roboform",
+  ].map((id) => id.toLowerCase()),
+);
+
+/** Messengers, mail and crypto wallets: allowed, but with a stronger confirm. */
+export const HIGH_RISK_BUNDLE_IDS: ReadonlySet<string> = new Set(
+  [
+    "com.tinyspeck.slackmacgap",
+    "com.hnc.Discord",
+    "com.hnc.DiscordPTB",
+    "com.hnc.DiscordCanary",
+    "org.whispersystems.signal-desktop",
+    "desktop.WhatsApp", // the old Electron WhatsApp
+    "im.riot.app",
+    "com.microsoft.teams",
+    "com.microsoft.teams2",
+    "com.mailspring.mailspring",
+    "com.electron.exodus",
+    "com.ledger.live",
+    "io.trezor.TrezorSuite",
+    "ch.protonmail.desktop",
+    "Mattermost.Desktop",
+    "com.wearezeta.zclient.mac",
+    "com.automattic.beeper.desktop",
+    "chat.rocket",
+    "org.ferdium.ferdium-app",
+    "com.sindresorhus.caprine",
+    "io.atomicwallet",
+  ].map((id) => id.toLowerCase()),
+);
 
 const isInside = (child: string, root: string): boolean => {
   const rel = path.relative(root, child);
@@ -82,6 +132,14 @@ export async function validateAppPath(input: unknown, deps: AppPathDeps): Promis
   if (!(await deps.isDirectory(path.join(real, "Contents/Frameworks/Electron Framework.framework")))) {
     return { ok: false, error: ERR_APP_NOT_ELECTRON };
   }
+  let id: string | null;
+  try {
+    id = await deps.readBundleId(real);
+  } catch {
+    id = null;
+  }
+  const bundleId = id?.trim().toLowerCase() || null;
+  if (bundleId !== null && BLOCKED_BUNDLE_IDS.has(bundleId)) return { ok: false, error: ERR_APP_BLOCKED };
   const own = bundleOf(deps.ownExecutable);
   if (own !== null) {
     let ownReal = own;
@@ -92,7 +150,9 @@ export async function validateAppPath(input: unknown, deps: AppPathDeps): Promis
     }
     if (ownReal === real) return { ok: false, error: ERR_APP_OWN_BUNDLE };
   }
-  return { ok: true, realPath: real, name: path.basename(real, ".app") };
+  // Fail open to the stricter dialog: an unreadable id is high risk (not blocked: we cannot know).
+  const risk: AppRisk = bundleId === null || HIGH_RISK_BUNDLE_IDS.has(bundleId) ? "high" : "normal";
+  return { ok: true, realPath: real, name: path.basename(real, ".app"), risk };
 }
 
 // ------------------------------------------------------------ user's own app
@@ -199,10 +259,15 @@ export function killHandleSync(
 // ------------------------------------------------------------------ confirm
 
 export const APP_CONFIRM_BUTTONS = ["Allow once", "Allow until Sideform quits", "Don't allow"] as const;
+/** High-risk apps: no "until Sideform quits", so every launch asks. */
+export const APP_CONFIRM_HIGH_RISK_BUTTONS = ["Allow once", "Don't allow"] as const;
 export const APP_RESTART_BUTTONS = ["Restart and allow", "Don't allow"] as const;
+export const APP_HIGH_RISK_WARNING =
+  "This app is high risk: it can hold private messages, mail or money. If you sign in to it, the agent can read and act in your name.";
 export const appRestartMessage = (name: string): string => `"${name}" is open. Restart it so the AI agent can control it?`;
-export const appRestartDetail = (realPath: string): string =>
+export const appRestartDetail = (realPath: string, risk: AppRisk = "normal"): string =>
   `${realPath}\n\n` +
+  (risk === "high" ? `${APP_HIGH_RISK_WARNING}\n\n` : "") +
   "Sideform quits the app the way Cmd+Q does and opens it again with agent access. " +
   "It opens with your own profile (your logins, projects and settings), so the agent sees and can change your real data. " +
   "Unsaved work in the app can be lost. When the agent finishes, Sideform quits the app and opens it again as normal.\n\n" +
@@ -230,20 +295,23 @@ export function createAppConfirm<W>(deps: AppConfirmDeps<W>) {
   const remembered = new Set<string>();
   const memo = (owner: number, realPath: string) => `${owner}\0${realPath}`;
   return {
-    async confirm(win: W, app: { name: string; realPath: string }, owner: number): Promise<boolean> {
-      if (remembered.has(memo(owner, app.realPath))) return true;
+    async confirm(win: W, app: { name: string; realPath: string; risk?: AppRisk }, owner: number): Promise<boolean> {
+      const high = app.risk === "high";
+      if (!high && remembered.has(memo(owner, app.realPath))) return true;
       const { response } = await deps.showMessageBox(win, {
         type: "question",
         message: `Let the AI agent launch and control "${app.name}"?`,
         detail:
           `${app.realPath}\n\n` +
+          (high ? `${APP_HIGH_RISK_WARNING}\n\n` : "") +
           "The app runs with your user rights, not in a sandbox: it can reach your files, run commands, and may use saved credentials such as keychain items. " +
           "It starts with a fresh profile, but that does not limit what it can do. The agent will see and click inside its windows. Allow it only if you trust this app.",
-        buttons: [...APP_CONFIRM_BUTTONS],
-        defaultId: 2,
-        cancelId: 2,
+        buttons: high ? [...APP_CONFIRM_HIGH_RISK_BUTTONS] : [...APP_CONFIRM_BUTTONS],
+        defaultId: high ? 1 : 2,
+        cancelId: high ? 1 : 2,
         noLink: true,
       });
+      if (high) return response === 0;
       if (response === 0) return true;
       if (response === 1) {
         remembered.add(memo(owner, app.realPath));
@@ -252,11 +320,11 @@ export function createAppConfirm<W>(deps: AppConfirmDeps<W>) {
       return false;
     },
     /** The app is already open: always asked, never remembered, and "until quits" does not skip it. */
-    async confirmRestart(win: W, app: { name: string; realPath: string }): Promise<boolean> {
+    async confirmRestart(win: W, app: { name: string; realPath: string; risk?: AppRisk }): Promise<boolean> {
       const { response } = await deps.showMessageBox(win, {
         type: "question",
         message: appRestartMessage(app.name),
-        detail: appRestartDetail(app.realPath),
+        detail: appRestartDetail(app.realPath, app.risk),
         buttons: [...APP_RESTART_BUTTONS],
         defaultId: 1,
         cancelId: 1,
@@ -656,11 +724,11 @@ export async function openApp<H extends AppHandle & { controller: Pick<AppContro
   deps: {
     registry: Pick<AppRegistry<H>, "begin" | "get">;
     validate(input: unknown): Promise<AppPathResult>;
-    confirm(app: { name: string; realPath: string }): Promise<boolean>;
+    confirm(app: { name: string; realPath: string; risk?: AppRisk }): Promise<boolean>;
     /** Pids of the user's own running instances of the bundle (apps Sideform launched excluded). */
     findRunning(realPath: string): Promise<number[]>;
     /** The "already open, restart it?" confirm. Always shown. */
-    confirmRestart(app: { name: string; realPath: string }): Promise<boolean>;
+    confirmRestart(app: { name: string; realPath: string; risk?: AppRisk }): Promise<boolean>;
     /** Graceful quit like Cmd+Q; true = gone, false = still running. */
     quit(pid: number): Promise<boolean>;
     /** Open the app again normally, in the background. */

@@ -1236,6 +1236,11 @@ the app-global wiring (registry, confirm memory, real launcher); `window.ts`'s
 - **Guards** (`validateAppPath`, on the realpath): ends with `.app`, inside
   `/Applications` or `~/Applications` (symlinks out are refused), contains
   `Contents/Frameworks/Electron Framework.framework`, is not our own bundle.
+  Then the bundle id (`CFBundleIdentifier`, read by the injected `readBundleId` through
+  `/usr/bin/plutil`, 3 s, path as argv; null = unreadable = high risk, not blocked) is matched
+  case-insensitively: password managers (`BLOCKED_BUNDLE_IDS`) are refused with
+  `ERR_APP_BLOCKED`; messengers, mail and crypto wallets (`HIGH_RISK_BUNDLE_IDS`) give
+  `risk: "high"`; an unreadable id is also high. Lists hold Electron apps only and are best effort.
   Extra roots via `PEN_DESKTOP_APP_ROOTS` (colon separated) only when
   `!app.isPackaged` (e2e). Never pass model text as args, env or `userDataDir`:
   the adapter makes a fresh temp profile and keeps the navigation lock.
@@ -1243,7 +1248,10 @@ the app-global wiring (registry, confirm memory, real launcher); `window.ts`'s
   warning that the app runs with the user's rights: files, commands, keychain):
   "Allow once" / "Allow until Sideform quits" / "Don't allow" (default and cancel).
   "Until quits" is remembered in memory per realpath AND per owner sender (a new
-  chat or reloaded panel asks again), never persisted.
+  chat or reloaded panel asks again), never persisted. A `risk: "high"` app adds a
+  warning paragraph and offers only "Allow once" / "Don't allow" (default and cancel);
+  it never reads or writes the "until quits" memory, so every launch asks. The restart
+  confirm keeps its buttons and adds the same warning to the detail.
 - **App already open.** `openApp` asks `findRunning(realPath)`. The service takes `findRunningElectronApp`,
   keeps only default-profile instances (`userDataDir === null`, via `filterUserPids`), drops the pids in
   `appRegistry.livePids()` (Sideform's own temp-profile instances, a user's second-profile instance) and

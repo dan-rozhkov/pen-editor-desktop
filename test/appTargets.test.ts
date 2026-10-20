@@ -41,12 +41,15 @@ import {
   ownedBySession,
   planAppCommand,
   validateAppPath,
+  ERR_APP_BLOCKED,
+  APP_HIGH_RISK_WARNING,
+  APP_CONFIRM_HIGH_RISK_BUTTONS,
   type AppPathDeps,
 } from "../src/main/appTargets";
 
 const ELECTRON_FW = "Contents/Frameworks/Electron Framework.framework";
 
-function pathDeps(over: { links?: Record<string, string>; dirs?: string[]; env?: Record<string, string>; packaged?: boolean; exe?: string } = {}): AppPathDeps {
+function pathDeps(over: { bundleId?: string | null; links?: Record<string, string>; dirs?: string[]; env?: Record<string, string>; packaged?: boolean; exe?: string } = {}): AppPathDeps {
   const links = over.links ?? {};
   const dirs = new Set(over.dirs ?? []);
   const exists = (p: string) => p in links || [...dirs].some((d) => d === p || d.startsWith(p + "/")) || ["/Applications", "/Users/me/Applications"].includes(p);
@@ -60,6 +63,7 @@ function pathDeps(over: { links?: Record<string, string>; dirs?: string[]; env?:
     ownExecutable: over.exe ?? "/Applications/Sideform Desktop.app/Contents/MacOS/Sideform Desktop",
     isPackaged: over.packaged ?? true,
     env: over.env ?? {},
+    readBundleId: async () => (over.bundleId === undefined ? "com.example.app" : over.bundleId),
   };
 }
 
@@ -68,7 +72,7 @@ describe("validateAppPath", () => {
   const ok = { dirs: [`${orca}/${ELECTRON_FW}`] };
 
   it("accepts an Electron bundle under /Applications", async () => {
-    expect(await validateAppPath(orca, pathDeps(ok))).toEqual({ ok: true, realPath: orca, name: "Orca" });
+    expect(await validateAppPath(orca, pathDeps(ok))).toEqual({ ok: true, realPath: orca, name: "Orca", risk: "normal" });
   });
   it("accepts ~/Applications", async () => {
     const p = "/Users/me/Applications/Foo.app";
@@ -112,6 +116,38 @@ describe("validateAppPath", () => {
     const base = { dirs: [`${p}/${ELECTRON_FW}`], env: { PEN_DESKTOP_APP_ROOTS: "/fixtures" }, links: { "/fixtures": "/fixtures" } };
     expect(await validateAppPath(p, pathDeps({ ...base, packaged: false }))).toMatchObject({ ok: true });
     expect(await validateAppPath(p, pathDeps({ ...base, packaged: true }))).toEqual({ ok: false, error: ERR_APP_BAD_ROOT });
+  });
+});
+
+describe("validateAppPath risk by bundle id", () => {
+  const orca = "/Applications/Orca.app";
+  const dirs = [`${orca}/${ELECTRON_FW}`];
+  it("blocks password managers", async () => {
+    expect(await validateAppPath(orca, pathDeps({ dirs, bundleId: "com.bitwarden.desktop" }))).toEqual({ ok: false, error: ERR_APP_BLOCKED });
+  });
+  it("compares case-insensitively", async () => {
+    expect(await validateAppPath(orca, pathDeps({ dirs, bundleId: "COM.1Password.1PASSWORD" }))).toEqual({ ok: false, error: ERR_APP_BLOCKED });
+    expect(await validateAppPath(orca, pathDeps({ dirs, bundleId: "COM.TINYSPECK.SLACKMACGAP" }))).toMatchObject({ ok: true, risk: "high" });
+  });
+  it("marks messengers and wallets high risk", async () => {
+    expect(await validateAppPath(orca, pathDeps({ dirs, bundleId: "im.riot.app" }))).toMatchObject({ ok: true, risk: "high" });
+    expect(await validateAppPath(orca, pathDeps({ dirs, bundleId: "ch.protonmail.desktop" }))).toMatchObject({ ok: true, risk: "high" });
+    expect(await validateAppPath(orca, pathDeps({ dirs, bundleId: "com.ledger.live" }))).toMatchObject({ ok: true, risk: "high" });
+  });
+  it("an unknown readable id is normal risk", async () => {
+    expect(await validateAppPath(orca, pathDeps({ dirs, bundleId: "com.example.orca" }))).toMatchObject({ ok: true, risk: "normal" });
+  });
+  it("an unreadable id (null, empty, rejecting or sync-throwing reader) is high risk, not blocked", async () => {
+    expect(await validateAppPath(orca, pathDeps({ dirs, bundleId: null }))).toMatchObject({ ok: true, risk: "high" });
+    expect(await validateAppPath(orca, pathDeps({ dirs, bundleId: "  " }))).toMatchObject({ ok: true, risk: "high" });
+    const rejecting = { ...pathDeps({ dirs }), readBundleId: async () => { throw new Error("x"); } };
+    expect(await validateAppPath(orca, rejecting)).toMatchObject({ ok: true, risk: "high" });
+    const syncThrow = { ...pathDeps({ dirs }), readBundleId: (() => { throw new Error("x"); }) as unknown as AppPathDeps["readBundleId"] };
+    expect(await validateAppPath(orca, syncThrow)).toMatchObject({ ok: true, risk: "high" });
+  });
+  it("a blocked app outside the allowed roots still reports the earlier error", async () => {
+    const p = "/opt/X.app";
+    expect(await validateAppPath(p, pathDeps({ links: { [p]: p }, bundleId: "com.bitwarden.desktop" }))).toEqual({ ok: false, error: ERR_APP_BAD_ROOT });
   });
 });
 
@@ -173,6 +209,47 @@ describe("createAppConfirm", () => {
     const remembering = createAppConfirm({ showMessageBox: vi.fn(async () => ({ response: 1 })) });
     await remembering.confirm("w", app, 1);
     expect(await remembering.confirmRestart("w", app)).toBe(false); // remembered allow does not skip it
+  });
+  describe("high risk", () => {
+    const risky = { ...app, risk: "high" as const };
+    type Opts = { message: string; detail: string; buttons: string[]; defaultId: number; cancelId: number };
+    it("shows the warning and only two buttons, defaulting to deny", async () => {
+      const { c, showMessageBox } = make(1);
+      expect(await c.confirm("w", risky, 1)).toBe(false);
+      const opts = showMessageBox.mock.calls[0][1] as Opts;
+      expect(opts.detail).toContain(APP_HIGH_RISK_WARNING);
+      expect(opts.detail).toContain("/Applications/Orca.app");
+      expect(opts.detail).toContain("It starts with a fresh profile");
+      expect(opts.buttons).toEqual([...APP_CONFIRM_HIGH_RISK_BUTTONS]);
+      expect(opts.defaultId).toBe(1);
+      expect(opts.cancelId).toBe(1);
+    });
+    it("response 0 allows, and it is asked again next time", async () => {
+      const { c, showMessageBox } = make(0, 0);
+      expect(await c.confirm("w", risky, 1)).toBe(true);
+      expect(await c.confirm("w", risky, 1)).toBe(true);
+      expect(showMessageBox).toHaveBeenCalledTimes(2);
+    });
+    it("ignores an earlier remembered answer for the same path", async () => {
+      const { c, showMessageBox } = make(1, 1);
+      expect(await c.confirm("w", app, 1)).toBe(true); // normal: until quits
+      expect(await c.confirm("w", risky, 1)).toBe(false); // high: asked anyway
+      expect(showMessageBox).toHaveBeenCalledTimes(2);
+    });
+    it("normal confirm has no warning", async () => {
+      const { c, showMessageBox } = make(2);
+      await c.confirm("w", { ...app, risk: "normal" }, 1);
+      expect((showMessageBox.mock.calls[0][1] as Opts).detail).not.toContain(APP_HIGH_RISK_WARNING);
+    });
+    it("restart detail adds the warning, buttons unchanged", async () => {
+      const { c, showMessageBox } = make(0);
+      await c.confirmRestart("w", risky);
+      const opts = showMessageBox.mock.calls[0][1] as Opts;
+      expect(opts.detail).toBe(appRestartDetail("/Applications/Orca.app", "high"));
+      expect(opts.detail).toContain(APP_HIGH_RISK_WARNING);
+      expect(opts.buttons).toEqual([...APP_RESTART_BUTTONS]);
+      expect(appRestartDetail("/Applications/Orca.app")).not.toContain(APP_HIGH_RISK_WARNING);
+    });
   });
   it("deny is not remembered", async () => {
     const { c, showMessageBox } = make(2, 0);
@@ -537,7 +614,7 @@ describe("routing table and launch result", () => {
 });
 
 describe("openApp", () => {
-  const valid = { ok: true as const, realPath: "/Applications/Orca.app", name: "Orca" };
+  const valid = { ok: true as const, realPath: "/Applications/Orca.app", name: "Orca", risk: "normal" as const };
   const setup = (over: {
     validate?: () => Promise<never | typeof valid | { ok: false; error: string }>;
     confirm?: () => Promise<boolean>;

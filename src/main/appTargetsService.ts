@@ -215,6 +215,17 @@ export const appConfirm = createAppConfirm<Electron.BaseWindow>({
   showMessageBox: (win, options) => dialog.showMessageBox(win, options),
 });
 
+/** CFBundleIdentifier through plutil (path as argv, never a shell). null on any error. */
+const readBundleId = (realPath: string): Promise<string | null> =>
+  new Promise((resolve) => {
+    execFile(
+      "/usr/bin/plutil",
+      ["-extract", "CFBundleIdentifier", "raw", "-o", "-", path.join(realPath, "Contents/Info.plist")],
+      { timeout: 3000 },
+      (err, stdout) => resolve(err ? null : String(stdout).trim() || null),
+    );
+  });
+
 export const validateRequestedApp = (input: unknown): Promise<AppPathResult> =>
   validateAppPath(input, {
     realpath: (p) => fs.realpath(p),
@@ -223,4 +234,5 @@ export const validateRequestedApp = (input: unknown): Promise<AppPathResult> =>
     ownExecutable: app.getPath("exe"),
     isPackaged: app.isPackaged,
     env: process.env,
+    readBundleId,
   });
