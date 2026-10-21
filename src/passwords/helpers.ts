@@ -17,6 +17,57 @@ var penPasswordsHelpers = (function () {
     return origin.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
   }
 
+  /**
+   * Displayed hosts that two or more logins share (case-insensitive). The list
+   * shows a username suffix only on those rows, so they stay distinguishable.
+   */
+  function duplicateHosts(origins: string[]): string[] {
+    var counts = new Map<string, number>();
+    var out: string[] = [];
+    for (var i = 0; i < origins.length; i++) {
+      var host = displayHost(origins[i]).toLowerCase();
+      var n = (counts.get(host) || 0) + 1;
+      counts.set(host, n);
+      if (n === 2) out.push(host);
+    }
+    return out;
+  }
+
+  /**
+   * The grey suffix shown after the site name, per entry id ("" = none). Only
+   * rows whose displayed host is shared by another login get one: the username.
+   * When two logins share host AND username (http vs https, or ports the
+   * display drops), the username gets a second part: the label if it differs
+   * from the other clashing rows', else the full origin.
+   */
+  function rowSuffixes(entries: (HelperEntry & { id: string })[]): Map<string, string> {
+    var shared = new Set(duplicateHosts(entries.map(function (e) { return e.origin; })));
+    var groups = new Map<string, (HelperEntry & { id: string })[]>();
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      var host = displayHost(e.origin).toLowerCase();
+      if (!shared.has(host)) continue;
+      var key = host + "\n" + e.username.toLowerCase();
+      var g = groups.get(key);
+      if (g) g.push(e); else groups.set(key, [e]);
+    }
+    var out = new Map<string, string>();
+    groups.forEach(function (group) {
+      for (var j = 0; j < group.length; j++) {
+        var entry = group[j];
+        var parts: string[] = [];
+        if (entry.username) parts.push(entry.username);
+        if (group.length > 1) {
+          var label = entry.label.trim();
+          var labelUnique = label !== "" && group.every(function (o) { return o === entry || o.label.trim().toLowerCase() !== label.toLowerCase(); });
+          parts.push(labelUnique ? label : entry.origin);
+        }
+        if (parts.length > 0) out.set(entry.id, parts.join(" · "));
+      }
+    });
+    return out;
+  }
+
   /** Case-insensitive match on host, username and label. An empty query matches everything. */
   function matchesQuery(entry: HelperEntry, query: string): boolean {
     var q = query.trim().toLowerCase();
@@ -55,7 +106,7 @@ var penPasswordsHelpers = (function () {
     return new Date(ts).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
   }
 
-  return { displayHost: displayHost, matchesQuery: matchesQuery, formatLastUsed: formatLastUsed, isIconDataUrl: isIconDataUrl };
+  return { displayHost: displayHost, duplicateHosts: duplicateHosts, rowSuffixes: rowSuffixes, matchesQuery: matchesQuery, formatLastUsed: formatLastUsed, isIconDataUrl: isIconDataUrl };
 })();
 
 if (typeof module !== "undefined" && module.exports) {

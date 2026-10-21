@@ -133,7 +133,9 @@ test("passwords tab: add, list, detail, search, edit, delete; light and dark", a
 
     await expect(pw.locator(".row")).toHaveCount(5);
     await expect(pw.locator(".row[aria-selected=true] .row-title")).toHaveText("news.ycombinator.com");
-    await expect(pw.locator(".row[aria-selected=true] .chip")).toHaveText("reader");
+    // The row shows the site only; site + username stay in its accessible name, the label too.
+    await expect(pw.locator(".row[aria-selected=true]")).toHaveAttribute("aria-label", "news.ycombinator.com, pg, reader");
+    await expect(pw.locator(".row .chip, .row .row-sub")).toHaveCount(0);
     await expect(pw.locator(".hero-title")).toHaveText("news.ycombinator.com");
     await expect(pw.locator(".hero-sub")).toHaveText("reader");
     await expect(pw.locator(".field-label")).toHaveText(["Username", "Website", "Last used"]);
@@ -231,8 +233,8 @@ test("passwords tab: add, list, detail, search, edit, delete; light and dark", a
     await expect(pw.locator("#never-link")).toBeFocused();
     await pw.locator(".row", { hasText: "github.com" }).click();
     // Tiles: the cached icon through <img>, a globe elsewhere; never the password.
-    await expect(pw.locator(".row", { hasText: "github.com" }).locator("img.tile-img")).toHaveCount(1);
-    await expect(pw.locator(".row", { hasText: "localhost" }).locator("img.tile-img")).toHaveCount(0);
+    await expect(pw.locator(".row", { hasText: "github.com" }).locator("img.row-icon")).toHaveCount(1);
+    await expect(pw.locator(".row", { hasText: "localhost" }).locator("img.row-icon")).toHaveCount(0);
     await expect(pw.locator(".row", { hasText: "localhost" }).locator("svg.icon")).toHaveCount(1);
 
     // Saving over an existing origin + username (after the Replace confirmation) reselects that entry by the id main returns, and clears a filter that hides it.

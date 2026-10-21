@@ -98,22 +98,28 @@
     return b;
   }
 
-  // Neutral tile: the site's cached icon through <img> (never inlined, even an
-  // SVG), else a globe. The icon is accepted only as an allowed image data: URL
-  // (main checks it too; the CSP allows img-src data: and nothing else).
-  function tile(large: boolean, iconUrl?: string): HTMLElement {
-    const t = el("div", large ? "tile tile-lg" : "tile");
-    t.setAttribute("aria-hidden", "true");
+  // Site icon: the cached favicon through <img> (never inlined, even an SVG;
+  // accepted only as an allowed image data: URL, which main checks too and the
+  // CSP allows), else the Phosphor globe: "fill" weight on the selected row
+  // like SettingsNav's active item, regular otherwise. Used by rows and the hero tile.
+  function siteIcon(iconUrl?: string, imgClass = "row-icon", filled = false): Element {
+    const globe = () => icon(filled ? "i-globe-fill" : "i-globe");
     if (iconUrl && helpers.isIconDataUrl(iconUrl)) {
-      const img = el("img", "tile-img");
+      const img = el("img", imgClass);
       img.alt = "";
       img.draggable = false;
-      img.addEventListener("error", () => t.replaceChildren(icon("i-globe")), { once: true });
+      img.addEventListener("error", () => img.replaceWith(globe()), { once: true });
       img.src = iconUrl;
-      t.appendChild(img);
-    } else {
-      t.appendChild(icon("i-globe"));
+      return img;
     }
+    return globe();
+  }
+
+  // Large neutral tile for the detail hero.
+  function tile(iconUrl?: string): HTMLElement {
+    const t = el("div", "tile tile-lg");
+    t.setAttribute("aria-hidden", "true");
+    t.appendChild(siteIcon(iconUrl, "tile-img"));
     return t;
   }
 
@@ -145,19 +151,18 @@
     unavailableEl.hidden = data.encryptionAvailable;
   }
 
-  function entryRow(e: Entry): HTMLElement {
+  function entryRow(e: Entry, suffix: string): HTMLElement {
     const host = helpers.displayHost(e.origin);
     const row = el("button", "row");
     row.type = "button";
     row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", String(e.id === selectedId && mode !== "add"));
+    const selected = e.id === selectedId && mode !== "add";
+    row.setAttribute("aria-selected", String(selected));
     row.dataset.id = e.id;
-    const text = el("span", "row-text");
-    const titleLine = el("span", "row-title-line");
-    titleLine.appendChild(el("span", "row-title", host));
-    if (e.label) titleLine.appendChild(el("span", "chip", e.label));
-    text.append(titleLine, el("span", "row-sub", e.username));
-    row.append(tile(false, e.icon), text);
+    row.setAttribute("aria-label", [host, e.username, e.label].filter(Boolean).join(", "));
+    row.append(siteIcon(e.icon, "row-icon", selected), el("span", "row-title", host));
+    // Same site name on two or more logins: show a suffix so they differ.
+    if (suffix) row.appendChild(el("span", "row-sub", "· " + suffix));
     row.addEventListener("click", () => guardNav(() => selectEntry(e.id)));
     return row;
   }
@@ -166,19 +171,18 @@
     const row = el("div", "row row-static");
     row.setAttribute("role", "option");
     row.setAttribute("aria-selected", "false");
-    const text = el("span", "row-text");
-    text.append(el("span", "row-title", host));
     const remove = button("Remove", "btn btn-ghost btn-sm", () => {
       void runAndRefresh(api.removeNever(host), "Could not remove the site.");
     });
     remove.setAttribute("aria-label", "Remove " + host + " from the never list");
-    row.append(tile(false), text, remove);
+    row.append(icon("i-globe"), el("span", "row-title", host), remove);
     return row;
   }
 
   function renderList(): void {
     const isAll = section === "all";
-    const rows = isAll ? visibleEntries().map(entryRow) : visibleNever().map(neverRow);
+    const suffixes = isAll ? helpers.rowSuffixes(data.entries) : null;
+    const rows = suffixes ? visibleEntries().map((e) => entryRow(e, suffixes.get(e.id) || "")) : visibleNever().map(neverRow);
     listEl.replaceChildren(...rows);
     listEl.setAttribute("aria-label", isAll ? "Saved logins" : "Never saved sites");
     const total = isAll ? data.entries.length : data.never.length;
@@ -258,7 +262,7 @@
     heroText.appendChild(el("h1", "hero-title", host));
     if (entry.label) heroText.appendChild(el("p", "hero-sub", entry.label));
     const hero = el("div", "hero");
-    hero.append(tile(true, entry.icon), heroText, actions);
+    hero.append(tile(entry.icon), heroText, actions);
 
     const body = el("div", "detail-body");
     body.append(
