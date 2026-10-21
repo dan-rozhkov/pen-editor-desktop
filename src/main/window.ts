@@ -47,7 +47,7 @@ import {
   isFetchableStylesheetUrl,
 } from "@sideform/browser-agent/controller";
 import { resolveAgentPanelUrl, resolveCanvasTabUrl, INITIAL_TABS, isEnvValueSet } from "./config";
-import { secureWebPreferences } from "./webPreferences";
+import { nativeAppsArguments, secureWebPreferences } from "./webPreferences";
 import { ADDRESS_ROW_HEIGHT, ISLAND_GAP, ISLAND_RADIUS, TAB_ROW_HEIGHT, agentPanelWidthFor, computeWindowLayout, type WindowLayout } from "./layout";
 import { activeTabChanged, isAuthSignInSender, pickAuthReceiver, type AuthTokenPayload, type DesktopAuth } from "./desktopAuth";
 import { AGENT_PANEL_SETTINGS_FILE, readAgentPanelSettings, writeAgentPanelSettings } from "./agentPanelSettings";
@@ -66,6 +66,8 @@ import { createTraceStore, nodeTraceFs, TRACE_DIR } from "./traceStore";
 import { FetchRouter } from "./fetchRouting";
 import { BLANK_DOCUMENT_URL, createCommitGate } from "./commitGate";
 import * as fixtureSession from "./fixtureSession";
+import { computerUseDeps } from "./computerUse/service";
+import { computerUseAvailable, setNativeCursorEnabled } from "./computerUse/helper";
 import { CURSOR_SETTINGS_FILE, type CursorSettings, readCursorSettings, resolveCursorSettings, writeCursorSettings } from "./cursorSettings";
 import type { McpService, IpcListenerGateway } from "./mcp/service";
 import { fillLogin } from "./browser/fillLogin";
@@ -279,7 +281,7 @@ export function createMainWindow(
   // content views, updated in pushState.
   const panelUrl = resolveAgentPanelUrl(editorUrl);
   const agentPanelView = new WebContentsView({
-    webPreferences: secureWebPreferences(path.join(__dirname, "../preload/agentPanel.js")),
+    webPreferences: secureWebPreferences(path.join(__dirname, "../preload/agentPanel.js"), { additionalArguments: nativeAppsArguments(computerUseAvailable()) }),
   });
   win.contentView.addChildView(agentPanelView);
   agentPanelView.setBackgroundColor(backgroundColorForTheme(FALLBACK_THEME));
@@ -673,7 +675,7 @@ export function createMainWindow(
               }),
             }
           : {
-              webPreferences: secureWebPreferences(path.join(__dirname, "../preload/tab.js")),
+              webPreferences: secureWebPreferences(path.join(__dirname, "../preload/tab.js"), { additionalArguments: nativeAppsArguments(computerUseAvailable()) }),
             },
       );
       win.contentView.addChildView(view);
@@ -1707,6 +1709,7 @@ export function createMainWindow(
   const cursorSettingsPath = path.join(app.getPath("userData"), CURSOR_SETTINGS_FILE);
   let cursorSettings = readCursorSettings(cursorSettingsPath);
   const effectiveCursor = () => resolveCursorSettings(process.env, cursorSettings);
+  setNativeCursorEnabled(() => effectiveCursor().enabled);
   const updateCursorSettings = (patch: Partial<CursorSettings>) => {
     cursorSettings = { ...cursorSettings, ...patch };
     writeCursorSettings(cursorSettingsPath, cursorSettings);
@@ -1902,6 +1905,7 @@ export function createMainWindow(
         reopen: reopenApp,
         reopenWhenGone,
         cancelWaiters,
+        computerUse: computerUseDeps(win, sender),
       });
     }
     const running = appRegistry.get(key);

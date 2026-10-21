@@ -1,4 +1,5 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { NATIVE_APPS_ARG } from "../src/main/webPreferences";
 
 // Finding 6: registerMcpBridge (src/preload/tab.ts) is the API boundary for
 // the desktop MCP bridge, and must not depend on its caller (the page)
@@ -208,6 +209,28 @@ describe("preload/tab.ts isolated browser sessions", () => {
   it("closeSession sends the closeSession command", async () => {
     await exposedApi.browser.closeSession("run-1");
     expect(invokeMock).toHaveBeenCalledWith("browser:command", { command: "closeSession", session: "run-1" });
+  });
+});
+
+describe("preload/tab.ts nativeApps flag (macOS computer use)", () => {
+  const argvBefore = process.argv;
+  afterEach(() => {
+    process.argv = argvBefore;
+  });
+  async function load(argv: string[]) {
+    process.argv = argv;
+    vi.resetModules();
+    exposedApi = undefined;
+    await import("../src/preload/tab");
+    return exposedApi.browser.nativeApps;
+  }
+
+  it("is true only when main passed the argument (the helper exists), whatever the platform", async () => {
+    expect(await load([...argvBefore, NATIVE_APPS_ARG])).toBe(true);
+  });
+
+  it("is false without the argument, also on darwin", async () => {
+    expect(await load(argvBefore.filter((a) => a !== NATIVE_APPS_ARG))).toBe(false);
   });
 });
 

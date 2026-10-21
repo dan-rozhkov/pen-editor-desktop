@@ -17,3 +17,9 @@ export function secureWebPreferences(
     sandbox: true,
   };
 }
+
+/** The preload argument that tells `window.penDesktop.browser.nativeApps` / the panel's copy whether computer use works. The preloads hold the same literal. */
+export const NATIVE_APPS_ARG = "--sideform-native-apps=1";
+
+/** `additionalArguments` for a view whose preload exposes `browser`: the native-apps flag only when the helper is available. */
+export const nativeAppsArguments = (available: boolean): string[] => (available ? [NATIVE_APPS_ARG] : []);

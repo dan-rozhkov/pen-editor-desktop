@@ -11,6 +11,7 @@ import { FAVICONS_FILE, createFaviconCache, createIconFetcher } from "./browser/
 import { createLoginCapture } from "./browser/loginCapture";
 import { createPasswordsWindow } from "./passwordsWindow";
 import { shouldReopenMainWindow } from "./closeTarget";
+import { isCursorOverlayWindow } from "./computerUse/cursorOverlay";
 import { DEEP_LINK_SCHEME, createDesktopAuth, parseDeepLinkArg, resolveProtocolRegistration, shouldRegisterProtocol, systemDeps } from "./desktopAuth";
 import { runOriginMigrationOnStartup } from "./originMigrationRunner";
 import { createMigrationGuard } from "./migrationGuard";
@@ -83,7 +84,8 @@ const queuedDeepLinks: string[] = [];
 function openMainWindowIfNone(): void {
   if (startup.active) return; // the hidden migration window is not a main window
   // The Passwords window is not a main window: it must not count here.
-  if (shouldReopenMainWindow(BaseWindow.getAllWindows(), (w) => loginServices.passwordsWindow.owns(w))) createMainWindow(editorUrl, mcpService, loginServices, desktopAuth);
+  // Neither the Passwords window nor an agent cursor overlay is a main window.
+  if (shouldReopenMainWindow(BaseWindow.getAllWindows(), (w) => loginServices.passwordsWindow.owns(w) || isCursorOverlayWindow(w))) createMainWindow(editorUrl, mcpService, loginServices, desktopAuth);
 }
 function dispatchDeepLink(url: string): void {
   // Validate FIRST: only a well-formed sideform://auth link whose state matches the pending attempt may
@@ -126,7 +128,7 @@ app.on("second-instance", (_event, argv) => {
   if (link) dispatchDeepLink(link);
   // While the startup guard is active the only window is the hidden migration window: never show it.
   if (startup.active) return;
-  const win = BaseWindow.getAllWindows().find((w) => !loginServices.passwordsWindow.owns(w));
+  const win = BaseWindow.getAllWindows().find((w) => !loginServices.passwordsWindow.owns(w) && !isCursorOverlayWindow(w));
   if (!win) {
     openMainWindowIfNone();
     return;

@@ -90,6 +90,9 @@ const makeBrowser = (scope?: { session: unknown }) => {
       call({ command: "open", args: { app: args.app } }),
     // Quits the external desktop app this chat launched with `open({ app })` (no-op without one).
     releaseApp: (): Promise<unknown> => call({ command: "releaseApp" }),
+    // macOS computer use: a running app can be controlled without a restart. Main sets the argument only when the
+    // helper binary exists (computerUseAvailable); a sandboxed preload cannot import the constant, so it is a literal.
+    nativeApps: process.argv.includes("--sideform-native-apps=1"),
   };
 };
 

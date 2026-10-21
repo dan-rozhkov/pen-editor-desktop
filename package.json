@@ -5,10 +5,11 @@
   "main": "dist/main/index.js",
   "private": true,
   "scripts": {
+    "build:native": "node scripts/build-native.mjs",
     "build:ts": "tsc",
     "copy-static": "mkdir -p dist/tabbar dist/passwords dist/assets dist/main/mcp && cp src/tabbar/tabbar.html src/tabbar/tabbar.css src/tabbar/empty.html src/tabbar/empty.css src/tabbar/tokens.css dist/tabbar/ && cp src/passwords/passwords.html src/passwords/passwords.css dist/passwords/ && cp assets/offline.html dist/assets/ && cp src/main/mcp/toolManifest.json dist/main/mcp/",
     "build": "npm run build:ts && npm run copy-static",
-    "start": "npm run build && electron .",
+    "start": "npm run build:native && npm run build && electron .",
     "dev": "PEN_DESKTOP_URL=http://localhost:5173/app npm run start",
     "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.e2e.json",
     "test": "vitest run",
@@ -16,7 +17,7 @@
     "test:e2e:live": "npm run build && playwright test --config playwright.live.config.ts",
     "test:e2e:bench": "npm run build && playwright test --config playwright.bench.config.ts",
     "test:e2e:shots": "npm run build && AGENT_SHOTS=1 playwright test --config playwright.bench.config.ts e2e/bench-agent-layout-screens.spec.ts",
-    "dist": "npm run build && electron-builder --mac"
+    "dist": "npm run build:native && npm run build && electron-builder --mac"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
@@ -51,7 +52,13 @@
       ],
       "category": "public.app-category.graphics-design",
       "identity": "-",
-      "hardenedRuntime": false
+      "hardenedRuntime": false,
+      "extraResources": [
+        {
+          "from": "native/bin/sideform-computer-use",
+          "to": "computer-use/sideform-computer-use"
+        }
+      ]
     }
   },
   "dependencies": {

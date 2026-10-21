@@ -7,6 +7,8 @@
 // The model's text is ONLY the path. It never becomes an argument, an env var or
 // a profile dir: the adapter makes a fresh temp profile and locks navigation.
 import path from "node:path";
+import { ERR_NO_ACCESSIBILITY, NATIVE_MODE_NOTE } from "./computerUse/errors";
+import { resolveRunningApp, runningAppNames, type RunningApp } from "./computerUse/appResolver";
 
 export const MAX_RUNNING_APPS = 2;
 /** Extra allowed roots (colon separated), honoured only in an unpackaged build (e2e). */
@@ -64,6 +66,16 @@ export const BLOCKED_BUNDLE_IDS: ReadonlySet<string> = new Set(
     "in.sinew.Enpass-Desktop",
     "com.nordsec.nordpass",
     "com.siber.roboform",
+    "com.apple.keychainaccess",
+    "com.apple.Passwords",
+    "org.keepassxc.keepassxc",
+    "com.hicknhacksoftware.MacPass",
+    "com.markmcguill.strongbox.mac.paid",
+    "com.markmcguill.strongbox",
+    "com.lastpass.LastPass",
+    "com.8bit.bitwarden",
+    "com.authy.authy-mac",
+    "com.yubico.yubioath",
   ].map((id) => id.toLowerCase()),
 );
 
@@ -93,6 +105,47 @@ export const HIGH_RISK_BUNDLE_IDS: ReadonlySet<string> = new Set(
     "io.atomicwallet",
   ].map((id) => id.toLowerCase()),
 );
+
+/** Computer use (any running macOS app): high risk is today's list plus terminals and System Settings. */
+export const NATIVE_HIGH_RISK_BUNDLE_IDS: ReadonlySet<string> = new Set([
+  ...HIGH_RISK_BUNDLE_IDS,
+  ...[
+    "com.apple.Terminal",
+    "com.googlecode.iterm2",
+    "com.apple.systempreferences",
+    "com.apple.Settings",
+    "com.apple.mail",
+    "com.apple.MobileSMS",
+    "com.apple.iChat",
+    "ru.keepcoder.Telegram",
+    "org.telegram.desktop",
+    "net.whatsapp.WhatsApp",
+    "desktop.WhatsApp",
+    "com.microsoft.Outlook",
+    "org.whispersystems.signal-desktop",
+    "com.tinyspeck.slackmacgap",
+    "com.hnc.Discord",
+    "com.apple.ScriptEditor2",
+    "com.apple.Automator",
+  ].map((id) => id.toLowerCase()),
+]);
+
+/** Computer use: any app whose bundle id or name looks like a password manager, key store or authenticator is refused. */
+export const PASSWORD_MANAGER_PATTERN = /password|passwd|keepass|1password|bitwarden|lastpass|dashlane|enpass|strongbox|macpass|keychain|nordpass|proton ?pass|authenticator|secrets|authy|\botp\b|otp ?auth|raivo|step ?two|\b2fa\b|secretive|yubico/i;
+
+/** Never controllable on the native path: the id list OR the name/bundle heuristic. */
+export function isBlockedNativeApp(app: { name?: string; bundleId?: string }): boolean {
+  const id = app.bundleId?.trim().toLowerCase();
+  if (id && BLOCKED_BUNDLE_IDS.has(id)) return true;
+  return PASSWORD_MANAGER_PATTERN.test(app.bundleId ?? "") || PASSWORD_MANAGER_PATTERN.test(app.name ?? "");
+}
+
+/** Native-path risk of a running app: an unreadable bundle id counts as high, like the Electron path. */
+export function nativeRiskOf(app: { name?: string; bundleId?: string }): "blocked" | "high" | "normal" {
+  if (isBlockedNativeApp(app)) return "blocked";
+  const id = app.bundleId?.trim().toLowerCase();
+  return !id || NATIVE_HIGH_RISK_BUNDLE_IDS.has(id) ? "high" : "normal";
+}
 
 const isInside = (child: string, root: string): boolean => {
   const rel = path.relative(root, child);
@@ -264,6 +317,14 @@ export const APP_CONFIRM_HIGH_RISK_BUTTONS = ["Allow once", "Don't allow"] as co
 export const APP_RESTART_BUTTONS = ["Restart and allow", "Don't allow"] as const;
 export const APP_HIGH_RISK_WARNING =
   "This app is high risk: it can hold private messages, mail or money. If you sign in to it, the agent can read and act in your name.";
+/** Attach to a running app: "Restart with full access" is offered only for an Electron app that may be restarted. */
+export const ATTACH_RESTART_BUTTONS = ["Allow once", "Allow until Sideform quits", "Restart with full access", "Don't allow"] as const;
+export const ATTACH_HIGH_RISK_BUTTONS = ["Allow once", "Don't allow"] as const;
+export const appAttachMessage = (name: string): string => `Let the AI agent control "${name}"?`;
+export const APP_ATTACH_DETAIL =
+  "The agent will see the app's window and can click and type in it. The app is not restarted. " +
+  "macOS may ask you to allow Sideform Desktop in Accessibility and Screen Recording. " +
+  "The agent acts in your own session, with your logins and data. Allow it only if you trust this task.";
 export const appRestartMessage = (name: string): string => `"${name}" is open. Restart it so the AI agent can control it?`;
 export const appRestartDetail = (realPath: string, risk: AppRisk = "normal"): string =>
   `${realPath}\n\n` +
@@ -332,6 +393,39 @@ export function createAppConfirm<W>(deps: AppConfirmDeps<W>) {
       });
       return response === 0;
     },
+    /**
+     * Attach to an app that is already running (computer use). The app is not restarted by "once"/"session".
+     * "Until quits" is remembered per owner and `app.key` (bundle id, else bundle path, else name); high risk
+     * never reads or writes it. A memoized answer returns "session" without a dialog.
+     */
+    async confirmAttach(
+      win: W,
+      app: { name: string; key: string; risk?: AppRisk; canRestart: boolean },
+      owner: number,
+    ): Promise<"once" | "session" | "restart" | "deny"> {
+      const high = app.risk === "high";
+      const attachMemo = `${owner}\0attach\0${app.key}`;
+      if (!high && remembered.has(attachMemo)) return "session";
+      const buttons: string[] = high ? [...ATTACH_HIGH_RISK_BUTTONS] : app.canRestart ? [...ATTACH_RESTART_BUTTONS] : [...APP_CONFIRM_BUTTONS];
+      const deny = buttons.length - 1;
+      const { response } = await deps.showMessageBox(win, {
+        type: "question",
+        message: appAttachMessage(app.name),
+        detail: (high ? `${APP_HIGH_RISK_WARNING}\n\n` : "") + APP_ATTACH_DETAIL,
+        buttons,
+        defaultId: deny,
+        cancelId: deny,
+        noLink: true,
+      });
+      const label = buttons[response];
+      if (label === "Allow once") return "once";
+      if (label === "Allow until Sideform quits") {
+        remembered.add(attachMemo);
+        return "session";
+      }
+      if (label === "Restart with full access") return "restart";
+      return "deny";
+    },
     /** The owner went away (reload, crash, close): its "until quits" answers go with it. */
     forgetSender(owner: number): void {
       for (const k of [...remembered]) if (k.startsWith(`${owner}\0`)) remembered.delete(k);
@@ -351,6 +445,12 @@ export interface AppHandle {
   userProfile?: boolean;
   /** The CDP link already dropped (the user quit the app, or it crashed). */
   readonly disconnected?: boolean;
+  /**
+   * A handle for an app the USER runs (computer use attach): `pid` is deliberately undefined so it is never
+   * counted as Sideform's own process or killed, and the registry does not consult `isAlive` for it (a
+   * pid-less handle would read as "dead"). It still counts in the cap. `close()` must never quit the app.
+   */
+  native?: boolean;
   onDisconnected(cb: () => void): void;
   close(): Promise<void>;
 }
@@ -360,6 +460,8 @@ export const appKey = (senderId: number, sessionId: string | undefined): string 
 export interface LaunchOptions {
   /** Run with the app's own (the user's) profile instead of a fresh temp one. */
   userProfile?: boolean;
+  /** Attach to the running app with this pid through macOS accessibility (never restarted or killed). */
+  native?: { pid: number };
 }
 
 export type LaunchOutcome<H> = { ok: true; handle: H } | { ok: false; error: string };
@@ -567,7 +669,7 @@ export function createAppRegistry<H extends AppHandle>(deps: {
               await closeQuietly(handle);
               return { ok: false, error: ERR_APP_RELEASED };
             }
-            if (quit || (deps.isAlive && !deps.isAlive(handle))) {
+            if (quit || (deps.isAlive && handle.native !== true && !deps.isAlive(handle))) {
               bindings.set(key, { gone: true });
               await closeQuietly(handle);
               return { ok: false, error: ERR_APP_QUIT_ON_LAUNCH };
@@ -719,6 +821,25 @@ export function shapeLaunchResult(listed: unknown, name: string, opts: LaunchOpt
   return opts.userProfile ? { ...base, profile: "user", note: USER_PROFILE_NOTE } : base;
 }
 
+/** Computer-use ports of `openApp` (present = available). */
+export interface ComputerUseDeps {
+  listApps(): Promise<RunningApp[]>;
+  windowTitles(pid: number): Promise<string[]>;
+  realpath(p: string): Promise<string>;
+  permissions(prompt: boolean): Promise<{ accessibility: boolean; screenRecording: boolean }>;
+  openAccessibilitySettings(): void;
+  confirmAttach(app: { name: string; key: string; risk: AppRisk; canRestart: boolean }): Promise<"once" | "session" | "restart" | "deny">;
+  ownBundlePath?: string;
+  /** Electron app inside the allowed roots, so "Restart with full access" can be offered. */
+  isRestartable(app: RunningApp): Promise<boolean>;
+}
+
+/** Appended to a validate failure when computer use is on: the app may be controlled without a restart if it runs. */
+export const errAppNotRunning = (base: string, names: readonly string[]): string =>
+  `${base} To control an app without a restart, it must be running. Running apps: ${names.length > 0 ? names.join(", ") : "none"}.`;
+
+const NOT_RUNNING_HINT_ERRORS: ReadonlySet<string> = new Set([ERR_APP_NOT_ELECTRON, ERR_APP_BAD_ROOT, ERR_APP_NOT_FOUND, ERR_APP_NOT_BUNDLE]);
+
 /** The whole app open: reserve, validate, confirm, launch. Never throws. */
 export async function openApp<H extends AppHandle & { controller: Pick<AppController, "tabs"> }>(
   key: string,
@@ -739,14 +860,55 @@ export async function openApp<H extends AppHandle & { controller: Pick<AppContro
     reopenWhenGone?(realPath: string, pid: number): void;
     /** Kill the detached waiters/helpers earlier opens spawned for this bundle (they would `open -g` during this restart). */
     cancelWaiters?(realPath: string): void;
+    /** macOS computer use: attach to an app that already runs. Absent = every byte of the old behaviour. */
+    computerUse?: ComputerUseDeps;
   },
 ): Promise<Record<string, unknown>> {
   const begun = deps.registry.begin(key);
   if (!begun.ok) return { error: begun.error };
   const ticket = begun.ticket;
   try {
+    const cu = deps.computerUse;
+    let apps: RunningApp[] | undefined;
+    if (cu && typeof requested === "string") {
+      apps = await cu.listApps().catch(() => undefined); // failure: fall through to today's path
+      // Window titles are matched only for ordinary apps: a blocked or high-risk app's windows are never read.
+      const resolveDeps = { realpath: cu.realpath, windowTitles: cu.windowTitles, skipTitleLookup: (a: RunningApp) => nativeRiskOf(a) !== "normal" };
+      const app = apps ? await resolveRunningApp(requested, apps, resolveDeps).catch(() => null) : null;
+      if (ticket.cancelled) return { error: ERR_APP_RELEASED };
+      if (app) {
+        // Blocked BEFORE the confirm: a password manager is never offered to the user for control.
+        if (isBlockedNativeApp(app)) return { error: ERR_APP_BLOCKED };
+        if (cu.ownBundlePath !== undefined && app.bundlePath !== undefined) {
+          const [a, b] = await Promise.all([cu.realpath(app.bundlePath).catch(() => app.bundlePath as string), cu.realpath(cu.ownBundlePath).catch(() => cu.ownBundlePath as string)]);
+          if (a === b) return { error: ERR_APP_OWN_BUNDLE };
+        }
+        const risk: AppRisk = nativeRiskOf(app) === "normal" ? "normal" : "high";
+        const canRestart = risk !== "high" && app.bundlePath !== undefined && (await cu.isRestartable(app).catch(() => false));
+        const answer = await cu.confirmAttach({ name: app.name, key: app.bundleId ?? app.bundlePath ?? app.name, risk, canRestart });
+        if (ticket.cancelled) return { error: ERR_APP_RELEASED };
+        if (answer === "deny") return { error: ERR_APP_DENIED };
+        if (answer === "restart") {
+          // Today's path (validate, confirmRestart, quit, relaunch) with the bundle path as the input.
+          if (app.bundlePath !== undefined) requested = app.bundlePath;
+        } else {
+          const perms = await cu.permissions(false);
+          if (!perms.accessibility) {
+            await cu.permissions(true).catch(() => undefined);
+            cu.openAccessibilitySettings();
+            return { error: ERR_NO_ACCESSIBILITY };
+          }
+          if (ticket.cancelled) return { error: ERR_APP_RELEASED };
+          const launched = await ticket.launch(app.bundlePath ?? app.name, { native: { pid: app.pid } });
+          if (!launched.ok) return { error: launched.error };
+          const listed = await launched.handle.controller.tabs({ action: "list" }).catch(() => ({}));
+          if (deps.registry.get(key) !== launched.handle) return { error: ticket.cancelled ? ERR_APP_RELEASED : ERR_APP_GONE };
+          return { ...shapeLaunchResult(listed, app.name), mode: "computer-use", note: NATIVE_MODE_NOTE };
+        }
+      }
+    }
     const valid = await deps.validate(requested);
-    if (!valid.ok) return { error: valid.error };
+    if (!valid.ok) return { error: cu && apps && NOT_RUNNING_HINT_ERRORS.has(valid.error) ? errAppNotRunning(valid.error, runningAppNames(apps.filter((a) => nativeRiskOf(a) === "normal"))) : valid.error };
     if (ticket.cancelled) return { error: ERR_APP_RELEASED };
     // Another key holds the user's profile of this bundle (restarting it, or running it): that instance is
     // Sideform's, not the user's, so this open takes the temp-profile path.

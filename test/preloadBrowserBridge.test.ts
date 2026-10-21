@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { NATIVE_APPS_ARG, nativeAppsArguments } from "../src/main/webPreferences";
 
 // A sandboxed preload cannot import a local file, so the agent panel's browser
 // bridge is a copy of the editor tab's. Chosen over bundling the preloads (the
@@ -38,5 +39,14 @@ describe("preload browser bridge", () => {
   });
   it("the isolated()/closeSession wrapper is the same", () => {
     expect(browserObject("agentPanel.ts")).toBe(browserObject("tab.ts"));
+  });
+  it("both preloads read the argument main passes, and main passes it only when computer use is available", () => {
+    for (const f of ["agentPanel.ts", "tab.ts"]) {
+      const src = readFileSync(path.join(__dirname, "../src/preload", f), "utf8");
+      expect(src).toContain(`nativeApps: process.argv.includes("${NATIVE_APPS_ARG}")`);
+      expect(src).not.toMatch(/nativeApps:\s*process\.platform/);
+    }
+    expect(nativeAppsArguments(true)).toEqual([NATIVE_APPS_ARG]);
+    expect(nativeAppsArguments(false)).toEqual([]);
   });
 });

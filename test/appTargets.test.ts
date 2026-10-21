@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   APP_CONFIRM_BUTTONS,
+  isBlockedNativeApp,
   APP_RESTART_BUTTONS,
   USER_PROFILE_NOTE,
   appRestartDetail,
@@ -1117,5 +1118,23 @@ describe("user-profile busy and the release decision", () => {
     it("link dropped but the process stays alive past 3 s: treated as running", async () => {
       expect(await run({ disconnected: true })).toBe(true);
     });
+  });
+});
+
+describe("isBlockedNativeApp name heuristic", () => {
+  it("blocks authenticators, OTP apps and key stores", () => {
+    for (const name of ["Authy", "Twilio Authy Desktop", "OTP Auth", "OTP Manager", "Raivo OTP", "Step Two", "StepTwo", "2FA Authenticator", "Yubico Authenticator", "Secretive"]) {
+      expect(isBlockedNativeApp({ name }), name).toBe(true);
+    }
+    expect(isBlockedNativeApp({ name: "x", bundleId: "com.authy.authy-mac" })).toBe(true);
+    expect(isBlockedNativeApp({ name: "x", bundleId: "com.yubico.yubioath" })).toBe(true);
+    expect(isBlockedNativeApp({ name: "x", bundleId: "com.example.otp" })).toBe(true);
+  });
+
+  it("does not block ordinary apps", () => {
+    for (const name of ["Photoshop", "Hotpot", "Notion", "Spotify", "Potplayer", "Keynote", "Figma", "Sketchup"]) {
+      expect(isBlockedNativeApp({ name }), name).toBe(false);
+    }
+    expect(isBlockedNativeApp({ name: "Photoshop", bundleId: "com.adobe.Photoshop" })).toBe(false);
   });
 });

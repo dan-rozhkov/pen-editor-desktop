@@ -7,12 +7,22 @@ import os from "node:os";
 import path from "node:path";
 import { app, dialog } from "electron";
 import type { ElectronApp } from "@sideform/browser-agent/adapters/electron";
+import type { AppController } from "./appTargets";
+import { createCursorOverlay } from "./computerUse/cursorOverlay";
+import { encodeImageForAgent, getHelper, nativeCursorEnabled } from "./computerUse/helper";
+import { createNativeHandle } from "./computerUse/nativeHandle";
+import type { RunningApp } from "./computerUse/appResolver";
 import { createAppConfirm, createAppRegistry, filterUserPids, intersectWorkspacePids, killHandleSync, quitReopenShellArgs, ranAtRelease, validateAppPath, workspacePidsArgs, type AppPathResult, type LaunchOptions } from "./appTargets";
 
 // What the registry holds: the launcher's app plus the profile dir WE own.
 export interface LaunchedApp {
-  controller: ElectronApp["controller"];
-  pid: number;
+  controller: ElectronApp["controller"] | AppController;
+  /** Undefined for a native (computer use) handle: the user's app, never signalled. */
+  pid: number | undefined;
+  /** Attached to the user's running app through macOS accessibility; close() only removes the overlay. */
+  native?: boolean;
+  /** Native handles only: remove the cursor overlay (the quit path). */
+  destroyOverlay?(): void;
   /** Our temp profile dir; null when the app runs with the user's own profile. */
   profileDir: string | null;
   /** The real `.app` path (to open it again after a user-profile run). */
@@ -48,7 +58,24 @@ export const reopenApp = (appPath: string): Promise<void> =>
 
 // Lazy: playwright-core is heavy and most sessions never launch an app.
 // ESM-only subpath, loaded through require(esm) from this CommonJS build.
+const launchNative = async (appPath: string, pid: number): Promise<LaunchedApp> => {
+  const helper = getHelper();
+  return await createNativeHandle({
+    helper,
+    pid,
+    appPath,
+    describe: async (p) => {
+      const res = await helper.call("listApps");
+      const apps = Array.isArray(res.apps) ? (res.apps as RunningApp[]) : [];
+      return apps.find((a) => a.pid === p);
+    },
+    overlay: createCursorOverlay({ enabled: nativeCursorEnabled }),
+    encodeImage: encodeImageForAgent,
+  });
+};
+
 const launchApp = async (appPath: string, opts?: LaunchOptions): Promise<LaunchedApp> => {
+  if (opts?.native) return await launchNative(appPath, opts.native.pid);
   const mod = await loadAdapter();
   const userProfile = opts?.userProfile === true;
   // Temp profile: we own the dir (fresh, in the OS temp dir) so a synchronous quit can remove it.
@@ -102,8 +129,8 @@ const launchApp = async (appPath: string, opts?: LaunchOptions): Promise<Launche
   };
 };
 
-const signalPid = (pid: number, signal: NodeJS.Signals | 0): boolean => {
-  if (!(pid > 0)) return false;
+const signalPid = (pid: number | undefined, signal: NodeJS.Signals | 0): boolean => {
+  if (pid === undefined || !(pid > 0)) return false;
   try {
     process.kill(pid, signal);
     return true;
@@ -206,7 +233,11 @@ export const quitUserApp = async (pid: number): Promise<boolean> => {
 export const appRegistry = createAppRegistry<LaunchedApp>({
   launch: launchApp,
   isAlive: (h) => signalPid(h.pid, 0),
-  killSync: (h) => killHandleSync(h, { kill: (pid) => void signalPid(pid, "SIGKILL"), rmProfile, spawnQuitReopen: quitReopenDetached }),
+  killSync: (h) => {
+    // A native handle is the user's own app: only the overlay goes (never kill / quit helpers).
+    if (h.native === true || h.pid === undefined) return void h.destroyOverlay?.();
+    killHandleSync({ ...h, pid: h.pid }, { kill: (pid) => void signalPid(pid, "SIGKILL"), rmProfile, spawnQuitReopen: quitReopenDetached });
+  },
   reopenDetached,
   quitReopenDetached,
 });
