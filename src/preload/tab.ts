@@ -239,6 +239,16 @@ const docs = {
   open: (docId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("doc:open", docId),
 };
 
+// Saved logins for the doc tabs' `@` mention picker. No password ever comes back: `list` gives id, origin, username,
+// label and icon?, `add` answers with the entry id only. Always present on the tab preload (like `docs.list`): main is
+// the trust boundary. It answers only the top frame of a doc tab still on the doc page (`{ ok: false, error: "Not allowed." }`
+// for the rest), and `add` stores only after a native confirmation the user accepts.
+const logins = {
+  list: (): Promise<unknown> => ipcRenderer.invoke("logins:list"),
+  add: (payload: { site: string; username: string; password: string; label?: string }): Promise<unknown> =>
+    ipcRenderer.invoke("logins:add", payload),
+};
+
 // Desktop sign-in (src/main/desktopAuth.ts): `signIn` asks main to open the system browser;
 // the token comes back as `auth:token` once the user finishes there. Main checks the sender.
 let listeners = 0;
@@ -278,6 +288,7 @@ const api = {
   canvasHost,
   traces,
   auth,
+  logins,
   // Opens (or activates) the Settings tab; `section` is validated in main.
   settings: {
     open: (section?: string): Promise<{ ok: boolean }> => ipcRenderer.invoke("settings:open", section),

@@ -288,6 +288,24 @@ describe("preload/tab.ts settings bridge", () => {
   });
 });
 
+describe("preload/tab.ts logins bridge", () => {
+  it("exposes list and add over logins:list / logins:add on every page", async () => {
+    vi.resetModules();
+    invokeMock.mockClear();
+    exposedApi = undefined;
+    (globalThis as unknown as { location: unknown }).location = { pathname: "/doc" };
+    await import("../src/preload/tab");
+    expect(Object.keys(exposedApi.logins).sort()).toEqual(["add", "list"]);
+    invokeMock.mockResolvedValueOnce({ entries: [], encryptionAvailable: true });
+    await expect(exposedApi.logins.list()).resolves.toEqual({ entries: [], encryptionAvailable: true });
+    expect(invokeMock).toHaveBeenLastCalledWith("logins:list");
+    const payload = { site: "example.com", username: "u", password: "p" };
+    invokeMock.mockResolvedValueOnce({ ok: true, id: "i" });
+    await expect(exposedApi.logins.add(payload)).resolves.toEqual({ ok: true, id: "i" });
+    expect(invokeMock).toHaveBeenLastCalledWith("logins:add", payload);
+  });
+});
+
 describe("preload/tab.ts docs bridge", () => {
   async function load(pathname: string) {
     vi.resetModules();

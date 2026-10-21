@@ -1,5 +1,5 @@
 import type { BrowserPageHandle, BrowserTabInfo } from "@sideform/browser-agent/controller";
-import { docIdOfUrl, isValidSettingsSection, isValidTraceId, resolveDocTabUrl, resolveSettingsTabUrl, resolveTraceTabUrl, traceIdOfUrl } from "./config";
+import { docIdOfUrl, isDocPageOn, isValidSettingsSection, isValidTraceId, resolveDocTabUrl, resolveSettingsTabUrl, resolveTraceTabUrl, traceIdOfUrl } from "./config";
 export type UITheme = "light" | "dark";
 
 /** How a tab becomes the active one. `focus: false` shows it without moving keyboard focus into it. */
@@ -836,6 +836,23 @@ export class TabManager {
   /** True when the webContents is one of this window's doc (Markdown) tabs. */
   isDocTab(webContentsId: number): boolean {
     return this.tabs.some((t) => t.kind === "doc" && t.view.getWebContentsId() === webContentsId);
+  }
+
+  /**
+   * True when the webContents is a doc tab that still shows the doc page (`/doc` on the editor origin), judged on BOTH
+   * the view's URL and `frameUrl` (the sender frame's own document URL), not a page it navigated to.
+   */
+  isDocViewer(webContentsId: number, frameUrl: string | undefined): boolean {
+    let origin: string;
+    try {
+      origin = new URL(this.opts.editorUrl).origin;
+    } catch {
+      return false;
+    }
+    return (
+      isDocPageOn(frameUrl, origin) &&
+      this.tabs.some((t) => t.kind === "doc" && t.view.getWebContentsId() === webContentsId && isDocPageOn(t.view.getURL(), origin))
+    );
   }
 
   /** True when the webContents is a trace tab that still shows the trace viewer (`/trace/<id>`), not a page it navigated to. */

@@ -105,9 +105,9 @@ interface StoredFile {
   never: string[];
 }
 
-const MAX_FIELD = 512;
+export const MAX_FIELD = 512;
 /** Longest password add() accepts, in UTF-16 code units. */
-const MAX_PASSWORD = 1024;
+export const MAX_PASSWORD = 1024;
 /**
  * Sanity bound on one stored (base64) password when reading. Deliberately
  * generous: the real size depends on the cipher's overhead and on UTF-8

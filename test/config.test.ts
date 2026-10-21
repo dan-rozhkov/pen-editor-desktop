@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, resolveTraceTabUrl, resolveSettingsTabUrl, isValidSettingsSection, SETTINGS_SECTIONS, isValidTraceId, traceIdOfUrl, INITIAL_TABS } from "../src/main/config";
+import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, isDocPageUrl, isDocPageOn, resolveTraceTabUrl, resolveSettingsTabUrl, isValidSettingsSection, SETTINGS_SECTIONS, isValidTraceId, traceIdOfUrl, INITIAL_TABS } from "../src/main/config";
 
 describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
@@ -153,6 +153,24 @@ describe("isValidDocId / docIdOfUrl", () => {
     expect(docIdOfUrl("https://h/doc?id=abc&chat=off")).toBe("abc");
     expect(docIdOfUrl("https://h/doc?new=1&chat=off")).toBeNull();
     expect(docIdOfUrl("not a url")).toBeNull();
+  });
+});
+
+describe("isDocPageUrl", () => {
+  it("is true only when the last path segment is doc", () => {
+    for (const ok of ["https://h/doc", "https://h/doc/", "https://h/doc?id=a&chat=off", "https://h/pre/doc"]) expect(isDocPageUrl(ok)).toBe(true);
+    for (const bad of ["https://h/", "https://h/app", "https://h/doc/x", "https://h/docs", "https://h/trace/doc/a", "not a url"]) expect(isDocPageUrl(bad)).toBe(false);
+  });
+});
+
+describe("isDocPageOn", () => {
+  it("needs the doc page on exactly the editor origin", () => {
+    expect(isDocPageOn("https://h/doc?id=a", "https://h")).toBe(true);
+    expect(isDocPageOn("https://other/doc", "https://h")).toBe(false);
+    expect(isDocPageOn("http://h/doc", "https://h")).toBe(false);
+    expect(isDocPageOn("https://h/app", "https://h")).toBe(false);
+    expect(isDocPageOn(undefined, "https://h")).toBe(false);
+    expect(isDocPageOn("nope", "https://h")).toBe(false);
   });
 });
 

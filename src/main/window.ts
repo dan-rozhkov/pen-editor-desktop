@@ -57,6 +57,7 @@ import { FixtureOwners } from "./fixtureOwners";
 import { isBrowserOwner as isBrowserOwnerId, isOrphaningEvent } from "./orphanRelease";
 import { CanvasLinkRouter } from "./canvasLink";
 import { openDocTab } from "./docOpen";
+import { addLoginCopy } from "./loginsIpc";
 import { handleDocDelete, handleDocList, handleDocSave, type DocIpcDeps } from "./docIpc";
 import { createDocStore, docDirFor, nodeDocFs, type DocStore } from "./docStore";
 import { openTraceTab } from "./traceOpen";
@@ -2290,6 +2291,20 @@ export function createMainWindow(
   ipcMain.handle("docs:list", (event) => handleDocList(docIpc, event.sender.id));
   ipcMain.handle("docs:save", (event, doc: unknown) => handleDocSave(docIpc, event.sender.id, doc));
   ipcMain.handle("docs:delete", (event, id: unknown) => handleDocDelete(docIpc, event.sender.id, id));
+  // `logins:*` (the doc tabs' @ mention picker) is registered once per process in the passwords service; this window only
+  // lends it this window's doc viewers and its confirm dialog, withdrawn when the window closes (the handlers must not be registered twice).
+  const withdrawDocTabLogins = loginServices.passwords.addDocWindow({
+    isDocViewer: (id, frameUrl) => tabs.isDocViewer(id, frameUrl),
+    confirmAdd: async (info) => {
+      if (win.isDestroyed()) return false;
+      try {
+        const { response } = await dialog.showMessageBox(win, { type: "question", noLink: true, ...addLoginCopy(info) });
+        return response === 0;
+      } catch {
+        return false;
+      }
+    },
+  });
 
   // Browse-run traces: stored under userData; sender rules in traceIpc.ts, opening in traceOpen.ts.
   const traceIpc: TraceIpcDeps = {
@@ -2548,6 +2563,7 @@ export function createMainWindow(
     ipcMain.removeListener("panel:theme", onPanelTheme);
     ipcMain.removeListener("tabbar:navigate", onTabbarNavigate);
     ipcMain.removeListener("editor:theme", onEditorTheme);
+    withdrawDocTabLogins();
     ipcMain.removeListener("editor:document-title", onEditorDocumentTitle);
     ipcMain.removeHandler("browser:command");
     ipcMain.removeHandler("browser:reveal-agent-tab");

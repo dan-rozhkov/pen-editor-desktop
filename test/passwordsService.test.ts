@@ -53,9 +53,9 @@ describe("passwords service", () => {
   it("registers each channel exactly once, at creation", () => {
     const { handle, handlers } = setup();
     expect([...handlers.keys()].sort()).toEqual(
-      ["passwords:add", "passwords:list", "passwords:never-remove", "passwords:remove", "passwords:update"],
+      ["logins:add", "logins:list", "passwords:add", "passwords:list", "passwords:never-remove", "passwords:remove", "passwords:update"],
     );
-    expect(handle).toHaveBeenCalledTimes(5);
+    expect(handle).toHaveBeenCalledTimes(7);
   });
 
   it("dispose removes every handler", () => {
@@ -167,5 +167,34 @@ describe("passwords service", () => {
     service.setTheme("w1", "light");
     expect(setBackground).toHaveBeenLastCalledWith("light");
     expect(setBackground).toHaveBeenCalledTimes(2);
+  });
+
+  it("logins:* answers top frames of doc viewers of any window (by the frame's own URL), asks the owning window, and a withdrawn window is refused", async () => {
+    const { service, handlers } = setup();
+    const a = makeContents(1);
+    service.attach(a.c, "w1", () => "light");
+    const subFrame = (id: number) => ({ sender: { id, mainFrame: {} }, senderFrame: { url: "https://app/doc" } });
+    const confirm1 = vi.fn(async () => true);
+    const confirm2 = vi.fn(async () => true);
+    const dropA = service.addDocWindow({ isDocViewer: (id) => id === 10, confirmAdd: confirm1 });
+    service.addDocWindow({ isDocViewer: (id, url) => id === 20 && url === "https://app/doc", confirmAdd: confirm2 });
+    const add = handlers.get("logins:add")!;
+    const denied = { ok: false, error: "Not allowed." };
+    const topEvent = (id: number, url = "https://app/doc") => {
+      const frame = { url };
+      return { sender: { id, mainFrame: frame }, senderFrame: frame };
+    };
+    expect(await add(topEvent(20), { site: "example.com", username: "u", password: "p" })).toMatchObject({ ok: true });
+    expect(confirm2).toHaveBeenCalledWith({ host: "example.com", username: "u" });
+    expect(confirm1).not.toHaveBeenCalled();
+    expect(a.send).toHaveBeenCalledWith("passwords:changed");
+    expect(handlers.get("logins:list")!(topEvent(10))).toMatchObject({ entries: [{ username: "u" }] });
+    expect(handlers.get("logins:list")!(topEvent(20, "https://app/app"))).toEqual(denied);
+    expect(handlers.get("logins:list")!(subFrame(10))).toEqual(denied);
+    expect(handlers.get("logins:list")!({ sender: { id: 10 } })).toEqual(denied);
+    expect(handlers.get("logins:list")!(topEvent(1))).toEqual(denied);
+    expect(await add(topEvent(1), { site: "example.org", username: "u", password: "p" })).toEqual(denied);
+    dropA();
+    expect(handlers.get("logins:list")!(topEvent(10))).toEqual(denied);
   });
 });

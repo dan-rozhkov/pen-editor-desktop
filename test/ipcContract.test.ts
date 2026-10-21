@@ -60,6 +60,8 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   // Main tells an already-open Settings page to switch section (no reload).
   { name: "settings:section", direction: "main->renderer" },
   // Document storage (invoke/handle): the frontend mirrors its localStorage docs to userData. See CLAUDE.md "Document storage".
+  { name: "logins:list", direction: "renderer->main" },
+  { name: "logins:add", direction: "renderer->main" },
   { name: "docs:list", direction: "renderer->main" },
   { name: "docs:save", direction: "renderer->main" },
   { name: "docs:delete", direction: "renderer->main" },

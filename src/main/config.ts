@@ -220,6 +220,26 @@ export function isValidDocId(docId: unknown): docId is string {
   return typeof docId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(docId);
 }
 
+/** True when the URL is the frontend's doc page: the last path segment is `doc` (`/doc`, `/prefix/doc`, trailing slash allowed). */
+export function isDocPageUrl(rawUrl: string): boolean {
+  try {
+    const segments = new URL(rawUrl).pathname.replace(/\/+$/, "").split("/");
+    return segments[segments.length - 1] === "doc";
+  } catch {
+    return false;
+  }
+}
+
+/** True when the URL is the doc page ON the editor's origin (a same-path page on another origin is not). */
+export function isDocPageOn(rawUrl: string | undefined, editorOrigin: string): boolean {
+  if (rawUrl === undefined) return false;
+  try {
+    return new URL(rawUrl).origin === editorOrigin && isDocPageUrl(rawUrl);
+  } catch {
+    return false;
+  }
+}
+
 /** The `id` query param of a document tab URL, or null (not a URL, no `id`). */
 export function docIdOfUrl(rawUrl: string): string | null {
   try {

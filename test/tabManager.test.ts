@@ -245,6 +245,28 @@ describe("TabManager", () => {
       expect(snap.activeTheme).toBe("dark");
     });
 
+    it("isDocViewer needs a doc tab on /doc of the editor origin, by the view URL AND the frame URL", () => {
+      tm.newTab("doc");
+      tm.newTab("editor");
+      const getUrl = (i: number) => views[i].getURL as unknown as ReturnType<typeof vi.fn>;
+      const doc = "https://pen-editor.onrender.com/doc?id=d1&chat=off";
+      const docWc = views[0].getWebContentsId();
+      getUrl(0).mockReturnValue(doc);
+      getUrl(1).mockReturnValue("https://pen-editor.onrender.com/doc");
+      expect(tm.isDocViewer(docWc, doc)).toBe(true);
+      // not a doc tab
+      expect(tm.isDocViewer(views[1].getWebContentsId(), doc)).toBe(false);
+      // the frame's own document is not the doc page / not the editor origin / unknown
+      expect(tm.isDocViewer(docWc, "https://pen-editor.onrender.com/app")).toBe(false);
+      expect(tm.isDocViewer(docWc, "https://evil.example/doc")).toBe(false);
+      expect(tm.isDocViewer(docWc, undefined)).toBe(false);
+      // the view navigated away
+      getUrl(0).mockReturnValue("https://pen-editor.onrender.com/app");
+      expect(tm.isDocViewer(docWc, doc)).toBe(false);
+      getUrl(0).mockReturnValue("https://evil.example/doc");
+      expect(tm.isDocViewer(docWc, doc)).toBe(false);
+    });
+
     it("a doc tab without an id opens a NEW document (new=1) and never matches findDocTab", () => {
       tm.newTab("doc");
       expect(views[0].loadURL).toHaveBeenCalledWith("https://pen-editor.onrender.com/doc?new=1&chat=off");

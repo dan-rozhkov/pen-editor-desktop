@@ -1,4 +1,4 @@
-import type { CredentialStore, CredentialSummary } from "./credentialStore";
+import { MAX_FIELD, MAX_PASSWORD, normalizeOrigin, type CredentialStore, type CredentialSummary } from "./credentialStore";
 
 /**
  * Request handlers behind the Passwords window's IPC channels
@@ -32,8 +32,16 @@ export type PasswordsSaveResult =
   | { ok: true; id: string }
   | { ok: false; error: string; /** add only: a login for this site + username exists; send `replace: true` to overwrite it. */ exists?: true; id?: string };
 
-const isRecord = (v: unknown): v is Record<string, unknown> =>
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
+export const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** What a doc tab's mention picker gets per login: no `lastUsedAt`, no secret. */
+export type LoginSummary = Pick<CredentialSummary, "id" | "origin" | "username" | "label"> & { icon?: string };
+
+export type PrecheckAddResult = { ok: true; host: string; username: string } | { ok: false; error: string; exists?: true; id?: string };
 
 export function createPasswordsApi(store: CredentialStore, icons?: PasswordsIcons) {
   return {
@@ -45,6 +53,45 @@ export function createPasswordsApi(store: CredentialStore, icons?: PasswordsIcon
         return icon ? { ...e, icon } : e;
       });
       return { entries, never: store.listNever(), encryptionAvailable: store.isAvailable() };
+    },
+
+    /** The saved logins for a doc tab: id, origin, username, label, icon. No `never` list, no icon fetch, no `lastUsedAt`, no secret. */
+    listSummaries(): { entries: LoginSummary[]; encryptionAvailable: boolean } {
+      const entries = store.list().map(({ id, origin, username, label }) => {
+        const icon = icons?.get(origin);
+        return icon ? { id, origin, username, label, icon } : { id, origin, username, label };
+      });
+      return { entries, encryptionAvailable: store.isAvailable() };
+    },
+
+    /**
+     * Everything `add` (without `replace`) checks before it stores, with no side effect: the shape, the site, an
+     * existing login for this site + username, encryption, the field limits of the store (so no dialog opens for a
+     * login that cannot be saved) and control characters in the username and label (a dialog shows them).
+     * On success `host` (host[:port] of the normalized origin) and the trimmed `username` are what a confirmation
+     * dialog shows. Lets a caller ask the user BEFORE storing.
+     */
+    precheckAdd(payload: unknown): PrecheckAddResult {
+      if (!isRecord(payload)) return { ok: false, error: "Malformed request." };
+      const { site, username, password, label } = payload;
+      if (typeof site !== "string" || typeof username !== "string" || typeof password !== "string") {
+        return { ok: false, error: "Malformed request." };
+      }
+      if (label !== undefined && typeof label !== "string") return { ok: false, error: "Malformed request." };
+      const origin = normalizeOrigin(site);
+      if (!origin) return { ok: false, error: "Enter a valid site address." };
+      if (!store.isAvailable()) return { ok: false, error: "Encryption is not available on this system." };
+      const name = username.trim();
+      if (name === "" || name.length > MAX_FIELD) return { ok: false, error: "Enter a username." };
+      if (password === "" || password.length > MAX_PASSWORD) return { ok: false, error: "Enter a password." };
+      if (CONTROL_CHARS.test(name) || (label !== undefined && (CONTROL_CHARS.test(label) || label.trim().length > MAX_FIELD))) {
+        return { ok: false, error: "The username or label is not valid." };
+      }
+      const existing = store.findExisting(site, name);
+      if (existing !== null) {
+        return { ok: false, error: "A login for that username already exists on this site.", exists: true, id: existing };
+      }
+      return { ok: true, host: new URL(origin).host, username: name };
     },
 
     add(payload: unknown): PasswordsSaveResult {
