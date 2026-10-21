@@ -60,6 +60,7 @@ import { openDocTab } from "./docOpen";
 import { handleDocDelete, handleDocList, handleDocSave, type DocIpcDeps } from "./docIpc";
 import { createDocStore, docDirFor, nodeDocFs, type DocStore } from "./docStore";
 import { openTraceTab } from "./traceOpen";
+import { openSettings } from "./settingsOpen";
 import { handleTraceListTabs, handleTraceRead, handleTraceSave, type TraceIpcDeps } from "./traceIpc";
 import { createTraceStore, nodeTraceFs, TRACE_DIR } from "./traceStore";
 import { FetchRouter } from "./fetchRouting";
@@ -322,8 +323,8 @@ export function createMainWindow(
   let rememberedEditorTheme: UITheme | null = null;
   // True while `rememberedEditorTheme` came from the agent panel page, not from an editor tab (an editor's own report always wins).
   let rememberedFromPanel = false;
-  // Doc and trace tabs report the editor theme like canvas tabs do (same preload), so they count here.
-  const editorTabCount = (s: TabsSnapshot) => s.tabs.filter((t) => t.kind === "editor" || t.kind === "doc" || t.kind === "trace").length;
+  // Doc, trace and Settings tabs report the editor theme like canvas tabs do (same preload), so they count here.
+  const editorTabCount = (s: TabsSnapshot) => s.tabs.filter((t) => t.kind === "editor" || t.kind === "doc" || t.kind === "trace" || t.kind === "settings").length;
   let lastResolvedForTint: UITheme = FALLBACK_THEME;
   const emptyView = new WebContentsView({
     webPreferences: secureWebPreferences(path.join(__dirname, "../preload/empty.js")),
@@ -1040,8 +1041,9 @@ export function createMainWindow(
         });
       }
 
-      if (kind === "doc" || kind === "trace") {
-        // A trace tab is the same kind of plain frontend page (`/trace/<id>`) as a document tab.
+      if (kind === "doc" || kind === "trace" || kind === "settings") {
+        // A trace tab is the same kind of plain frontend page (`/trace/<id>`) as a document tab;
+        // so is the Settings tab (`/settings`, default session: its localStorage is the editor's).
         // A document tab is a plain frontend page (`/doc`): same origin clamp and offline
         // fallback as a canvas tab, but NOT a canvas tab: no MCP registration, no fixtures,
         // no canvas link. Its title follows the page title (the page sets document.title and
@@ -1049,7 +1051,7 @@ export function createMainWindow(
         attachNavigationPolicy(view.webContents, editorOrigin, (url) => void shell.openExternal(url));
         attachOfflineFallback(view.webContents, offlineFile);
         view.webContents.on("page-title-updated", (_e, title) => {
-          titleCallbacks.get(viewId)?.(title.trim().slice(0, 200) || (kind === "trace" ? "Trace" : "Document"));
+          titleCallbacks.get(viewId)?.(title.trim().slice(0, 200) || (kind === "trace" ? "Trace" : kind === "settings" ? "Settings" : "Document"));
         });
       }
 
@@ -1285,6 +1287,7 @@ export function createMainWindow(
           view.webContents.close();
         },
         sendMenuCommand: (id) => view.webContents.send("menu:command", id),
+        sendSettingsSection: (section) => view.webContents.send("settings:section", section),
         focus: () => view.webContents.focus(),
         onDocumentTitleChanged: (cb) => titleCallbacks.set(viewId, cb),
         // Editor tabs only correct their own opaque background here, the
@@ -2234,6 +2237,19 @@ export function createMainWindow(
     ),
   );
 
+  // Settings: the agent panel or any frontend tab asks for the Settings tab (singleton); logic in settingsOpen.ts.
+  ipcMain.handle("settings:open", (event, section?: unknown) =>
+    openSettings(
+      {
+        isPanel: (id) => panelWc()?.id === id,
+        isPageTab: (id) => tabs.isPageTab(id),
+        openSettingsTab: (s) => void tabs.openSettingsTab(s, { focus: true }),
+      },
+      event.sender.id,
+      section,
+    ),
+  );
+
   // Document storage: the frontend mirrors its localStorage documents to userData; sender rules in docIpc.ts.
   const docIpc: DocIpcDeps = {
     store: getDocStore(),
@@ -2526,6 +2542,7 @@ export function createMainWindow(
     ipcMain.removeHandler("docs:list");
     ipcMain.removeHandler("docs:save");
     ipcMain.removeHandler("docs:delete");
+    ipcMain.removeHandler("settings:open");
     ipcMain.removeHandler("traces:save");
     ipcMain.removeHandler("traces:read");
     ipcMain.removeHandler("traces:open");
@@ -2561,6 +2578,7 @@ export function createMainWindow(
             newTab: () => tabs.newTab("editor"),
             newBrowserTab: newUserBrowserTab,
             newDocTab: () => void tabs.newTab("doc"),
+            openSettings: () => void tabs.openSettingsTab(undefined, { focus: true }),
             openPasswords: () => loginServices.passwordsWindow.open(),
             signIn: () => desktopAuth.beginSignIn(),
             closeTab: () => {
@@ -2591,7 +2609,7 @@ export function createMainWindow(
           () => loginServices.passwordsWindow.isFocused(),
           () => loginServices.passwordsWindow.close(),
         ),
-        { isMac: process.platform === "darwin", agentPanel: { collapsed: panelCollapsed } },
+        { isMac: process.platform === "darwin", appName: app.name, agentPanel: { collapsed: panelCollapsed } },
         mcpService.getStatus(),
         effectiveCursor(),
       ),

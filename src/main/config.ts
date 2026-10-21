@@ -149,6 +149,34 @@ export function resolveCanvasTabUrl(editorUrl: string): string {
   return url.toString();
 }
 
+/**
+ * Shared URL shape of the frontend's non-editor pages: the LAST `app` path segment becomes
+ * `segment` (prefix kept, `/app/` -> `/<segment>`), `extraSegments` follow it, the editor URL's
+ * query is kept except the `drop` keys, `append` pairs are added after it, hash is dropped.
+ */
+function frontendTabUrl(
+  editorUrl: string,
+  segment: string,
+  opts: { extraSegments?: string[]; drop: string[]; append: string[] },
+): string {
+  const url = new URL(editorUrl);
+  url.hash = "";
+  const segments = url.pathname.split("/");
+  if (segments.length > 2 && segments[segments.length - 1] === "" && segments[segments.length - 2] === "app") {
+    segments.pop();
+  }
+  segments[segments.length - 1] = segment;
+  segments.push(...(opts.extraSegments ?? []));
+  url.pathname = segments.join("/");
+  const kept = url.search
+    .replace(/^\?/, "")
+    .split("&")
+    .filter((pair) => pair !== "" && !opts.drop.includes(decodeURIComponent_safe(pair.split("=")[0])));
+  kept.push(...opts.append);
+  url.search = kept.join("&");
+  return url.toString();
+}
+
 /** The URL a document tab loads (the frontend's markdown editor at `/doc`).
  * Same shape rule as `resolveAgentPanelUrl` for the path (the LAST path segment
  * `app` becomes `doc`, prefix kept, `/app/` -> `/doc`; a path not ending in
@@ -158,27 +186,33 @@ export function resolveCanvasTabUrl(editorUrl: string): string {
  * (open a NEW document). Any `id`, `new` or `chat` param of the editor URL is replaced, never duplicated. The docId is
  * validated by the caller (`isValidDocId`); it is still encoded here. */
 export function resolveDocTabUrl(editorUrl: string, docId?: string): string {
-  const url = new URL(editorUrl);
-  url.hash = "";
-  const segments = url.pathname.split("/");
-  if (segments.length > 2 && segments[segments.length - 1] === "" && segments[segments.length - 2] === "app") {
-    segments.pop();
-  }
-  segments[segments.length - 1] = "doc";
-  url.pathname = segments.join("/");
-  const kept = url.search
-    .replace(/^\?/, "")
-    .split("&")
-    .filter((pair) => {
-      if (pair === "") return false;
-      const key = decodeURIComponent_safe(pair.split("=")[0]);
-      return key !== "chat" && key !== "id" && key !== "new";
-    });
   // No docId = a NEW document: the page creates it and rewrites the URL to `?id=<newId>`.
-  kept.push(docId !== undefined ? `id=${encodeURIComponent(docId)}` : "new=1");
-  kept.push("chat=off");
-  url.search = kept.join("&");
-  return url.toString();
+  return frontendTabUrl(editorUrl, "doc", {
+    drop: ["chat", "id", "new"],
+    append: [docId !== undefined ? `id=${encodeURIComponent(docId)}` : "new=1", "chat=off"],
+  });
+}
+
+/** The section ids of the frontend's `/settings` page (`?section=<id>`). */
+export const SETTINGS_SECTIONS = ["account", "appearance", "canvas", "agent", "integrations", "shortcuts"] as const;
+export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
+
+/** True for one of the six settings section ids; anything else (also non-strings) is not. */
+export function isValidSettingsSection(section: unknown): section is SettingsSection {
+  return typeof section === "string" && (SETTINGS_SECTIONS as readonly string[]).includes(section);
+}
+
+/**
+ * The URL of the Settings tab: same shape rule as `resolveDocTabUrl` for the path (the LAST
+ * `app` segment becomes `settings`, prefix kept, `/app/` -> `/settings`). Query of the editor URL
+ * is kept except `chat` and `section`; `chat=off` is appended, then `section=<id>` when the
+ * section is valid (an invalid one is dropped). Hash is dropped.
+ */
+export function resolveSettingsTabUrl(editorUrl: string, section?: unknown): string {
+  return frontendTabUrl(editorUrl, "settings", {
+    drop: ["chat", "section"],
+    append: ["chat=off", ...(isValidSettingsSection(section) ? [`section=${section}`] : [])],
+  });
 }
 
 /** A document id the agent panel may ask to open: 1-64 of `A-Za-z0-9_-`. */
@@ -202,26 +236,11 @@ export function docIdOfUrl(rawUrl: string): string | null {
  * validated by the caller (`isValidTraceId`); it is still encoded here.
  */
 export function resolveTraceTabUrl(editorUrl: string, traceId: string): string {
-  const url = new URL(editorUrl);
-  url.hash = "";
-  const segments = url.pathname.split("/");
-  if (segments.length > 2 && segments[segments.length - 1] === "" && segments[segments.length - 2] === "app") {
-    segments.pop();
-  }
-  segments[segments.length - 1] = "trace";
-  segments.push(encodeURIComponent(traceId));
-  url.pathname = segments.join("/");
-  const kept = url.search
-    .replace(/^\?/, "")
-    .split("&")
-    .filter((pair) => {
-      if (pair === "") return false;
-      const key = decodeURIComponent_safe(pair.split("=")[0]);
-      return key !== "chat" && key !== "src";
-    });
-  kept.push("src=local", "chat=off");
-  url.search = kept.join("&");
-  return url.toString();
+  return frontendTabUrl(editorUrl, "trace", {
+    extraSegments: [encodeURIComponent(traceId)],
+    drop: ["chat", "src"],
+    append: ["src=local", "chat=off"],
+  });
 }
 
 /** A trace id the agent panel may ask to open: 1-64 of `A-Za-z0-9_-` (the browse-trace id format). */

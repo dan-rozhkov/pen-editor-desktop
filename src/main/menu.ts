@@ -16,6 +16,8 @@ export interface MenuActions {
   newBrowserTab(): void;
   /** Opens a new document tab (the frontend's markdown editor at `/doc`). */
   newDocTab(): void;
+  /** Opens (or activates) the Settings tab. */
+  openSettings(): void;
   /** Opens (or focuses) the Passwords window. A local action: it forwards no `menu:command` id. */
   openPasswords(): void;
   /** Starts the sign-in in the system browser (desktopAuth.ts). A local action: no `menu:command` id. */
@@ -84,10 +86,15 @@ export function buildNewTabMenuTemplate(
  */
 export function buildMenuTemplate(
   actions: MenuActions,
-  opts: { isMac: boolean; agentPanel?: { collapsed: boolean } },
+  opts: { isMac: boolean; appName?: string; agentPanel?: { collapsed: boolean } },
   mcpStatus: McpStatus = "off",
   cursor: CursorMenuState = { ...defaultCursorSettings(), enabledLocked: false },
 ): MenuItemConstructorOptions[] {
+  const settingsItem: MenuItemConstructorOptions = {
+    label: "Settings…",
+    accelerator: "CmdOrCtrl+,",
+    click: () => actions.openSettings(),
+  };
   const fileMenu: MenuItemConstructorOptions = {
     label: "File",
     submenu: [
@@ -95,6 +102,8 @@ export function buildMenuTemplate(
       { label: "New Browser Tab", click: () => actions.newBrowserTab() },
       { label: "New Document Tab", accelerator: "CmdOrCtrl+Shift+D", click: () => actions.newDocTab() },
       { label: "Passwords…", click: () => actions.openPasswords() },
+      // On macOS Settings… lives in the app menu (below), as in every mac app.
+      ...(opts.isMac ? [] : [settingsItem]),
       { label: "Sign In…", click: () => actions.signIn() },
       {
         label: "Open…",
@@ -179,6 +188,25 @@ export function buildMenuTemplate(
   };
 
   const template: MenuItemConstructorOptions[] = [fileMenu, editMenu, viewMenu, windowMenu];
-  if (opts.isMac) template.unshift({ role: "appMenu" });
+  // macOS: an explicit app menu = Electron's default `appMenu` role plus Settings… (the first menu's
+  // title is always the app name on macOS; `label` only matters for tests).
+  if (opts.isMac) {
+    template.unshift({
+      label: opts.appName ?? "App",
+      submenu: [
+        { role: "about" },
+        { type: "separator" },
+        settingsItem,
+        { type: "separator" },
+        { role: "services" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { role: "quit" },
+      ],
+    });
+  }
   return template;
 }

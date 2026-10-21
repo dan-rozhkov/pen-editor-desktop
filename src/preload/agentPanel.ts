@@ -179,7 +179,12 @@ const auth = {
   },
 };
 
-contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser, docs, traces, auth });
+// Settings tab (`settings:open`): `section` is one of account|appearance|canvas|agent|integrations|shortcuts; main ignores any other value.
+const settings = {
+  open: (section?: string): Promise<{ ok: boolean }> => ipcRenderer.invoke("settings:open", section),
+};
+
+contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser, docs, traces, auth, settings });
 
 // Theme report for main (channel `panel:theme`): the page paints the stored editor theme as the
 // class `dark` on <html>. Initial read on DOMContentLoaded, then a MutationObserver on that class.

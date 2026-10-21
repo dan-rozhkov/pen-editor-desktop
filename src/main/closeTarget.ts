@@ -36,6 +36,7 @@ export const MENU_ACTION_SCOPE: Record<keyof MenuActions, "main" | "close" | "ap
   newTab: "main",
   newBrowserTab: "main",
   newDocTab: "main",
+  openSettings: "main",
   openPasswords: "app",
   signIn: "app",
   closeTab: "close",

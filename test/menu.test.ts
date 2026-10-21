@@ -14,6 +14,7 @@ describe("buildMenuTemplate", () => {
       newTab: vi.fn(),
       newBrowserTab: vi.fn(),
       newDocTab: vi.fn(),
+      openSettings: vi.fn(),
       openPasswords: vi.fn(),
       signIn: vi.fn(),
       closeTab: vi.fn(), closeWindow: vi.fn(),
@@ -36,8 +37,31 @@ describe("buildMenuTemplate", () => {
   }
 
   it("has the app menu first on mac only", () => {
-    expect(buildMenuTemplate(actions, { isMac: true })[0].role).toBe("appMenu");
+    expect(buildMenuTemplate(actions, { isMac: true, appName: "Sideform" })[0].label).toBe("Sideform");
     expect(buildMenuTemplate(actions, { isMac: false })[0].label).toBe("File");
+  });
+
+  it("mac app menu keeps the default roles and adds Settings… (CmdOrCtrl+,) after About", () => {
+    const appMenu = buildMenuTemplate(actions, { isMac: true })[0];
+    const sub = appMenu.submenu as MenuItemConstructorOptions[];
+    expect(sub.map((i) => i.role ?? i.type ?? i.label)).toEqual([
+      "about", "separator", "Settings…", "separator", "services", "separator", "hide", "hideOthers", "unhide", "separator", "quit",
+    ]);
+    const settings = sub.find((i) => i.label === "Settings…")!;
+    expect(settings.accelerator).toBe("CmdOrCtrl+,");
+    (settings.click as () => void)();
+    expect(actions.openSettings).toHaveBeenCalledOnce();
+    // Not duplicated in File on mac.
+    const file = buildMenuTemplate(actions, { isMac: true }).find((i) => i.label === "File")!;
+    expect((file.submenu as MenuItemConstructorOptions[]).some((i) => i.label === "Settings…")).toBe(false);
+  });
+
+  it("off mac, Settings… (CmdOrCtrl+,) is in the File menu", () => {
+    const file = buildMenuTemplate(actions, { isMac: false }).find((i) => i.label === "File")!;
+    const settings = (file.submenu as MenuItemConstructorOptions[]).find((i) => i.label === "Settings…")!;
+    expect(settings.accelerator).toBe("CmdOrCtrl+,");
+    (settings.click as () => void)();
+    expect(actions.openSettings).toHaveBeenCalledOnce();
   });
 
   it("reads New Canvas Tab, same action and accelerator", () => {
@@ -197,16 +221,16 @@ describe("buildMenuTemplate", () => {
   // the tooltip/README wording to be revisited in the same change.
   it("the MCP status line and 'Use this app for MCP' live in the File submenu, not the app menu", () => {
     const template = buildMenuTemplate(actions, { isMac: true }, "listening");
-    const appMenu = template.find((i) => i.role === "appMenu");
+    const appMenu = template[0];
     const fileMenu = template.find((i) => i.label === "File");
     expect(fileMenu).toBeTruthy();
     const fileSubmenu = fileMenu!.submenu as MenuItemConstructorOptions[];
     expect(fileSubmenu.some((i) => i.label === "MCP: Listening")).toBe(true);
     expect(fileSubmenu.some((i) => i.label === "Use this app for MCP")).toBe(true);
-    // The real app menu's submenu is left as Electron's own default (no
-    // `submenu` provided here at all) — confirms these items were never
-    // routed there.
-    expect(appMenu?.submenu).toBeUndefined();
+    // The app menu (explicit now: Electron's default roles plus Settings…) never got them.
+    const appLabels = (appMenu.submenu as MenuItemConstructorOptions[]).map((i) => i.label);
+    expect(appLabels).not.toContain("MCP: Listening");
+    expect(appLabels).not.toContain("Use this app for MCP");
   });
 });
 
@@ -247,7 +271,7 @@ describe("buildNewTabMenuTemplate", () => {
 
 describe("View > Agent Panel", () => {
   const actions = {
-    newTab: vi.fn(), newBrowserTab: vi.fn(), newDocTab: vi.fn(), openPasswords: vi.fn(), signIn: vi.fn(), closeTab: vi.fn(), closeWindow: vi.fn(), nextTab: vi.fn(), prevTab: vi.fn(),
+    newTab: vi.fn(), newBrowserTab: vi.fn(), newDocTab: vi.fn(), openSettings: vi.fn(), openPasswords: vi.fn(), signIn: vi.fn(), closeTab: vi.fn(), closeWindow: vi.fn(), nextTab: vi.fn(), prevTab: vi.fn(),
     forwardToActiveTab: vi.fn(), useThisAppForMcp: vi.fn(), setCursorEnabled: vi.fn(), toggleAgentPanel: vi.fn(),
   } as MenuActions;
   it("View menu has a Show/Hide Agent Panel item (Cmd/Ctrl+Alt+B) only with the agent layout", () => {

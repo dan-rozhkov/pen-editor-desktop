@@ -21,6 +21,7 @@ function makeFakeView() {
     setVisible: vi.fn(),
     destroy: vi.fn(),
     sendMenuCommand: vi.fn(),
+    sendSettingsSection: vi.fn(),
     focus: vi.fn(),
     getWebContentsId: vi.fn(() => 0),
     onDocumentTitleChanged: vi.fn((cb: (t: string) => void) => {
@@ -284,6 +285,74 @@ describe("TabManager", () => {
       (views[0].getURL as unknown as ReturnType<typeof vi.fn>).mockReturnValue("https://pen-editor.onrender.com/doc?id=c&chat=off");
       expect(tm.findDocTab("a")).toBeNull();
       expect(tm.findDocTab("c")).toBe(a);
+    });
+  });
+
+  describe("settings tab", () => {
+    it("loads /settings?chat=off, starts titled Settings, follows the page title and the theme", () => {
+      const id = tm.openSettingsTab();
+      expect(views[0].loadURL).toHaveBeenCalledWith("https://pen-editor.onrender.com/settings?chat=off");
+      let snap = tm.getSnapshot();
+      expect(snap).toMatchObject({ activeId: id, activeKind: "settings" });
+      expect(snap.tabs[0]).toMatchObject({ kind: "settings", title: "Settings" });
+      views[0].emitTitle("Settings - Account");
+      expect(tm.getSnapshot().tabs[0].title).toBe("Settings - Account");
+      views[0].emitTheme("dark");
+      snap = tm.getSnapshot();
+      expect(snap.activeTheme).toBe("dark");
+    });
+
+    it("opens at a valid section and ignores an invalid one", () => {
+      tm.openSettingsTab("agent");
+      expect(views[0].loadURL).toHaveBeenCalledWith("https://pen-editor.onrender.com/settings?chat=off&section=agent");
+      tm.closeTab(tm.findSettingsTab() as number);
+      tm.openSettingsTab("bogus");
+      expect(views[1].loadURL).toHaveBeenCalledWith("https://pen-editor.onrender.com/settings?chat=off");
+    });
+
+    it("is a singleton: a second open activates the existing tab, a section is sent to it (no reload)", () => {
+      const first = tm.openSettingsTab();
+      const editor = tm.newTab("editor");
+      expect(tm.getSnapshot().activeId).toBe(editor);
+      expect(tm.openSettingsTab()).toBe(first);
+      expect(tm.getSnapshot()).toMatchObject({ activeId: first, activeKind: "settings" });
+      expect(views).toHaveLength(2);
+      expect(views[0].loadURL).toHaveBeenCalledTimes(1);
+      expect(views[0].sendSettingsSection).not.toHaveBeenCalled();
+      tm.activate(editor);
+      expect(tm.openSettingsTab("shortcuts")).toBe(first);
+      expect(views).toHaveLength(2);
+      expect(views[0].loadURL).toHaveBeenCalledTimes(1);
+      expect(views[0].sendSettingsSection).toHaveBeenCalledTimes(1);
+      expect(views[0].sendSettingsSection).toHaveBeenCalledWith("shortcuts");
+      expect(tm.getSnapshot().activeId).toBe(first);
+      expect(tm.findSettingsTab()).toBe(first);
+    });
+
+    it("an invalid section on an existing tab sends nothing", () => {
+      tm.openSettingsTab();
+      tm.openSettingsTab("bogus");
+      expect(views[0].sendSettingsSection).not.toHaveBeenCalled();
+      expect(views[0].loadURL).toHaveBeenCalledTimes(1);
+    });
+
+    it("is not a canvas tab, and isPageTab matches by webContents id", () => {
+      tm.newTab("editor");
+      tm.openSettingsTab();
+      tm.newTab("browser");
+      expect(tm.editorTabsInfo().tabs).toHaveLength(1);
+      expect(tm.isEditorTab(views[1].getWebContentsId())).toBe(false);
+      expect(tm.isPageTab(views[0].getWebContentsId())).toBe(true);
+      expect(tm.isPageTab(views[1].getWebContentsId())).toBe(true);
+      expect(tm.isPageTab(views[2].getWebContentsId())).toBe(false);
+      expect(tm.isPageTab(99)).toBe(false);
+    });
+
+    it("reopens after the tab is closed", () => {
+      const a = tm.openSettingsTab();
+      tm.closeTab(a);
+      expect(tm.findSettingsTab()).toBeNull();
+      expect(tm.openSettingsTab()).not.toBe(a);
     });
   });
 

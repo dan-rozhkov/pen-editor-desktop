@@ -1,5 +1,5 @@
 import type { BrowserPageHandle, BrowserTabInfo } from "@sideform/browser-agent/controller";
-import { docIdOfUrl, isValidTraceId, resolveDocTabUrl, resolveTraceTabUrl, traceIdOfUrl } from "./config";
+import { docIdOfUrl, isValidSettingsSection, isValidTraceId, resolveDocTabUrl, resolveSettingsTabUrl, resolveTraceTabUrl, traceIdOfUrl } from "./config";
 export type UITheme = "light" | "dark";
 
 /** How a tab becomes the active one. `focus: false` shows it without moving keyboard focus into it. */
@@ -43,7 +43,7 @@ export type McpStatus = "listening" | "not-published" | "off" | "error";
  * is NOT a canvas tab: never in the canvas link, the MCP active tab or
  * `lastEditorWebContentsId`.
  */
-export type TabKind = "editor" | "browser" | "doc" | "trace";
+export type TabKind = "editor" | "browser" | "doc" | "trace" | "settings";
 
 /** The navigation state a browser tab reports back into its TabState. */
 export interface BrowserNavState {
@@ -59,6 +59,8 @@ export interface TabViewHandle {
   setVisible(visible: boolean): void;
   destroy(): void;
   sendMenuCommand(commandId: string): void;
+  /** Settings tabs only: tells the open page to switch to a section (no reload). */
+  sendSettingsSection(section: string): void;
   focus(): void;
   /** Editor tabs only — wired by TabManager only for kind "editor". */
   onDocumentTitleChanged(cb: (title: string) => void): void;
@@ -447,7 +449,7 @@ export class TabManager {
    * That tab is shown without taking keyboard focus (`ActivationOptions`).
    * `opts.focus: false` makes a normally activated tab visible without taking keyboard focus (`doc:open`).
    */
-  newTab(kind: TabKind = "editor", session?: string, opts: { activate?: boolean; docId?: string; traceId?: string; focus?: boolean } = {}): number {
+  newTab(kind: TabKind = "editor", session?: string, opts: { activate?: boolean; docId?: string; traceId?: string; section?: string; focus?: boolean } = {}): number {
     // A trace tab is always opened for one trace (`traces:open`): no id, no tab (and no view is created).
     if (kind === "trace" && !isValidTraceId(opts.traceId)) throw new Error("trace tab needs a valid trace id");
     const id = this.nextId++;
@@ -455,7 +457,7 @@ export class TabManager {
     const entry: TabEntry = {
       id,
       session: kind === "browser" ? session : undefined,
-      title: kind === "browser" ? "New Tab" : kind === "doc" ? "Document" : kind === "trace" ? "Trace" : "Untitled",
+      title: kind === "browser" ? "New Tab" : kind === "doc" ? "Document" : kind === "trace" ? "Trace" : kind === "settings" ? "Settings" : "Untitled",
       kind,
       view,
       theme: null,
@@ -472,7 +474,7 @@ export class TabManager {
       // `this.tabs`: record it, and let the push that adds the tab carry it.
       if (this.tabs.includes(entry)) this.emit();
     });
-    if (kind === "editor" || kind === "doc" || kind === "trace") {
+    if (kind === "editor" || kind === "doc" || kind === "trace" || kind === "settings") {
       view.onDocumentTitleChanged((title) => {
         entry.title = title;
         this.emit();
@@ -493,7 +495,9 @@ export class TabManager {
           ? resolveDocTabUrl(this.opts.editorUrl, opts.docId)
           : kind === "trace"
             ? resolveTraceTabUrl(this.opts.editorUrl, opts.traceId as string)
-            : this.opts.editorUrl;
+            : kind === "settings"
+              ? resolveSettingsTabUrl(this.opts.editorUrl, opts.section)
+              : this.opts.editorUrl;
       view.loadURL(target).catch((err) => {
         console.error(`TabManager: ${kind} tab failed to load`, err);
       });
@@ -762,6 +766,29 @@ export class TabManager {
     return null;
   }
 
+  /** The id of the open Settings tab (a singleton), or null. */
+  findSettingsTab(): number | null {
+    return this.tabs.find((t) => t.kind === "settings")?.id ?? null;
+  }
+
+  /**
+   * Opens the Settings tab, or activates the one that exists (it is a singleton). A valid
+   * `section` is sent to an existing tab over `settings:section` (never a reload, so in-page
+   * state survives); a new tab loads `/settings?section=<id>`. Returns the tab id.
+   */
+  openSettingsTab(section?: string, opts: { focus?: boolean } = {}): number {
+    const existingId = this.findSettingsTab();
+    if (existingId === null) return this.newTab("settings", undefined, { section, focus: opts.focus });
+    if (isValidSettingsSection(section)) this.tabs.find((t) => t.id === existingId)?.view.sendSettingsSection(section);
+    this.activate(existingId, { focus: opts.focus });
+    return existingId;
+  }
+
+  /** True when the webContents is an editor, doc, trace or Settings tab: a tab that loads a frontend page with the tab preload. */
+  isPageTab(webContentsId: number): boolean {
+    return this.tabs.some((t) => t.kind !== "browser" && t.view.getWebContentsId() === webContentsId);
+  }
+
   /** The id of the open trace tab showing `traceId`, or null. The live URL wins, like `findDocTab`. */
   findTraceTab(traceId: string): number | null {
     for (const t of this.tabs) {
@@ -883,12 +910,12 @@ export class TabManager {
    * of which tab is active — is picked up by the very next snapshot.
    */
   private resolveActiveTheme(active: TabEntry | undefined): UITheme | null {
-    if (active?.kind === "editor" || active?.kind === "doc" || active?.kind === "trace") return active.theme;
+    if (active?.kind === "editor" || active?.kind === "doc" || active?.kind === "trace" || active?.kind === "settings") return active.theme;
     const lastEditor = this.tabs.find(
       (t) => t.kind === "editor" && t.view.getWebContentsId() === this.lastEditorWebContentsId,
     );
     if (lastEditor?.theme) return lastEditor.theme;
-    const anyEditorWithTheme = this.tabs.find((t) => (t.kind === "editor" || t.kind === "doc" || t.kind === "trace") && t.theme !== null);
+    const anyEditorWithTheme = this.tabs.find((t) => (t.kind === "editor" || t.kind === "doc" || t.kind === "trace" || t.kind === "settings") && t.theme !== null);
     return anyEditorWithTheme?.theme ?? null;
   }
 

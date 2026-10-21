@@ -275,6 +275,18 @@ const api = {
   canvasHost,
   traces,
   auth,
+  // Opens (or activates) the Settings tab; `section` is validated in main.
+  settings: {
+    open: (section?: string): Promise<{ ok: boolean }> => ipcRenderer.invoke("settings:open", section),
+    // Main asks the open Settings page to switch section without reloading it.
+    onSection(cb: (section: string) => void): () => void {
+      const listener = (_e: IpcRendererEvent, section: unknown) => {
+        if (typeof section === "string") cb(section);
+      };
+      ipcRenderer.on("settings:section", listener);
+      return () => ipcRenderer.removeListener("settings:section", listener);
+    },
+  },
   // Only the trace viewer page may open documents (main refuses other senders), so other tabs do not advertise `open`.
   docs: typeof location !== "undefined" && location.pathname.includes("/trace/") ? docs : docStorage,
 };

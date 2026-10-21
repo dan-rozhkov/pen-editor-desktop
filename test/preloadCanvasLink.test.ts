@@ -66,8 +66,8 @@ describe("agent panel preload", () => {
     await import("../src/preload/agentPanel");
   });
 
-  it("exposes version 2 with canvas, browser, docs, traces and auth only", () => {
-    expect(Object.keys(exposed.penAgentPanel).sort()).toEqual(["auth", "browser", "canvas", "docs", "traces", "version"]);
+  it("exposes version 2 with canvas, browser, docs, traces, auth and settings only", () => {
+    expect(Object.keys(exposed.penAgentPanel).sort()).toEqual(["auth", "browser", "canvas", "docs", "settings", "traces", "version"]);
     expect(exposed.penAgentPanel.version).toBe(2);
   });
 
@@ -109,6 +109,15 @@ describe("agent panel preload", () => {
     invoke.mockResolvedValueOnce({ ok: true } as never);
     await expect(exposed.penAgentPanel.docs.open("abc_1")).resolves.toEqual({ ok: true });
     expect(invoke).toHaveBeenLastCalledWith("doc:open", "abc_1");
+  });
+
+  it("settings.open invokes settings:open with the optional section and returns main's reply", async () => {
+    expect(Object.keys(exposed.penAgentPanel.settings)).toEqual(["open"]);
+    invoke.mockResolvedValueOnce({ ok: true } as never);
+    await expect(exposed.penAgentPanel.settings.open("integrations")).resolves.toEqual({ ok: true });
+    expect(invoke).toHaveBeenLastCalledWith("settings:open", "integrations");
+    await exposed.penAgentPanel.settings.open();
+    expect(invoke).toHaveBeenLastCalledWith("settings:open", undefined);
   });
 
   it("traces.save and traces.open invoke their channels and return main's reply", async () => {

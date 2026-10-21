@@ -168,7 +168,7 @@ or a launch never auto-expands a collapsed panel: only the user's toggle changes
 Tests: `layout.test.ts`, `agentPanelSettings.test.ts`, `menu.test.ts`, `e2e/agent-panel-toggle.spec.ts`.
 
 **Tab icons.** Every tab has a leading glyph keyed by `TabState.kind` in
-`tabbar/renderer.ts` (one mapping): editor (canvas) tabs a Phosphor "PaintBrush", doc tabs a Phosphor "FileText", trace tabs a Phosphor "Pulse", browser tabs a
+`tabbar/renderer.ts` (one mapping): editor (canvas) tabs a Phosphor "PaintBrush", doc tabs a Phosphor "FileText", trace tabs a Phosphor "Pulse", the Settings tab a Phosphor "GearSix", browser tabs a
 Phosphor "Globe" ALWAYS (all LIGHT weight), never the site favicon. Phosphor is MIT: the notice lives in
 `THIRD_PARTY_NOTICES.md` (shipped via the electron-builder `files` list; keep it there). Just the glyph,
 monochrome `currentColor` (tab text color), no background square. The tab bar CSP has no `img-src`:
@@ -246,6 +246,19 @@ origin clamp, offline fallback and window-open policy as editor tabs (external l
 and is shown as the active tab; it resolves once the tab exists, not when the page has loaded. **Focus rule:** `doc:open` is agent-initiated, so the doc tab becomes the visible active tab but does NOT take keyboard focus (`activate(id, {focus:false})` / `newTab("doc", undefined, {docId, focus:false})`); typing stays in the panel composer. A trace tab's open is a user click: when that trace tab is the ACTIVE tab, the doc tab is activated WITH focus (`{focus:true}`); from a background trace tab it opens without focus. User-driven activation (click, menu, empty-start button) keeps focusing. Glyph:
 Phosphor "FileText" (light). Tests: `docOpen.test.ts`, `tabManager.test.ts` ("doc tabs"),
 `config.test.ts`, `menu.test.ts`, `preloadCanvasLink.test.ts`, `ipcContract.test.ts`.
+
+**Settings tab (`TabKind` `"settings"`).** A fifth tab kind: the frontend's `/settings` page, a SINGLETON. URL
+`resolveSettingsTabUrl(editorUrl, section?)` (`config.ts`) = `/settings?chat=off[&section=<id>]` (the last `app` segment becomes `settings`;
+other params kept, `chat`/`section` replaced; `section` must be one of `SETTINGS_SECTIONS` = account, appearance, canvas, agent,
+integrations, shortcuts, else it is dropped). Handled like a doc tab: default session (no `partition`, so its localStorage is the
+editor's and the panel's), `preload/tab.ts`, same origin clamp and offline fallback, title follows `document.title` (fallback "Settings"),
+takes part in theme sync, not a canvas tab. `TabManager.openSettingsTab(section?, {focus})` opens it or activates the existing one (a valid
+`section` is sent to the existing tab over **`settings:section`** (main->renderer, payload = the section id; page side `window.penDesktop.settings.onSection(cb)` returns an unsubscribe) - the tab is never reloaded, so in-page state survives). **`settings:open`** (invoke, `section?` -> `{ok: boolean}`, logic in `src/main/settingsOpen.ts`): from the agent
+panel (`window.penAgentPanel.settings.open(section?)`) or any editor/doc/trace/Settings tab (`window.penDesktop.settings.open(section?)`, `tabs.isPageTab`);
+browser tabs and other senders get `{ok:false}`; an invalid section is ignored (the tab still opens). It takes keyboard focus (a person asked for the page).
+Menu: macOS app menu is an explicit submenu (Electron's default `appMenu` roles + "Settings…" `CmdOrCtrl+,`); elsewhere "Settings…" is in File. Action
+`openSettings` (scope `main`). No empty-start card. Tests: `settingsOpen.test.ts`, `tabManager.test.ts` ("settings tab"), `config.test.ts`, `menu.test.ts`,
+`preloadTab.test.ts`, `preloadCanvasLink.test.ts`, `ipcContract.test.ts`. The `penAgentPanel.version` stays 2 (an added optional key).
 
 **Document storage.** Markdown documents are also kept on disk: `<userData>/documents/<id>.json` (`<userData>/documents-dev/` while `PEN_DESKTOP_URL` is set, via `docDirFor`: a dev frontend never sees production documents), compact JSON of exactly
 `{id, title, markdown, updatedAt, rev}` (id = `isValidDocId`, title <= 10 000 chars, markdown <= 5 MB UTF-8, `rev` a positive safe integer; other fields are stripped),
@@ -394,6 +407,8 @@ CI of its own. `Close Window` is a local action like Passwords (no forwarded id)
 - `tabbar:toggle-panel` tabbar→main (sender-checked) — the sidebar button: show/hide the agent panel (see "Sidebar toggle"); the new state returns as `panelCollapsed` on `tabbar:state`
 - `tabbar:new-browser` tabbar/empty-state→main (sender-checked) — a user-driven browser tab (`newUserBrowserTab`); sent by the empty-state placeholder only (`preload/empty.ts`)
 - `tabbar:new-doc` tabbar/empty-state→main (sender-checked) — a new document tab (`/doc?new=1&chat=off`); sent by the empty-state Document card (`#new-doc`) only (the "+" menu item calls `tabs.newTab("doc")` directly); File > New Document Tab (`CmdOrCtrl+Shift+D`) runs the same action locally
+- `settings:section` main→Settings page (send; section id string) — switch section on an open Settings tab without reload
+- `settings:open` agent panel or any frontend tab→main (invoke; optional `section` -> `{ok}`) — opens or activates the Settings tab; see "Settings tab"
 - `doc:open` agent panel or trace tab→main (invoke, panel or trace-tab sender; `docId` → `{ok, error?}`) — activates the doc tab showing that document or opens `/doc?id=<docId>&chat=off`; see "Document tabs"
 - `docs:list` / `docs:save` / `docs:delete` renderer→main (invoke, sender-checked: panel, editor, doc or trace tab; `docs:save` takes a `StoredDoc` -> `{ok, rev, stale?}`, `docs:delete` an id -> `{ok}`; errors return `{error}`) — document storage on disk, see "Document storage"
 - `traces:save` / `traces:read` renderer→main (invoke, sender-checked: save = panel or editor tab, read = trace tab, panel or editor tab; payload errors return `{error}`) and `traces:open` panel→main (invoke, panel-only; `id` → `{ok, error?}`) and `traces:list-tabs` panel→main (invoke, panel-only) — browse-run traces, see "Trace tabs"

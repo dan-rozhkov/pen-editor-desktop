@@ -55,6 +55,10 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "canvas:open", direction: "renderer->main" },
   // Documents: the panel or a trace tab asks main to open/focus a markdown doc tab (`/doc`).
   { name: "doc:open", direction: "renderer->main" },
+  // Settings tab: the panel or any frontend tab asks main to open/activate it, optionally at a section.
+  { name: "settings:open", direction: "renderer->main" },
+  // Main tells an already-open Settings page to switch section (no reload).
+  { name: "settings:section", direction: "main->renderer" },
   // Document storage (invoke/handle): the frontend mirrors its localStorage docs to userData. See CLAUDE.md "Document storage".
   { name: "docs:list", direction: "renderer->main" },
   { name: "docs:save", direction: "renderer->main" },

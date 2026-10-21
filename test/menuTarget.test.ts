@@ -5,6 +5,7 @@ describe("shouldForwardMenuCommand", () => {
   it("forwards to editor tabs only", () => {
     expect(shouldForwardMenuCommand("editor")).toBe(true);
     expect(shouldForwardMenuCommand("doc")).toBe(false);
+    expect(shouldForwardMenuCommand("settings")).toBe(false);
     expect(shouldForwardMenuCommand("browser")).toBe(false);
     expect(shouldForwardMenuCommand(null)).toBe(false);
   });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, resolveTraceTabUrl, isValidTraceId, traceIdOfUrl, INITIAL_TABS } from "../src/main/config";
+import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, resolveTraceTabUrl, resolveSettingsTabUrl, isValidSettingsSection, SETTINGS_SECTIONS, isValidTraceId, traceIdOfUrl, INITIAL_TABS } from "../src/main/config";
 
 describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
@@ -218,5 +218,36 @@ describe("resolveCanvasTabUrl", () => {
 describe("empty start", () => {
   it("opens no initial tab", () => {
     expect(INITIAL_TABS).toEqual([]);
+  });
+});
+
+describe("resolveSettingsTabUrl", () => {
+  it("swaps the /app path for /settings and adds chat=off", () => {
+    expect(resolveSettingsTabUrl(DEFAULT_EDITOR_URL)).toBe("https://app.sideform.pro/settings?chat=off");
+  });
+  it("adds section after chat=off for each valid section", () => {
+    for (const id of SETTINGS_SECTIONS) {
+      expect(resolveSettingsTabUrl("http://localhost:5173/app", id)).toBe(`http://localhost:5173/settings?chat=off&section=${id}`);
+    }
+  });
+  it("drops an invalid or non-string section", () => {
+    for (const bad of ["nope", "", "Account", "account&x=1", 5, null, {}]) {
+      expect(resolveSettingsTabUrl("https://h/app", bad)).toBe("https://h/settings?chat=off");
+    }
+  });
+  it("keeps the path prefix and other params, drops the hash, replaces chat and section", () => {
+    expect(resolveSettingsTabUrl("https://h/pen/app?q=1&chat=on&section=agent#frame", "canvas")).toBe("https://h/pen/settings?q=1&chat=off&section=canvas");
+  });
+  it("handles /app/ and a path not ending in app like the panel URL", () => {
+    expect(resolveSettingsTabUrl("https://h/app/")).toBe("https://h/settings?chat=off");
+    expect(resolveSettingsTabUrl("https://h/pen/x")).toBe("https://h/pen/settings?chat=off");
+  });
+});
+
+describe("isValidSettingsSection", () => {
+  it("accepts exactly the six section ids", () => {
+    expect([...SETTINGS_SECTIONS]).toEqual(["account", "appearance", "canvas", "agent", "integrations", "shortcuts"]);
+    for (const id of SETTINGS_SECTIONS) expect(isValidSettingsSection(id)).toBe(true);
+    for (const bad of ["", "other", "constructor", 1, undefined, null]) expect(isValidSettingsSection(bad)).toBe(false);
   });
 });

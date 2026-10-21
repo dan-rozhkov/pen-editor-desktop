@@ -231,6 +231,40 @@ describe("preload/tab.ts traces bridge", () => {
   });
 });
 
+describe("preload/tab.ts settings bridge", () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    invokeMock.mockClear();
+    exposedApi = undefined;
+    await import("../src/preload/tab");
+  });
+
+  it("exposes open (over settings:open) and onSection", async () => {
+    expect(Object.keys(exposedApi.settings)).toEqual(["open", "onSection"]);
+    invokeMock.mockResolvedValueOnce({ ok: true });
+    await expect(exposedApi.settings.open("agent")).resolves.toEqual({ ok: true });
+    expect(invokeMock).toHaveBeenLastCalledWith("settings:open", "agent");
+    await exposedApi.settings.open();
+    expect(invokeMock).toHaveBeenLastCalledWith("settings:open", undefined);
+  });
+
+  it("onSection subscribes to settings:section, passes only strings, and unsubscribes", () => {
+    onMock.mockClear();
+    removeListenerMock.mockClear();
+    const cb = vi.fn();
+    const off = exposedApi.settings.onSection(cb);
+    expect(onMock).toHaveBeenCalledWith("settings:section", expect.any(Function));
+    const listener = onMock.mock.calls.find((c) => c[0] === "settings:section")![1];
+    listener({}, "agent");
+    listener({}, 42);
+    listener({}, undefined);
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(cb).toHaveBeenCalledWith("agent");
+    off();
+    expect(removeListenerMock).toHaveBeenCalledWith("settings:section", listener);
+  });
+});
+
 describe("preload/tab.ts docs bridge", () => {
   async function load(pathname: string) {
     vi.resetModules();
