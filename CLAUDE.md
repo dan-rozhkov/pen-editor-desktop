@@ -249,7 +249,7 @@ Phosphor "FileText" (light). Tests: `docOpen.test.ts`, `tabManager.test.ts` ("do
 
 **Settings tab (`TabKind` `"settings"`).** A fifth tab kind: the frontend's `/settings` page, a SINGLETON. URL
 `resolveSettingsTabUrl(editorUrl, section?)` (`config.ts`) = `/settings?chat=off[&section=<id>]` (the last `app` segment becomes `settings`;
-other params kept, `chat`/`section` replaced; `section` must be one of `SETTINGS_SECTIONS` = account, appearance, canvas, agent,
+other params kept, `chat`/`section` replaced; `section` must be one of `SETTINGS_SECTIONS` = account, appearance, canvas, agent, browser,
 integrations, shortcuts, else it is dropped). Handled like a doc tab: default session (no `partition`, so its localStorage is the
 editor's and the panel's), `preload/tab.ts`, same origin clamp and offline fallback, title follows `document.title` (fallback "Settings"),
 takes part in theme sync, not a canvas tab. `TabManager.openSettingsTab(section?, {focus})` opens it or activates the existing one (a valid

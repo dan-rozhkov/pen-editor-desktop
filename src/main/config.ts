@@ -194,10 +194,10 @@ export function resolveDocTabUrl(editorUrl: string, docId?: string): string {
 }
 
 /** The section ids of the frontend's `/settings` page (`?section=<id>`). */
-export const SETTINGS_SECTIONS = ["account", "appearance", "canvas", "agent", "integrations", "shortcuts"] as const;
+export const SETTINGS_SECTIONS = ["account", "appearance", "canvas", "agent", "browser", "integrations", "shortcuts"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
-/** True for one of the six settings section ids; anything else (also non-strings) is not. */
+/** True for one of the settings section ids; anything else (also non-strings) is not. */
 export function isValidSettingsSection(section: unknown): section is SettingsSection {
   return typeof section === "string" && (SETTINGS_SECTIONS as readonly string[]).includes(section);
 }

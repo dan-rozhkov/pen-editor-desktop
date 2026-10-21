@@ -24,7 +24,7 @@ describe("settings:open", () => {
   });
 
   it("accepts each of the six sections", () => {
-    for (const s of ["account", "appearance", "canvas", "agent", "integrations", "shortcuts"]) {
+    for (const s of ["account", "appearance", "canvas", "agent", "browser", "integrations", "shortcuts"]) {
       const d = deps();
       expect(openSettings(d, 1, s)).toEqual({ ok: true });
       expect(d.openSettingsTab).toHaveBeenCalledWith(s);
