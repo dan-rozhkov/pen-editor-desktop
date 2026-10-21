@@ -97,7 +97,7 @@ describe("JournalOwners", () => {
   it("beforeCommand leaves the journal alone for the owner, read-only commands, tabs list and dead owners", () => {
     s.owners.start(1, live);
     s.owners.beforeCommand(1, "act", {}, live);
-    for (const c of ["snapshot", "read", "screenshot", "findImages", "capture", "captureCheckpoint", "stopJournal"]) {
+    for (const c of ["snapshot", "read", "screenshot", "findImages", "capture", "captureCheckpoint", "stopJournal", "requests"]) {
       s.owners.beforeCommand(2, c, undefined, live);
     }
     s.owners.beforeCommand(2, "tabs", { action: "list" }, live);

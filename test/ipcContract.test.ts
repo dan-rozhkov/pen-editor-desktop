@@ -254,3 +254,23 @@ describe("browser:command commands", () => {
     for (const c of PAGE_DRIVING_COMMANDS) expect(list).toContain(c);
   });
 });
+
+describe("requests is passive and wired through the run boundary", () => {
+  const src = readFileSync(join(SRC, "main/window.ts"), "utf8");
+  it("skips dialog sweep, in-flight bracket and run boundary, but a new run clears the request logs", () => {
+    expect(src).toContain('const passive = payload.command === "requests"');
+    expect(src).toMatch(/passive \? null : tabs\.currentBrowserTabId/);
+    expect(src).toContain("if (!passive) commandsInFlight.inc(sessionId)");
+    expect(src).toContain("if (!passive) commandsInFlight.dec(sessionId)");
+    expect(src).toMatch(/!passive && runBoundary\.commandStart\(runScope\)\) \{\s+clearScopeDiagnostics\(sessionId\);\s+clearScopeRequestLogs\(sessionId\);/);
+  });
+  it("clearDiagnostics leaves the request log alone", () => {
+    const m = src.match(/clearDiagnostics: \(\) => \{([\s\S]*?)\n        \},/);
+    expect(m?.[1]).not.toContain("requestLog");
+    expect(src).toContain("clearRequestLog: () => requestLog.clear()");
+  });
+  it("the target drains closed-tab requests, filled on destroy and on debugger detach", () => {
+    expect(src).toContain("drainClosedRequests: () => closedRequestsOf(scope).drain()");
+    expect(src.match(/closedRequestsOf\(sessionId\)\.add\(requestLog\.takeFinished\(\)\)/g)).toHaveLength(2);
+  });
+});

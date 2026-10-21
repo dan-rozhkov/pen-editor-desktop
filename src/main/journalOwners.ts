@@ -25,6 +25,7 @@ const READ_ONLY_COMMANDS = new Set([
   "screenshot",
   "findImages",
   "capture",
+  "requests",
   "captureCheckpoint",
   "stopJournal",
   "startJournal",

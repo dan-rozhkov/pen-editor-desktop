@@ -73,6 +73,7 @@ export function commandMayCreateSession(command: string, args: unknown): boolean
 function cleanupAnswer(command: string): unknown {
   if (command === "releaseFixture" || command === "clearActEmulation") return { ok: true };
   if (command === "stopJournal") return false;
+  if (command === "requests") return { requests: [] };
   if (command === "captureCheckpoint") return { ok: false, error: ERR_NO_JOURNAL };
   return undefined;
 }

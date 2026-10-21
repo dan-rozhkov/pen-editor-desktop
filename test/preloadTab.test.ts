@@ -147,6 +147,12 @@ describe("preload/tab.ts browser checkpoint journal commands", () => {
     expect(invokeMock).toHaveBeenCalledWith("browser:command", { command: "stopJournal", args: { token: "tok" } });
   });
 
+  it("requests sends no args and resolves to the main result", async () => {
+    invokeMock.mockResolvedValueOnce({ requests: [], dropped: 2 });
+    await expect(exposedApi.browser.requests()).resolves.toEqual({ requests: [], dropped: 2 });
+    expect(invokeMock).toHaveBeenCalledWith("browser:command", { command: "requests", args: {} });
+  });
+
   it("captureCheckpoint sends the token and resolves to the main result", async () => {
     invokeMock.mockResolvedValue({ ok: true });
     await expect(exposedApi.browser.captureCheckpoint("tok")).resolves.toEqual({ ok: true });
@@ -173,7 +179,7 @@ describe("preload/tab.ts isolated browser sessions", () => {
     const iso = exposedApi.browser.isolated("run-1");
     const methods = [
       "open", "act", "findImages", "snapshot", "perform", "assert", "read", "screenshot", "tabs", "capture",
-      "applyFixture", "releaseFixture", "clearActEmulation", "fillLogin", "startJournal", "stopJournal", "captureCheckpoint",
+      "applyFixture", "releaseFixture", "clearActEmulation", "fillLogin", "startJournal", "stopJournal", "captureCheckpoint", "requests",
     ];
     for (const m of methods) expect(typeof iso[m], m).toBe("function");
     for (const m of methods) {

@@ -82,6 +82,8 @@ const makeBrowser = (scope?: { session: unknown }) => {
       call({ command: "stopJournal", args: { token } }),
     captureCheckpoint: (token?: string): Promise<unknown> =>
       call({ command: "captureCheckpoint", args: { token } }),
+    // Read-only: the tab network request log since the last call ({ requests, dropped? }).
+    requests: (): Promise<unknown> => call({ command: "requests", args: {} }),
     // Launches an external Electron app (an .app path) and drives it with the commands
     // above until `releaseApp`. Same `open` command as a URL open, with `app` instead of `url`.
     launchApp: (args: { app: string }): Promise<unknown> =>

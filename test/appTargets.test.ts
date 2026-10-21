@@ -568,6 +568,11 @@ describe("planAppCommand", () => {
   it("commands during a pending launch answer pending", () => {
     for (const c of ["act", "snapshot", "open"]) expect(planAppCommand(c, { url: "https://x.y" }, "pending")).toBe("pending");
   });
+  it("routes requests to the bound app, never to the built-in browser", () => {
+    expect(planAppCommand("requests", {}, "running")).toBe("route");
+    expect(planAppCommand("requests", {}, "gone")).toBe("gone");
+    expect(planAppCommand("requests", {}, "none")).toBe("passthrough");
+  });
   it("refuses built-in-browser-only commands while bound", () => {
     for (const s of ["running", "gone", "pending"] as const) {
       for (const c of ["capture", "applyFixture", "fillLogin", "startJournal", "captureCheckpoint"]) expect(planAppCommand(c, {}, s)).toBe("refuse");
@@ -586,7 +591,7 @@ describe("planAppCommand", () => {
 
 describe("routing table and launch result", () => {
   const fakeController = (): AppController & Record<string, ReturnType<typeof vi.fn>> => {
-    const names = ["open", "act", "findImages", "snapshot", "perform", "assert", "read", "screenshot", "tabs"];
+    const names = ["open", "act", "findImages", "snapshot", "perform", "assert", "read", "screenshot", "tabs", "requests"];
     return Object.fromEntries(names.map((n) => [n, vi.fn(async () => ({ via: n }))])) as never;
   };
   it("sends each command to the controller method of the same name with its args", async () => {
@@ -596,6 +601,8 @@ describe("routing table and launch result", () => {
       expect(c[n]).toHaveBeenCalledWith({ a: 1 });
     }
     expect(await routeAppCommand(c, "snapshot", undefined)).toEqual({ via: "snapshot" });
+    expect(await routeAppCommand(c, "requests", {})).toEqual({ via: "requests" });
+    expect(c.requests).toHaveBeenCalledWith();
   });
   it("unknown or inherited names are an error, not a call", async () => {
     const c = fakeController();

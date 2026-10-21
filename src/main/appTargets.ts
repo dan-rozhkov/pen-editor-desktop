@@ -639,7 +639,7 @@ export const ownedBySession = (senderId: number, sessionId: string) => (key: str
 
 export type AppCommandPlan = "launch" | "route" | "refuse" | "release" | "passthrough" | "pending" | "gone";
 
-const ROUTED = new Set(["open", "act", "snapshot", "read", "screenshot", "tabs", "findImages", "perform", "assert"]);
+const ROUTED = new Set(["open", "act", "snapshot", "read", "screenshot", "tabs", "findImages", "perform", "assert", "requests"]);
 const REFUSED = new Set(["capture", "applyFixture", "fillLogin", "startJournal", "captureCheckpoint"]);
 
 export const ERR_APP_COMMAND_UNSUPPORTED =
@@ -689,6 +689,7 @@ export interface AppController {
   read(args: unknown): Promise<unknown>;
   screenshot(args: unknown): Promise<unknown>;
   tabs(args: unknown): Promise<unknown>;
+  requests(): Promise<unknown>;
 }
 
 /** The one routing table: command name to controller method. */
@@ -702,6 +703,7 @@ export const APP_ROUTES: Record<string, (c: AppController, args: unknown) => Pro
   read: (c, a) => c.read(a),
   screenshot: (c, a) => c.screenshot(a),
   tabs: (c, a) => c.tabs(a),
+  requests: (c) => c.requests(),
 };
 
 export function routeAppCommand(c: AppController, command: string, args: unknown): Promise<unknown> {

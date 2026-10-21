@@ -27,6 +27,7 @@ import {
   type PanelFrame,
 } from "./panelAnimation";
 import { createFailedRequestRecorder } from "./failedRequests";
+import { createClosedRequestBuffer, createRequestLog, type ClosedRequestBuffer } from "./requestLog";
 import { createAgentEmulationTracker } from "./agentEmulation";
 import { createRunBoundary } from "./runBoundary";
 import {
@@ -602,6 +603,14 @@ export function createMainWindow(
   // while a command of ITS OWN scope runs, so a session command never answers
   // a dialog in a tab the user is browsing.
   const commandsInFlight = new ScopeCounter();
+  // Finished request entries of tabs that closed or lost their debugger, per scope ("" = shared),
+  // until the controller drains them (BrowserTarget.drainClosedRequests).
+  const closedRequests = new Map<string, ClosedRequestBuffer>();
+  const closedRequestsOf = (scope: string | undefined): ClosedRequestBuffer => {
+    let b = closedRequests.get(scope ?? "");
+    if (!b) closedRequests.set(scope ?? "", (b = createClosedRequestBuffer()));
+    return b;
+  };
   // Drives the tab strip's agent-cursor icons, one tracker per tab; the
   // hold/flicker rules live in agentActivity.ts.
   const agentActivity = createTabAgentActivity({ onChange: (tabId, working) => tabs.setAgentTabWorking(tabId, working) });
@@ -866,6 +875,8 @@ export function createMainWindow(
       // the same debugger `message` listener as the settle bookkeeping below.
       // See failedRequests.ts; only drained when the debugger is attached.
       const failedRequests = createFailedRequestRecorder();
+      // Full request log (drainRequests); fed from the same listener. See requestLog.ts.
+      const requestLog = createRequestLog();
       const applyDialogPolicy = () => {
         if (!openDialog) return;
         const { type, message } = openDialog;
@@ -899,7 +910,10 @@ export function createMainWindow(
             unregisterFromFetchRouter?.();
             unregisterFromFetchRouter = null;
             debuggerAttached = false;
+            // The log can no longer be drained through the handle: hand its entries (no bodies) over.
+            closedRequestsOf(sessionId).add(requestLog.takeFinished());
           });
+          view.webContents.once("destroyed", () => closedRequestsOf(sessionId).add(requestLog.takeFinished()));
           view.webContents.debugger.on("message", (_event, method, params) => {
             // Save-password prompt (browser/loginCapture.ts). `params` holds the
             // captured password: it goes straight into the handler and nowhere
@@ -955,7 +969,10 @@ export function createMainWindow(
               if (commandsInFlight.active(sessionId)) applyDialogPolicy();
               return;
             }
-            if (method.startsWith("Network.")) failedRequests.onEvent(method, params);
+            if (method.startsWith("Network.")) {
+              failedRequests.onEvent(method, params);
+              requestLog.onEvent(method, params);
+            }
             // Wave 1 speed: network-quiet settle bookkeeping — see
             // pendingNetworkRequests's doc comment above.
             if (method === "Network.requestWillBeSent") {
@@ -1511,11 +1528,29 @@ export function createMainWindow(
         get drainFailedRequests() {
           return debuggerAttached ? () => failedRequests.drain() : undefined;
         },
+        // Same gate as drainFailedRequests. Bodies are fetched lazily in requestLog.ts
+        // (per-body and whole-phase time limits live there).
+        get drainRequests() {
+          if (!debuggerAttached) return undefined;
+          return () =>
+            requestLog.drain(async (requestId) => {
+              const res = (await view.webContents.debugger.sendCommand("Network.getResponseBody", { requestId })) as
+                | { body?: string; base64Encoded?: boolean }
+                | undefined;
+              if (!res || typeof res.body !== "string") return undefined;
+              return { body: res.body, base64Encoded: res.base64Encoded === true };
+            });
+        },
+        get droppedRequests() {
+          return debuggerAttached ? () => requestLog.droppedRequests() : undefined;
+        },
         // Forgets what happened before an agent run starts (see runBoundary.ts).
         clearDiagnostics: () => {
           consoleErrorBuffer.length = 0;
           failedRequests.drain();
         },
+        // A run starts (the run boundary, not every applyFixture): pre-run browsing never lands in a trace.
+        clearRequestLog: () => requestLog.clear(),
         // Second-pass review finding 1: only meaningful for kind "browser"
         // (openDialog can only ever be set there) — harmless no-op call for
         // kind "editor" either way (`applyDialogPolicy` itself is a no-op
@@ -1651,6 +1686,7 @@ export function createMainWindow(
     // Review finding 6: every open browser tab's own handle, tagged with
     // its id — lets BrowserController.mergeDialogs drain dialogs from every
     // tab, not just whichever one browserHandle() currently prefers.
+    drainClosedRequests: () => closedRequestsOf(scope).drain(),
     pageHandles: async () => {
       const entries: { tabId: number; page: BrowserPageHandle }[] = [];
       for (const t of tabs.listBrowserTabs(scope)) {
@@ -1713,6 +1749,11 @@ export function createMainWindow(
   const clearScopeDiagnostics = (scope: string | undefined) => {
     for (const t of tabs.listBrowserTabs(scope)) tabs.browserTabHandleById(t.tabId, scope)?.clearDiagnostics?.();
   };
+  // A new run: also forget the request logs (live tabs and closed-tab leftovers).
+  const clearScopeRequestLogs = (scope: string | undefined) => {
+    for (const t of tabs.listBrowserTabs(scope)) tabs.browserTabHandleById(t.tabId, scope)?.clearRequestLog?.();
+    closedRequests.get(scope ?? "")?.clear();
+  };
 
   // --- isolated sessions (browserSessions.ts holds the decisions) ---
   const createSessionCtx = (id: string, partition: string): SessionCtx => {
@@ -1757,6 +1798,7 @@ export function createMainWindow(
     journal.stopOwnedBy(s.owner);
     runBoundary.forget(id);
     let clean = await (s.ctx.tabsClosed ?? closeTabsAndWait(id));
+    closedRequests.delete(id);
     if (!clean) console.error("browser session: tabs were not destroyed in time");
     const steps: [string, () => Promise<unknown>][] = [
       ["closeAllConnections", () => ses.closeAllConnections()],
@@ -1934,16 +1976,21 @@ export function createMainWindow(
     // accepting it would lose their form input (third-pass review). A
     // dialog left open on a tab the agent later switches back to is swept
     // then, by that command.
-    const agentTabId = tabs.currentBrowserTabId(sessionId);
+    // `requests` is a passive read of the request log: no sweep, no in-flight bracket, no run boundary.
+    const passive = payload.command === "requests";
+    const agentTabId = passive ? null : tabs.currentBrowserTabId(sessionId);
     if (agentTabId !== null) tabs.browserTabHandleById(agentTabId, sessionId)?.applyDialogPolicy?.();
     // Review finding 3: brackets the whole dispatch, not just the
     // BrowserController call, so a dialog raised anywhere during this
     // command's async work (including its own settle waits) is auto-handled
     // — decremented in `finally` so a rejected/throwing command never leaves
     // this counter stuck above zero.
-    commandsInFlight.inc(sessionId);
+    if (!passive) commandsInFlight.inc(sessionId);
     const runScope = sessionId ?? "";
-    if (runBoundary.commandStart(runScope)) clearScopeDiagnostics(sessionId);
+    if (!passive && runBoundary.commandStart(runScope)) {
+      clearScopeDiagnostics(sessionId);
+      clearScopeRequestLogs(sessionId);
+    }
     const drivesPage = isAgentPageCommand(payload.command, payload.args);
     // The tab this command starts on (null for a session that has no tab yet).
     const startTab = drivesPage ? tabs.currentBrowserTabId(sessionId) : null;
@@ -1974,6 +2021,10 @@ export function createMainWindow(
           return await controller.screenshot(payload.args);
         case "tabs":
           return await controller.tabs(payload.args);
+        // Read-only drain of the request log. Not page-driving, and it must not start a run
+        // boundary (that would clear the very log it reads).
+        case "requests":
+          return await controller.requests();
         case "capture":
           return await controller.capture(payload.args);
         case "fillLogin": {
@@ -2044,8 +2095,8 @@ export function createMainWindow(
           return { error: `Unknown browser command: ${payload.command}` };
       }
     } finally {
-      commandsInFlight.dec(sessionId);
-      runBoundary.commandEnd(runScope);
+      if (!passive) commandsInFlight.dec(sessionId);
+      if (!passive) runBoundary.commandEnd(runScope);
       // A command can settle after the window closed: never push state then.
       if (!win.isDestroyed()) {
         if (startTab !== null) agentActivity.end(startTab);

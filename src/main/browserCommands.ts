@@ -22,6 +22,7 @@ export const BROWSER_COMMANDS = [
   "startJournal",
   "stopJournal",
   "captureCheckpoint",
+  "requests",
   "releaseApp",
 ] as const;
 

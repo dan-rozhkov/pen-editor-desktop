@@ -92,6 +92,7 @@ describe("planSessionCommand", () => {
       expect(planSessionCommand("releaseFixture", {}, state)).toEqual({ action: "reply", value: { ok: true } });
       expect(planSessionCommand("clearActEmulation", {}, state)).toEqual({ action: "reply", value: { ok: true } });
       expect(planSessionCommand("stopJournal", {}, state)).toEqual({ action: "reply", value: false });
+      expect(planSessionCommand("requests", {}, state)).toEqual({ action: "reply", value: { requests: [] } });
       expect(planSessionCommand("captureCheckpoint", {}, state)).toEqual({ action: "reply", value: { ok: false, error: ERR_NO_JOURNAL } });
     }
   });

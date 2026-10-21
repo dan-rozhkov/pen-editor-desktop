@@ -120,7 +120,7 @@ describe("isAgentPageCommand", () => {
     "%s counts",
     (c) => expect(isAgentPageCommand(c, {})).toBe(true),
   );
-  it.each(["startJournal", "stopJournal", "captureCheckpoint", "releaseFixture", "clearActEmulation", "bogus"])("%s does not count", (c) =>
+  it.each(["startJournal", "stopJournal", "captureCheckpoint", "requests", "releaseFixture", "clearActEmulation", "bogus"])("%s does not count", (c) =>
     expect(isAgentPageCommand(c, {})).toBe(false),
   );
   it("tabs counts except action list", () => {

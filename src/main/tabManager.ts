@@ -1,4 +1,4 @@
-import type { BrowserTabInfo } from "@sideform/browser-agent/controller";
+import type { BrowserPageHandle, BrowserTabInfo } from "@sideform/browser-agent/controller";
 import { docIdOfUrl, isValidTraceId, resolveDocTabUrl, resolveTraceTabUrl, traceIdOfUrl } from "./config";
 export type UITheme = "light" | "dark";
 
@@ -169,6 +169,11 @@ export interface TabViewHandle {
    * drain. Wired only while the CDP debugger is attached.
    */
   drainFailedRequests?(): string[];
+  /** Optional: the request log (see the package type). Wired only while the CDP debugger is attached. */
+  drainRequests?: BrowserPageHandle["drainRequests"];
+  droppedRequests?: BrowserPageHandle["droppedRequests"];
+  /** Forgets the request log (a new agent run starts); desktop-only, not in the package handle. */
+  clearRequestLog?(): void;
   /** Empties the console-error and failed-request buffers (an agent run starts). */
   clearDiagnostics?(): void;
   /**
