@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { app, BaseWindow, safeStorage, session, shell } from "electron";
+import { app, BaseWindow, ipcMain, safeStorage, session, shell } from "electron";
 import { DISPLAY_APP_NAME, STORAGE_IDENTITY_FILE, resolveEditorUrl, resolveStorageIdentity, storageIdentityFileText } from "./config";
 import { createMainWindow } from "./window";
 import { appRegistry } from "./appTargetsService";
@@ -9,7 +9,7 @@ import { denyAllPermissions } from "./browser/permissions";
 import { CREDENTIALS_FILE, createCredentialStore, nodeCredentialFs } from "./browser/credentialStore";
 import { FAVICONS_FILE, createFaviconCache, createIconFetcher } from "./browser/faviconCache";
 import { createLoginCapture } from "./browser/loginCapture";
-import { createPasswordsWindow } from "./passwordsWindow";
+import { createPasswordsService } from "./passwordsService";
 import { shouldReopenMainWindow } from "./closeTarget";
 import { isCursorOverlayWindow } from "./computerUse/cursorOverlay";
 import { DEEP_LINK_SCHEME, createDesktopAuth, parseDeepLinkArg, resolveProtocolRegistration, shouldRegisterProtocol, systemDeps } from "./desktopAuth";
@@ -83,9 +83,8 @@ const queuedDeepLinks: string[] = [];
 // while every window is closed on macOS). Needs the services created further down, hence a function.
 function openMainWindowIfNone(): void {
   if (startup.active) return; // the hidden migration window is not a main window
-  // The Passwords window is not a main window: it must not count here.
-  // Neither the Passwords window nor an agent cursor overlay is a main window.
-  if (shouldReopenMainWindow(BaseWindow.getAllWindows(), (w) => loginServices.passwordsWindow.owns(w) || isCursorOverlayWindow(w))) createMainWindow(editorUrl, mcpService, loginServices, desktopAuth);
+  // An agent cursor overlay is not a main window.
+  if (shouldReopenMainWindow(BaseWindow.getAllWindows(), isCursorOverlayWindow)) createMainWindow(editorUrl, mcpService, loginServices, desktopAuth);
 }
 function dispatchDeepLink(url: string): void {
   // Validate FIRST: only a well-formed sideform://auth link whose state matches the pending attempt may
@@ -128,7 +127,7 @@ app.on("second-instance", (_event, argv) => {
   if (link) dispatchDeepLink(link);
   // While the startup guard is active the only window is the hidden migration window: never show it.
   if (startup.active) return;
-  const win = BaseWindow.getAllWindows().find((w) => !loginServices.passwordsWindow.owns(w) && !isCursorOverlayWindow(w));
+  const win = BaseWindow.getAllWindows().find((w) => !isCursorOverlayWindow(w));
   if (!win) {
     openMainWindowIfNone();
     return;
@@ -163,21 +162,21 @@ const credentialStore = createCredentialStore({
     decrypt: (cipher) => safeStorage.decryptString(cipher),
   },
 });
-// Site icons for the Passwords window: taken from the browser tabs' own favicon
+// Site icons for the Passwords tab: taken from the browser tabs' own favicon
 // events and downloaded through their session (window.ts); cached per origin.
 const faviconCache = createFaviconCache({
   filePath: path.join(app.getPath("userData"), FAVICONS_FILE),
   fs: nodeCredentialFs,
   fetchIcon: createIconFetcher((url, init) => session.fromPartition("persist:penbrowser").fetch(url, init)),
   isWanted: (origin) => credentialStore.list().some((e) => e.origin === origin),
-  // A new icon arrived: an open Passwords window refreshes its tiles.
-  onChange: () => loginServices.passwordsWindow.notifyChanged(),
+  // A new icon arrived: an open Passwords tab refreshes its tiles.
+  onChange: () => loginServices.passwords.notifyChanged(),
 });
 const loginServices = {
   credentialStore,
   faviconCache,
   loginCapture: createLoginCapture(credentialStore),
-  passwordsWindow: createPasswordsWindow(credentialStore, faviconCache),
+  passwords: createPasswordsService(credentialStore, faviconCache, { ipcMain }),
 };
 
 app.whenReady().then(async () => {
@@ -247,6 +246,7 @@ app.on("before-quit", () => {
 
 app.on("will-quit", () => {
   mcpService.teardownAppLevelIpc();
+  loginServices.passwords.dispose();
   // Synchronous: will-quit does not reliably await a returned promise, so
   // handshake-file removal must complete before this handler returns (see
   // handshake.ts's removeHandshakeFileSync comment). The HTTP server itself

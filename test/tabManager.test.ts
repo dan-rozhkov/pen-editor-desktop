@@ -288,6 +288,49 @@ describe("TabManager", () => {
     });
   });
 
+  describe("passwords tab", () => {
+    it("opens as a local tab: titled Passwords, active, loads no URL", () => {
+      const id = tm.openPasswordsTab({ focus: true });
+      expect(views[0].loadURL).not.toHaveBeenCalled();
+      expect(views[0].focus).toHaveBeenCalled();
+      const snap = tm.getSnapshot();
+      expect(snap).toMatchObject({ activeId: id, activeKind: "passwords" });
+      expect(snap.tabs[0]).toMatchObject({ kind: "passwords", title: "Passwords" });
+      expect(tm.findPasswordsTab()).toBe(id);
+    });
+
+    it("is a singleton: a second open activates the existing tab", () => {
+      const first = tm.openPasswordsTab({ focus: true });
+      const editor = tm.newTab("editor");
+      expect(tm.getSnapshot().activeId).toBe(editor);
+      expect(tm.openPasswordsTab({ focus: true })).toBe(first);
+      expect(tm.getSnapshot()).toMatchObject({ activeId: first, activeKind: "passwords" });
+      expect(views).toHaveLength(2);
+    });
+
+    it("is not a page tab, a canvas tab or an editor theme source", () => {
+      tm.newTab("editor");
+      views[0].getWebContentsId.mockReturnValue(10);
+      tm.openPasswordsTab();
+      views[1].getWebContentsId.mockReturnValue(11);
+      expect(tm.isPageTab(10)).toBe(true);
+      expect(tm.isPageTab(11)).toBe(false);
+      expect(tm.isEditorTab(11)).toBe(false);
+      expect(tm.editorTabsInfo().tabs).toHaveLength(1);
+      views[0].emitTheme("dark");
+      expect(tm.getSnapshot()).toMatchObject({ activeKind: "passwords", activeTheme: "dark" });
+    });
+
+    it("can be reopened after it was closed", () => {
+      const first = tm.openPasswordsTab();
+      tm.closeTab(first);
+      expect(tm.findPasswordsTab()).toBeNull();
+      const second = tm.openPasswordsTab();
+      expect(second).not.toBe(first);
+      expect(views).toHaveLength(2);
+    });
+  });
+
   describe("settings tab", () => {
     it("loads /settings?chat=off, starts titled Settings, follows the page title and the theme", () => {
       const id = tm.openSettingsTab();

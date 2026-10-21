@@ -30,7 +30,7 @@
     remove(id: string): Promise<ActionResult>;
     removeNever(host: string): Promise<ActionResult>;
     onChanged(cb: () => void): void;
-    onTheme(cb: (payload: { theme: "light" | "dark"; vibrancyMatches: boolean }) => void): void;
+    onTheme(cb: (payload: { theme: "light" | "dark" }) => void): void;
   }
   type Section = "all" | "never";
   type Mode = "view" | "add" | "edit";
@@ -39,14 +39,10 @@
   const helpers = penPasswordsHelpers;
   const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
-  document.documentElement.toggleAttribute("data-macos", api.isMac);
-  api.onTheme(({ theme, vibrancyMatches }) => {
+  api.onTheme(({ theme }) => {
     document.documentElement.dataset.theme = theme;
-    // macOS vibrancy follows the OS appearance: with another editor theme the list pane goes opaque.
-    document.documentElement.toggleAttribute("data-opaque-sidebar", !vibrancyMatches);
   });
-  const storageNote = api.isMac ? "Encrypted with a key in your macOS Keychain" : "Encrypted on this device";
-  $("storage-note").textContent = storageNote;
+  $("storage-note").textContent = api.isMac ? "Encrypted with a key in your macOS Keychain" : "Encrypted on this device";
 
   const neverLink = $<HTMLButtonElement>("never-link");
   const neverHead = $("never-head");
@@ -227,12 +223,11 @@
       );
       box.appendChild(button("Add login", "btn btn-accent", startAdd, "i-plus"));
     }
-    detailEl.replaceChildren(el("div", "detail-head drag"), box);
+    detailEl.replaceChildren(box);
   }
 
   function renderView(entry: Entry): void {
     const host = helpers.displayHost(entry.origin);
-    const head = el("div", "detail-head drag");
     const actions = el("div", "actions");
     if (confirmDelete) {
       actions.append(
@@ -258,21 +253,21 @@
         }, "i-trash"),
       );
     }
-    head.appendChild(actions);
 
-    const hero = el("div", "hero");
     const heroText = el("div", "hero-text");
     heroText.appendChild(el("h1", "hero-title", host));
     if (entry.label) heroText.appendChild(el("p", "hero-sub", entry.label));
-    hero.append(tile(true, entry.icon), heroText);
+    const hero = el("div", "hero");
+    hero.append(tile(true, entry.icon), heroText, actions);
 
     const body = el("div", "detail-body");
     body.append(
+      hero,
       field("Username", entry.username),
       field("Website", entry.origin),
       field("Last used", helpers.formatLastUsed(entry.lastUsedAt, Date.now())),
     );
-    detailEl.replaceChildren(head, hero, body);
+    detailEl.replaceChildren(body);
   }
 
   function formField(
@@ -298,7 +293,6 @@
     pendingNav = null;
     const token = ++formTokenSeq;
     activeFormToken = token;
-    const head = el("div", "detail-head drag");
     const hero = el("div", "hero");
     const glyph = el("div", "tile tile-lg tile-plain");
     glyph.appendChild(icon("i-key"));
@@ -369,7 +363,7 @@
     const row = el("div", "form-actions");
     row.append(save, cancel);
 
-    form.append(site.wrap, username.wrap, password.wrap, label.wrap, warning, error, row);
+    form.append(hero, site.wrap, username.wrap, password.wrap, label.wrap, warning, error, row);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       if (save.disabled) return;
@@ -441,7 +435,7 @@
         });
     });
 
-    detailEl.replaceChildren(head, hero, form);
+    detailEl.replaceChildren(form);
     (adding ? site.input : username.input).focus();
   }
 
@@ -529,9 +523,7 @@
       }),
       keep,
     );
-    const head = detailEl.querySelector(".detail-head");
-    if (head) head.after(bar);
-    else detailEl.prepend(bar);
+    detailEl.prepend(bar);
     requestAnimationFrame(() => keep.focus());
   }
 

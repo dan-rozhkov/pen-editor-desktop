@@ -74,11 +74,11 @@ import { fillLogin } from "./browser/fillLogin";
 import { isLoginBindingCall, promptChoiceFromButton, savePromptCopy, type LoginCapture } from "./browser/loginCapture";
 import { normalizeOrigin, type CredentialStore } from "./browser/credentialStore";
 import type { FaviconCache } from "./browser/faviconCache";
-import type { PasswordsWindow } from "./passwordsWindow";
+import type { PasswordsService } from "./passwordsService";
 import { appKey, errorForPlan, openApp, ownedBySender, ownedBySession, planAppCommand, routeAppCommand } from "./appTargets";
 import { appConfirm, appRegistry, cancelWaiters, findUserRunningPids, quitUserApp, reopenApp, reopenWhenGone, validateRequestedApp } from "./appTargetsService";
 import { createTabAgentActivity, isAgentPageCommand } from "./agentActivity";
-import { decideCloseTarget, guardMenuActions } from "./closeTarget";
+import { decideCloseTarget } from "./closeTarget";
 import { focusAfterCollapse, isTabCreationSender, planEmptyViewUpdate, resolveFocusTarget, type EmptyViewState } from "./emptyView";
 import { GLASS_SOLID, adoptPanelTheme, contentBackground, FALLBACK_THEME, glassTint, isPanelDocument, resolveWindowTheme, } from "./windowTheme";
 import { denyAllPermissions } from "./browser/permissions";
@@ -126,7 +126,7 @@ export interface LoginServices {
   credentialStore: CredentialStore;
   faviconCache: FaviconCache;
   loginCapture: LoginCapture;
-  passwordsWindow: PasswordsWindow;
+  passwords: PasswordsService;
 }
 
 // Real ipcMain wiring for McpService.registerAppLevelIpc — kept here (not in
@@ -543,7 +543,7 @@ export function createMainWindow(
       if (focusTarget === "empty") emptyView.webContents.focus();
       else if (focusTarget === "panel" && !agentPanelView.webContents.isDestroyed()) agentPanelView.webContents.focus();
     }
-    loginServices.passwordsWindow.setTheme(themeKey, resolvedTheme);
+    loginServices.passwords.setTheme(themeKey, resolvedTheme);
     if (focusAddressBar) tabbarView.webContents.focus();
     // Keep a visible browser tab's own blank-canvas background matching the
     // theme the bar is now showing (glass tab bar work, 2026-09-25) — most
@@ -674,9 +674,12 @@ export function createMainWindow(
                 partition: sessionId ? requireLiveSession(sessionId).partition : "persist:penbrowser",
               }),
             }
-          : {
-              webPreferences: secureWebPreferences(path.join(__dirname, "../preload/tab.js"), { additionalArguments: nativeAppsArguments(computerUseAvailable()) }),
-            },
+          : kind === "passwords"
+            ? // The Passwords tab is a local page with its own preload (never the tab preload, never the frontend).
+              { webPreferences: secureWebPreferences(path.join(__dirname, "../preload/passwords.js")) }
+            : {
+                webPreferences: secureWebPreferences(path.join(__dirname, "../preload/tab.js"), { additionalArguments: nativeAppsArguments(computerUseAvailable()) }),
+              },
       );
       win.contentView.addChildView(view);
       // The tab content is an island with rounded corners (radius set once, here).
@@ -1055,6 +1058,28 @@ export function createMainWindow(
         view.webContents.on("page-title-updated", (_e, title) => {
           titleCallbacks.get(viewId)?.(title.trim().slice(0, 200) || (kind === "trace" ? "Trace" : kind === "settings" ? "Settings" : "Document"));
         });
+      }
+
+      if (kind === "passwords") {
+        // A local page: no origin clamp to the frontend, every navigation and popup is denied.
+        attachLocalOnlyPolicy(view.webContents);
+        const contents = view.webContents;
+        loginServices.passwords.attach(
+          {
+            id: contents.id,
+            isDestroyed: () => contents.isDestroyed(),
+            sendTheme: (payload) => contents.send("passwords:theme", payload),
+            setBackground: (theme) => view.setBackgroundColor(backgroundColorForTheme(theme)),
+            sendChanged: () => contents.send("passwords:changed"),
+            onLoaded: (cb) => contents.on("did-finish-load", cb),
+            onDestroyed: (cb) => contents.once("destroyed", cb),
+          },
+          themeKey,
+          () => lastResolvedForTint,
+        );
+        // The window's current theme, not the fallback (a dark window must not flash white).
+        view.setBackgroundColor(backgroundColorForTheme(lastResolvedForTint));
+        void contents.loadFile(path.join(__dirname, "../passwords/passwords.html"));
       }
 
       if (kind === "editor") {
@@ -2509,10 +2534,6 @@ export function createMainWindow(
   // recreates a window on dock "activate" without quitting the app. Without
   // this, every close/reopen cycle leaks the ipcMain listeners above plus
   // every tab's WebContentsView (renderer process stays alive).
-  // The Passwords window follows the main window the user focused last.
-  win.on("focus", () => {
-    loginServices.passwordsWindow.focusMain(themeKey);
-  });
   win.on("closed", () => {
     stopPanelTimer();
     ipcMain.removeListener("tabbar:new", onTabbarNew);
@@ -2555,7 +2576,6 @@ export function createMainWindow(
     // The panel's fixture, checkpoint journals and browser sessions die with the window.
     releasePanelOrphans(true);
     nativeTheme.removeListener("updated", onSystemThemeChanged);
-    loginServices.passwordsWindow.setTheme(themeKey, null);
     unsubscribeMcpStatus();
     mcpService.setOnDemandTabOpener(null);
     agentActivity.dispose();
@@ -2574,45 +2594,37 @@ export function createMainWindow(
   const rebuildMenu = () => {
     const menu = Menu.buildFromTemplate(
       buildMenuTemplate(
-        // The menu is app-global: with the Passwords window focused every
-        // main-window action is ignored and Close Tab closes that window
-        // (closeTarget.ts). Guarded here, not in menu.ts, which keeps forwarding.
-        guardMenuActions(
-          {
-            newTab: () => tabs.newTab("editor"),
-            newBrowserTab: newUserBrowserTab,
-            newDocTab: () => void tabs.newTab("doc"),
-            openSettings: () => void tabs.openSettingsTab(undefined, { focus: true }),
-            openPasswords: () => loginServices.passwordsWindow.open(),
-            signIn: () => desktopAuth.beginSignIn(),
-            closeTab: () => {
-              const target = decideCloseTarget({
-                passwordsFocused: false,
-                activeTabId: tabs.getSnapshot().activeId,
-              });
-              if (target.kind === "tab") closeTabByUser(target.id);
-            },
-            closeWindow: () => win.close(),
-            nextTab: () => tabs.nextTab(),
-            prevTab: () => tabs.prevTab(),
-            forwardToActiveTab: (commandId) => {
-              // Palette commands are editor-only: a doc or browser tab gets nothing.
-              if (!shouldForwardMenuCommand(tabs.getSnapshot().activeKind)) return;
-              tabs.activeHandle()?.sendMenuCommand(commandId);
-            },
-            useThisAppForMcp: () => void mcpService.forcePublish(),
-            toggleAgentPanel: () => setPanelCollapsed(!panelCollapsed),
-            setCursorEnabled: (enabled) => {
-              updateCursorSettings({ enabled });
-              // Unticked: hide the overlay on the current page right away
-              // (best effort). Re-enabling needs nothing: the next move's
-              // show() makes it visible again.
-              if (!enabled) void browserController.hideCursorOverlay();
-            },
-          },
-          () => loginServices.passwordsWindow.isFocused(),
-          () => loginServices.passwordsWindow.close(),
-        ),
+        {
+        newTab: () => tabs.newTab("editor"),
+        newBrowserTab: newUserBrowserTab,
+        newDocTab: () => void tabs.newTab("doc"),
+        openSettings: () => void tabs.openSettingsTab(undefined, { focus: true }),
+        openPasswords: () => void tabs.openPasswordsTab({ focus: true }),
+        signIn: () => desktopAuth.beginSignIn(),
+        closeTab: () => {
+          const target = decideCloseTarget({
+            activeTabId: tabs.getSnapshot().activeId,
+          });
+          if (target.kind === "tab") closeTabByUser(target.id);
+        },
+        closeWindow: () => win.close(),
+        nextTab: () => tabs.nextTab(),
+        prevTab: () => tabs.prevTab(),
+        forwardToActiveTab: (commandId) => {
+          // Palette commands are editor-only: a doc or browser tab gets nothing.
+          if (!shouldForwardMenuCommand(tabs.getSnapshot().activeKind)) return;
+          tabs.activeHandle()?.sendMenuCommand(commandId);
+        },
+        useThisAppForMcp: () => void mcpService.forcePublish(),
+        toggleAgentPanel: () => setPanelCollapsed(!panelCollapsed),
+        setCursorEnabled: (enabled) => {
+          updateCursorSettings({ enabled });
+          // Unticked: hide the overlay on the current page right away
+          // (best effort). Re-enabling needs nothing: the next move's
+          // show() makes it visible again.
+          if (!enabled) void browserController.hideCursorOverlay();
+        },
+        },
         { isMac: process.platform === "darwin", appName: app.name, agentPanel: { collapsed: panelCollapsed } },
         mcpService.getStatus(),
         effectiveCursor(),

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
-// The Passwords window's only bridge. Every call is a request/response; main
+// The Passwords tab's only bridge. Every call is a request/response; main
 // checks the sender. No password ever comes back through any of these.
 const api = {
   isMac: process.platform === "darwin",
@@ -11,8 +11,8 @@ const api = {
     ipcRenderer.invoke("passwords:update", payload),
   remove: (id: string): Promise<unknown> => ipcRenderer.invoke("passwords:remove", id),
   removeNever: (host: string): Promise<unknown> => ipcRenderer.invoke("passwords:never-remove", host),
-  onTheme: (cb: (payload: { theme: "light" | "dark"; vibrancyMatches: boolean }) => void): void => {
-    ipcRenderer.on("passwords:theme", (_e: IpcRendererEvent, payload: { theme: "light" | "dark"; vibrancyMatches: boolean }) => cb(payload));
+  onTheme: (cb: (payload: { theme: "light" | "dark" }) => void): void => {
+    ipcRenderer.on("passwords:theme", (_e: IpcRendererEvent, payload: { theme: "light" | "dark" }) => cb(payload));
   },
   onChanged: (cb: () => void): void => {
     ipcRenderer.on("passwords:changed", () => cb());

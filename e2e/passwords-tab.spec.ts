@@ -1,4 +1,4 @@
-// The Passwords window (File > Passwords...) end to end: add a login through
+// The Passwords tab (File > Passwords...) end to end: add a login through
 // the form, see it in the list and the detail pane, search, edit, delete, in
 // both themes. The OS secret store is faked in the main process (only
 // isEncryptionAvailable / encryptString / decryptString), and the userData
@@ -13,7 +13,6 @@ import type { AddressInfo } from "node:net";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 
 let server: http.Server;
 let baseUrl: string;
@@ -72,7 +71,7 @@ test.afterAll(async () => {
   rmSync(userData, { recursive: true, force: true });
 });
 
-test("passwords window: add, list, detail, search, edit, delete; light and dark", async () => {
+test("passwords tab: add, list, detail, search, edit, delete; light and dark", async () => {
   mkdirSync(userData, { recursive: true });
   const app = await launchShell({
     args: ["."],
@@ -101,12 +100,19 @@ test("passwords window: add, list, detail, search, edit, delete; light and dark"
       };
       find(Menu.getApplicationMenu()!.items)!.click();
     });
+    // The page is a tab (a WebContentsView of the main window), not a window of its own.
     const pw: Page = await (async () => {
       const found = app.windows().find((p) => p.url().endsWith("passwords.html"));
       return found ?? app.waitForEvent("window", { predicate: (p) => p.url().endsWith("passwords.html") });
     })();
 
     pw.on("pageerror", (err) => pageErrors.push(String(err)));
+
+    // It sits in the tab strip as "Passwords", is active, and a second File > Passwords... only re-activates it.
+    const tabbar = app.windows().find((p) => p.url().endsWith("/tabbar/tabbar.html"))!;
+    await expect(tabbar.locator(".tab", { hasText: "Passwords" })).toHaveCount(1);
+    await expect(tabbar.locator(".tab.active")).toContainText("Passwords");
+    await app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().length).then((n) => expect(n).toBe(1));
 
     // Seeded content: four logins, one never-saved host.
     await expect(pw.locator(".row")).toHaveCount(4);
@@ -285,24 +291,6 @@ test("passwords window: add, list, detail, search, edit, delete; light and dark"
         await pw.waitForTimeout(400); // let the 150ms colour transitions settle
         mkdirSync(shotsDir, { recursive: true });
         await pw.screenshot({ path: path.join(shotsDir, `shot-${theme}.png`) });
-      }
-    }
-    // The real window with the native traffic lights (macOS only; needs screen-capture permission).
-    if (shotsDir && process.platform === "darwin") {
-      await editorPage.evaluate(() => document.documentElement.classList.remove("dark"));
-      await expect(pw.locator("html")).toHaveAttribute("data-theme", "light");
-      const sourceId = await app.evaluate(({ BaseWindow, app }) => {
-        const w = BaseWindow.getAllWindows().find((x) => x.getTitle() === "Passwords")!;
-        app.focus({ steal: true });
-        w.focus();
-        return w.getMediaSourceId();
-      });
-      await pw.waitForTimeout(600);
-      const id = sourceId.split(":")[1];
-      try {
-        execFileSync("screencapture", ["-l", id, "-o", path.join(shotsDir, "shot-native.png")]);
-      } catch (err) {
-        console.log("native capture failed:", String(err));
       }
     }
     // A failed delete shows the fixed error; an IPC rejection shows the generic one. Nothing is removed.

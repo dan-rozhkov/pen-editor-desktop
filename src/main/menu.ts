@@ -18,7 +18,7 @@ export interface MenuActions {
   newDocTab(): void;
   /** Opens (or activates) the Settings tab. */
   openSettings(): void;
-  /** Opens (or focuses) the Passwords window. A local action: it forwards no `menu:command` id. */
+  /** Opens (or focuses) the Passwords tab. A local action: it forwards no `menu:command` id. */
   openPasswords(): void;
   /** Starts the sign-in in the system browser (desktopAuth.ts). A local action: no `menu:command` id. */
   signIn(): void;

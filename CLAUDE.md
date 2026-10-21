@@ -112,7 +112,7 @@ returns them (`gap`, `radius`), `window.ts` sends them on `tabbar:state` (`islan
 `layout.test.ts`). The tab VIEW starts exactly below the row (`tabArea`): no page content is
 hidden. A parent View's radius does not clip child WebContentsViews in Electron 43, so browser pages keep all-corner rounding; the page's rounded top corners show small wedges against the tail (which starts 1px below the row, `top: calc(100% + 1px)`, so it does not cover the border). The tail is painted in the ACTIVE browser page's own background, not `--island-bg` (dark wedges on a white page in dark theme): main runs a sampling script in the page after `dom-ready`/`did-finish-load`/`did-navigate-in-page` (NOT `did-navigate`: the new document is still empty and would flash white; the old colour is kept until dom-ready). The script reads `getComputedStyle` of `<html>`/`<body>` and converts the colour through a 1x1 canvas, because Chromium returns oklch()/lab()/color() in their authored space; both transparent -> Chromium's canvas (`rgb(18,18,18)` when `color-scheme` (CSS, else the `<meta name="color-scheme">` tag) is dark under a dark OS appearance, else white); failure -> `#ffffff` (`pageBackground.ts`) and sends it on `tabbar:tail`; the renderer sets `--tail-bg`. Blank and canvas tabs send null -> `--island-bg`.
 
-*Theme and tint.* The app/OS appearance is NEVER changed (no `nativeTheme.themeSource`: it is
+*Theme and tint.* The app/OS appearance is NEVER changed (it is
 app-wide and would flip `prefers-color-scheme` for browser tabs, isolated sessions and QA
 runs). The vibrancy follows the OS; a plain `View` (`glassTintView`, bottom-most, macOS only,
 no page/IPC) paints `glassTint(theme, osDark)` over it: `rgba(244,245,248,a)` light /
@@ -168,7 +168,7 @@ or a launch never auto-expands a collapsed panel: only the user's toggle changes
 Tests: `layout.test.ts`, `agentPanelSettings.test.ts`, `menu.test.ts`, `e2e/agent-panel-toggle.spec.ts`.
 
 **Tab icons.** Every tab has a leading glyph keyed by `TabState.kind` in
-`tabbar/renderer.ts` (one mapping): editor (canvas) tabs a Phosphor "PaintBrush", doc tabs a Phosphor "FileText", trace tabs a Phosphor "Pulse", the Settings tab a Phosphor "GearSix", browser tabs a
+`tabbar/renderer.ts` (one mapping): editor (canvas) tabs a Phosphor "PaintBrush", doc tabs a Phosphor "FileText", trace tabs a Phosphor "Pulse", the Settings tab a Phosphor "GearSix", the Passwords tab a Phosphor "Key", browser tabs a
 Phosphor "Globe" ALWAYS (all LIGHT weight), never the site favicon. Phosphor is MIT: the notice lives in
 `THIRD_PARTY_NOTICES.md` (shipped via the electron-builder `files` list; keep it there). Just the glyph,
 monochrome `currentColor` (tab text color), no background square. The tab bar CSP has no `img-src`:
@@ -257,7 +257,7 @@ takes part in theme sync, not a canvas tab. `TabManager.openSettingsTab(section?
 panel (`window.penAgentPanel.settings.open(section?)`) or any editor/doc/trace/Settings tab (`window.penDesktop.settings.open(section?)`, `tabs.isPageTab`);
 browser tabs and other senders get `{ok:false}`; an invalid section is ignored (the tab still opens). It takes keyboard focus (a person asked for the page).
 Menu: macOS app menu is an explicit submenu (Electron's default `appMenu` roles + "Settings…" `CmdOrCtrl+,`); elsewhere "Settings…" is in File. Action
-`openSettings` (scope `main`). No empty-start card. Tests: `settingsOpen.test.ts`, `tabManager.test.ts` ("settings tab"), `config.test.ts`, `menu.test.ts`,
+`openSettings`. No empty-start card. Tests: `settingsOpen.test.ts`, `tabManager.test.ts` ("settings tab"), `config.test.ts`, `menu.test.ts`,
 `preloadTab.test.ts`, `preloadCanvasLink.test.ts`, `ipcContract.test.ts`. The `penAgentPanel.version` stays 2 (an added optional key).
 
 **Document storage.** Markdown documents are also kept on disk: `<userData>/documents/<id>.json` (`<userData>/documents-dev/` while `PEN_DESKTOP_URL` is set, via `docDirFor`: a dev frontend never sees production documents), compact JSON of exactly
@@ -301,7 +301,7 @@ existing "No editor tab is open."), `editorTabsInfo()` empty (the router's
 commands that target the active editor tab (`forwardToActiveTab`: File Open,
 Export..., Import/Export Design Tokens) are a **no-op** with no tab (they do NOT
 open a canvas tab: the editor must be loaded before it can handle a command);
-Close Tab (Cmd/Ctrl+W, `decideCloseTarget`) closes the active tab and does NOTHING with no active tab (zero tabs, or only background session tabs): it never closes the window (macOS convention). File > "Close Window" (Cmd/Ctrl+Shift+W, local action `closeWindow`, no `menu:command` id) closes the focused window; with the Passwords window focused it closes that window like Close Tab does. A new non-session tab becomes active when none is active, even if requested in the background (`activate:false`). macOS dock `activate` reopens a window
+Close Tab (Cmd/Ctrl+W, `decideCloseTarget`) closes the active tab and does NOTHING with no active tab (zero tabs, or only background session tabs): it never closes the window (macOS convention). File > "Close Window" (Cmd/Ctrl+Shift+W, local action `closeWindow`, no `menu:command` id) closes the main window. A new non-session tab becomes active when none is active, even if requested in the background (`activate:false`). macOS dock `activate` reopens a window
 the same way (panel only). **Placeholder:** while `activeId === null`, a local view (`src/tabbar/empty.html` + `empty.css` + `emptyRenderer.ts`,
 same CSP as the tab bar, light/dark tokens shared via `tokens.css`, no remote content) covers the tab
 area with the hint "Canvas, browser and document tabs open here." and three cards (`#new-canvas`,
@@ -423,9 +423,9 @@ CI of its own. `Close Window` is a local action like Passwords (no forwarded id)
 - `auth:sign-in` tab or agent panel→main (`send`, no payload; `window.penDesktop.auth.signIn()` / `window.penAgentPanel.auth.signIn()`) — starts the browser sign-in. Accepted only from an editor tab or the panel, top frame, whose `senderFrame.url` origin equals the editor origin (`isAuthSignInSender`); anything else is dropped silently. See "Origin move and sign-in"
 - `auth:listen` / `auth:unlisten` tab or agent panel→main (`send`, no payload; sent by `auth.onToken(cb)` on subscribe / when the last subscriber leaves) — marks the view as able to take a token; `auth:listen` is validated exactly like `auth:sign-in` and delivers a held token
 - `auth:token` main→panel or tab (`{token, verifier}`; `auth.onToken(cb)` returns an unsubscribe) — sent to exactly ONE LISTENING view: the agent panel, else the active canvas tab, else another listening canvas tab (`pickAuthReceiver`); with none it is held in main. The page exchanges it with the backend and tells the other views itself
-- `passwords:list` / `passwords:add` / `passwords:update` / `passwords:remove` / `passwords:never-remove` Passwords window→main, **invoke/handle**, each sender-checked against that window's own webContents; handlers are registered when the window opens and removed when it closes. No reply ever holds a password — see "Saved logins" below
-- `passwords:theme` main→Passwords window, payload `{ theme: "light" | "dark", vibrancyMatches: boolean }`. `theme` is the tab-bar theme (`tabbar:theme`) of the main window the user focused last (BaseWindow `focus`; each window's push is kept under its own key in `themeSource.ts`). If that window is closed or none was focused yet, the latest push of any open main window applies; with none left it follows `nativeTheme` again. `vibrancyMatches` is false when `theme` differs from the OS appearance: macOS vibrancy follows the OS, so the renderer then paints the glass list pane opaque (`data-opaque-sidebar`, a legacy name from the removed sidebar). Pushed on window load and whenever the effective `{theme, vibrancyMatches}` changes (an unchanged value is not re-sent)
-- `passwords:changed` main→Passwords window, no payload. Sent when a site icon was stored (favicon fetched). The renderer re-reads `passwords:list` and refreshes the never-saved link, rows and, in view mode only, the detail pane; an open Add/Edit form is never rebuilt
+- `passwords:list` / `passwords:add` / `passwords:update` / `passwords:remove` / `passwords:never-remove` Passwords tab→main, **invoke/handle**, registered ONCE per process by `createPasswordsService` (`passwordsService.ts`, created in `index.ts`, removed by `dispose()` on `will-quit`); each answers only webContents attached as a Passwords tab of any main window (`attach`, dropped on `destroyed`), everything else gets `{ok:false}`. No reply ever holds a password — see "Saved logins" below
+- `passwords:theme` main→Passwords tab, payload `{ theme: "light" | "dark" }`: the theme the tab bar of THAT tab's window shows (`lastResolvedForTint`, the same value as `tabbar:theme`). Sent on every page load and whenever that window's resolved theme changes (`pushState` -> `service.setTheme(themeKey, theme)`; an unchanged value is not re-sent); the same step repaints the tab view's own background (`contentBackground(theme)`: #ffffff / #2a2a2a, the page's `--surface-panel`) through the `setBackground` port. There is no vibrancy in a tab, so there is no `vibrancyMatches`
+- `passwords:changed` main→Passwords tabs, no payload. Sent to every tab when a site icon was stored (favicon fetched), and to every OTHER tab (never the sender) after a successful add / update / remove / never-remove. The renderer re-reads `passwords:list` and refreshes the never-saved link, rows and, in view mode only, the detail pane; an open Add/Edit form is never rebuilt
 
 Both ends of every channel live in this repo — the editor only ever touches
 the preload API, never a channel name. `test/ipcContract.test.ts` scans `src/`
@@ -951,7 +951,7 @@ without `domain`, and `__Host-` cookies are set without `domain`.
   debugger on Electron 43 (verified by `e2e/browser-qa-tools.spec.ts`): the
   debugger stays attached and `press`/`hover`/`screenshot`/`assert` keep working.
 
-## Saved logins (Passwords window, save prompt, `fillLogin`)
+## Saved logins (Passwords tab, save prompt, `fillLogin`)
 
 The browsing subagent can sign in to a site with a login the user saved in
 the built-in browser, without the password ever reaching the model. Design
@@ -965,7 +965,7 @@ changes; merge order there: backend, frontend, then this repo).
   `{ version: 1, entries: [{ id, origin, username, label, password, lastUsedAt? }], never: [host] }`,
   `password` = base64 of `safeStorage.encryptString`. `origin` is normalized
   `scheme://host[:port]` (http/https, lowercase host, no leading `www.`,
-  default port dropped; a bare host typed in the Passwords window means
+  default port dropped; a bare host typed in the Passwords tab means
   https) and matched strictly on scheme + host + port: no subdomain or
   eTLD+1 matching. The `never` list stays hostname-only. The parser accepts
   only this shape (entries without a normalized `origin` are dropped; no
@@ -981,7 +981,7 @@ changes; merge order there: backend, frontend, then this repo).
   that fails with ENOENT (the file vanished) counts as done and the write
   proceeds. ONE instance, created in `index.ts` (app
   level, like `mcpService`) and passed into every `createMainWindow`
-  together with the save-prompt state and the Passwords window manager
+  together with the save-prompt state and the Passwords service
   (`LoginServices` in `window.ts`).
 - **`browser:command` → `fillLogin`** — `src/main/browser/fillLogin.ts` (pure;
   controller `snapshot`/`perform`/`act`, store and current-URL reader
@@ -1045,13 +1045,10 @@ changes; merge order there: backend, frontend, then this repo).
   whole app). If the debugger attach
   failed, the feature is off for that tab. `e2e/saved-logins.spec.ts` drives
   it end to end with the native dialog stubbed.
-- **Passwords window** — `src/main/passwordsWindow.ts` (single instance,
-  File ▸ Passwords…, a local action: it forwards no `menu:command` id, so
-  pen-editor's pinned id list is unchanged), `src/passwords/` (plain-script
-  renderer like the tab bar; CSP `default-src 'none'`), `src/preload/passwords.ts`,
+- **Passwords tab** — `TabKind` `"passwords"`, a SINGLETON per window opened by File ▸ Passwords… (a local action: it forwards no `menu:command` id, so pen-editor's pinned id list is unchanged; `TabManager.openPasswordsTab({focus:true})`, like the Settings tab). The tab loads the LOCAL page `dist/passwords/passwords.html` (`loadFile` in `window.ts` `createView`; `TabManager` never calls `loadURL` for it) with `preload/passwords.js` only (NOT `preload/tab.ts`, never the frontend URL), `contextIsolation`/`sandbox`, `attachLocalOnlyPolicy`. Title fixed "Passwords", tab icon Phosphor "Key" (light weight, like every tab icon), no address row. It is not a page tab (`isPageTab` is false: `settings:open` refuses it), not a canvas tab, not an editor theme source (`editorTabCount`, `resolveActiveTheme` ignore it; it shows the window's resolved theme), and gets no MCP, browser or auth wiring. Tabs are not persisted, so there is no restore path. Service `src/main/passwordsService.ts` (pure, Electron ports injected, `test/passwordsService.test.ts`), `src/passwords/` (plain-script renderer like the tab bar; CSP `default-src 'none'`), `src/preload/passwords.ts`,
   request handling in `browser/passwordsApi.ts`. Site tiles are neutral (a
   globe, or the site's icon through `<img>`; CSP adds `img-src data:` only).
-  Icons never come from the Passwords window: `window.ts` listens to
+  Icons never come from the Passwords tab: `window.ts` listens to
   `page-favicon-updated` on browser tabs and `browser/faviconCache.ts` (pure,
   fs and fetch injected) downloads the FIRST favicon through the
   `persist:penbrowser` session (http/https, image types only, 64 KB, 3 s) for
@@ -1063,7 +1060,7 @@ changes; merge order there: backend, frontend, then this repo).
   are filtered out on load. `passwords:list` adds an optional `icon` per entry;
   an icon seen before the login was saved is fetched in the background on the
   next `list`, and every stored icon (that one or one from
-  `page-favicon-updated` while the window is open) sends `passwords:changed`,
+  `page-favicon-updated` while the tab is open) sends `passwords:changed`,
   so the tiles update without a manual refresh. The data-URL pattern for icons
   is a single copy, `isIconDataUrl` in `src/passwords/helpers.ts` (main
   `require`s it; the renderer, a plain script, uses it as a global).
@@ -1071,18 +1068,8 @@ changes; merge order there: backend, frontend, then this repo).
   same normalized origin + username exists, and replaces its password only
   when the payload carries `replace: true` (the New login form shows an inline
   warning and a "Replace" button first). A save reply that arrives after its
-  form was discarded or replaced only refreshes the list data. Copy on encryption is platform-specific (`api.isMac`). The
-  application menu is
-  app-global, so while this window is focused EVERY main-window menu action
-  (new tab, open, export, tab switching...) is ignored and File ▸ Close Tab
-  (Cmd/Ctrl+W) and Close Window (Cmd/Ctrl+Shift+W) close this window (`closeTarget.ts`: `MENU_ACTION_SCOPE`,
-  `decideMenuAction`, `guardMenuActions`, pure; a new `MenuActions` key will not
-  compile until it has a scope). The guard is wired in `window.ts`; `menu.ts`
-  still forwards every click untouched, which pen-editor's
-  `desktopMenuContract` relies on. App-level items (Passwords…, MCP publish,
-  cursor prefs) still run. macOS `activate` counts main windows only
-  (`shouldReopenMainWindow`), so a lone Passwords window does not suppress the
-  reopen. In `window.ts`'s debugger `message` handler the login binding
+  form was discarded or replaced only refreshes the list data. Copy on encryption is platform-specific (`api.isMac`). 
+  In `window.ts`'s debugger `message` handler the login binding
   (`isLoginBindingCall`) is consumed FIRST and returns, before the
   `cdpEventListeners` fan-out: the password-bearing payload reaches nothing
   else (`test/loginBindingRouting.test.ts` pins the order).

@@ -86,7 +86,7 @@ describe("buildMenuTemplate", () => {
     expect(actions.newDocTab).toHaveBeenCalledOnce();
   });
 
-  it("Passwords… opens the Passwords window and forwards no menu command", () => {
+  it("Passwords… opens the Passwords tab and forwards no menu command", () => {
     const i = item("Passwords…");
     (i.click as () => void)();
     expect(actions.openPasswords).toHaveBeenCalledTimes(1);
