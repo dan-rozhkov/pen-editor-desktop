@@ -101,11 +101,11 @@
   // Site icon: the cached favicon through <img> (never inlined, even an SVG;
   // accepted only as an allowed image data: URL, which main checks too and the
   // CSP allows), else the Phosphor globe: "fill" weight on the selected row
-  // like SettingsNav's active item, regular otherwise. Used by the list rows.
-  function siteIcon(iconUrl?: string, filled = false): Element {
+  // like SettingsNav's active item, regular otherwise. Used by the list rows and the hero tile.
+  function siteIcon(iconUrl?: string, filled = false, imgClass = "row-icon"): Element {
     const globe = () => icon(filled ? "i-globe-fill" : "i-globe");
     if (iconUrl && helpers.isIconDataUrl(iconUrl)) {
-      const img = el("img", "row-icon");
+      const img = el("img", imgClass);
       img.alt = "";
       img.draggable = false;
       img.addEventListener("error", () => img.replaceWith(globe()), { once: true });
@@ -252,8 +252,11 @@
       );
     }
 
+    const tile = el("div", "hero-tile");
+    tile.setAttribute("aria-hidden", "true");
+    tile.appendChild(siteIcon(entry.icon, false, "hero-tile-img"));
     const hero = el("div", "hero");
-    hero.append(el("h1", "hero-title", host), actions);
+    hero.append(tile, el("h1", "hero-title", host), actions);
 
     const body = el("div", "detail-body");
     body.append(
