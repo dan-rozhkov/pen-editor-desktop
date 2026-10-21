@@ -231,6 +231,39 @@ describe("TabManager", () => {
     });
   });
 
+  describe("workflow tabs", () => {
+    it("load /workflow?id=...&chat=off, start titled Workflow, follow the page title and the theme", () => {
+      const id = tm.newTab("workflow", undefined, { workflowId: "wf_abc" });
+      expect(views[0].loadURL).toHaveBeenCalledWith("https://pen-editor.onrender.com/workflow?id=wf_abc&chat=off");
+      expect(tm.getSnapshot()).toMatchObject({ activeId: id, activeKind: "workflow" });
+      expect(tm.getSnapshot().tabs[0]).toMatchObject({ kind: "workflow", title: "Workflow" });
+      views[0].emitTitle("Release checklist");
+      expect(tm.getSnapshot().tabs[0].title).toBe("Release checklist");
+      views[0].emitTheme("dark");
+      expect(tm.getSnapshot().activeTheme).toBe("dark");
+    });
+
+    it("a tab without an id loads /workflow?new=1&chat=off", () => {
+      tm.newTab("workflow");
+      expect(views[0].loadURL).toHaveBeenCalledWith("https://pen-editor.onrender.com/workflow?new=1&chat=off");
+    });
+
+    it("findWorkflowTab matches by live URL, falling back to the opening id; never matches doc tabs", () => {
+      const a = tm.newTab("workflow", undefined, { workflowId: "wf_a" });
+      tm.newTab("doc", undefined, { docId: "wf_a" });
+      expect(tm.findWorkflowTab("wf_a")).toBe(a);
+      expect(tm.findWorkflowTab("wf_zzz")).toBeNull();
+      vi.mocked(views[0].getURL).mockReturnValue("https://pen-editor.onrender.com/workflow?id=wf_b&chat=off");
+      expect(tm.findWorkflowTab("wf_a")).toBeNull();
+      expect(tm.findWorkflowTab("wf_b")).toBe(a);
+    });
+
+    it("is not a canvas tab", () => {
+      tm.newTab("workflow", undefined, { workflowId: "wf_a" });
+      expect(tm.isEditorTab(views[0].getWebContentsId())).toBe(false);
+    });
+  });
+
   describe("doc tabs", () => {
     it("load /doc?chat=off (with the id), start titled Document, follow the page title and the theme", () => {
       const id = tm.newTab("doc", undefined, { docId: "d1" });

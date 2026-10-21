@@ -66,8 +66,8 @@ describe("agent panel preload", () => {
     await import("../src/preload/agentPanel");
   });
 
-  it("exposes version 2 with canvas, browser, docs, traces, auth and settings only", () => {
-    expect(Object.keys(exposed.penAgentPanel).sort()).toEqual(["auth", "browser", "canvas", "docs", "settings", "traces", "version"]);
+  it("exposes version 2 with canvas, browser, docs, workflows, traces, auth and settings only", () => {
+    expect(Object.keys(exposed.penAgentPanel).sort()).toEqual(["auth", "browser", "canvas", "docs", "settings", "traces", "version", "workflows"]);
     expect(exposed.penAgentPanel.version).toBe(2);
   });
 
@@ -109,6 +109,13 @@ describe("agent panel preload", () => {
     invoke.mockResolvedValueOnce({ ok: true } as never);
     await expect(exposed.penAgentPanel.docs.open("abc_1")).resolves.toEqual({ ok: true });
     expect(invoke).toHaveBeenLastCalledWith("doc:open", "abc_1");
+  });
+
+  it("workflows has exactly open, over workflow:open", async () => {
+    expect(Object.keys(exposed.penAgentPanel.workflows)).toEqual(["open"]);
+    invoke.mockResolvedValueOnce({ ok: true } as never);
+    await expect(exposed.penAgentPanel.workflows.open("wf_abc123def456")).resolves.toEqual({ ok: true });
+    expect(invoke).toHaveBeenLastCalledWith("workflow:open", "wf_abc123def456");
   });
 
   it("settings.open invokes settings:open with the optional section and returns main's reply", async () => {

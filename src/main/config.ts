@@ -193,6 +193,29 @@ export function resolveDocTabUrl(editorUrl: string, docId?: string): string {
   });
 }
 
+/** The URL a workflow tab loads (the frontend's workflow editor at `/workflow`). Same shape as
+ * `resolveDocTabUrl`: `id=<workflowId>` (encoded) or `new=1` (a NEW workflow), then `chat=off`. */
+export function resolveWorkflowTabUrl(editorUrl: string, workflowId?: string): string {
+  return frontendTabUrl(editorUrl, "workflow", {
+    drop: ["chat", "id", "new"],
+    append: [workflowId !== undefined ? `id=${encodeURIComponent(workflowId)}` : "new=1", "chat=off"],
+  });
+}
+
+/** A workflow id the agent panel may ask to open: `wf_` + 1-64 of `A-Za-z0-9` (the frontend makes `wf_` + 12 hex). */
+export function isValidWorkflowId(workflowId: unknown): workflowId is string {
+  return typeof workflowId === "string" && /^wf_[A-Za-z0-9]{1,64}$/.test(workflowId);
+}
+
+/** The `id` query param of a workflow tab URL, or null. */
+export function workflowIdOfUrl(rawUrl: string): string | null {
+  try {
+    return new URL(rawUrl).searchParams.get("id");
+  } catch {
+    return null;
+  }
+}
+
 /** The section ids of the frontend's `/settings` page (`?section=<id>`). */
 export const SETTINGS_SECTIONS = ["account", "appearance", "canvas", "agent", "browser", "integrations", "shortcuts"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
@@ -289,4 +312,4 @@ function decodeURIComponent_safe(s: string): string {
 
 /** Tabs a new main window opens: none. The window starts EMPTY (only the agent
  * panel); a canvas tab opens when the agent or the user asks for one. */
-export const INITIAL_TABS: readonly ("editor" | "browser" | "doc")[] = [];
+export const INITIAL_TABS: readonly ("editor" | "browser" | "doc" | "workflow")[] = [];

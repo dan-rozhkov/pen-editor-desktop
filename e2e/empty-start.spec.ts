@@ -47,11 +47,12 @@ test("agent layout opens with the panel only; the placeholder opens and returns 
     await expect(tabbar.locator(".tab")).toHaveCount(0);
     expect(app.windows().some((p) => p.url().startsWith(`${baseUrl}/app`))).toBe(false);
     await expect(empty.getByRole("heading", { level: 1 })).toHaveText("Where shall we start?");
-    await expect(empty.locator(".hint")).toHaveText("Canvas, browser and document tabs open here.");
+    await expect(empty.locator(".hint")).toHaveText("Canvas, browser, document and workflow tabs open here.");
     await expect(empty.locator("#new-canvas .cta-label")).toHaveText("New canvas tab");
     await expect(empty.locator("#new-browser .cta-label")).toHaveText("New browser tab");
     await expect(empty.locator("#new-doc .cta-label")).toHaveText("New document");
-    await expect(empty.locator(".card .title")).toHaveText(["Canvas", "Browser", "Document"]);
+    await expect(empty.locator("#new-workflow .cta-label")).toHaveText("New workflow");
+    await expect(empty.locator(".card .title")).toHaveText(["Canvas", "Browser", "Document", "Workflow"]);
     await expect(empty.getByRole("button", { name: "New canvas tab" })).toHaveAccessibleDescription(
       "Design screens with the agent on an open canvas.",
     );

@@ -1,5 +1,5 @@
 import type { BrowserPageHandle, BrowserTabInfo } from "@sideform/browser-agent/controller";
-import { docIdOfUrl, isDocPageOn, isValidSettingsSection, isValidTraceId, resolveDocTabUrl, resolveSettingsTabUrl, resolveTraceTabUrl, traceIdOfUrl } from "./config";
+import { docIdOfUrl, isDocPageOn, isValidSettingsSection, isValidTraceId, resolveDocTabUrl, resolveSettingsTabUrl, resolveTraceTabUrl, resolveWorkflowTabUrl, traceIdOfUrl, workflowIdOfUrl } from "./config";
 export type UITheme = "light" | "dark";
 
 /** How a tab becomes the active one. `focus: false` shows it without moving keyboard focus into it. */
@@ -41,9 +41,10 @@ export type McpStatus = "listening" | "not-published" | "off" | "error";
  * channels. "doc" is a markdown document tab (the frontend's `/doc`): the
  * same preload, default session and title/theme callbacks as "editor", but it
  * is NOT a canvas tab: never in the canvas link, the MCP active tab or
- * `lastEditorWebContentsId`.
+ * `lastEditorWebContentsId`. "workflow" is the same kind of tab for the frontend's
+ * `/workflow` page (localStorage only; no disk store here).
  */
-export type TabKind = "editor" | "browser" | "doc" | "trace" | "settings" | "passwords";
+export type TabKind = "editor" | "browser" | "doc" | "workflow" | "trace" | "settings" | "passwords";
 
 /** The navigation state a browser tab reports back into its TabState. */
 export interface BrowserNavState {
@@ -372,6 +373,8 @@ interface TabEntry {
   theme: UITheme | null;
   /** Doc tabs only: the document id the tab was opened with (`doc:open`). */
   docId?: string;
+  /** Workflow tabs only: the workflow id the tab was opened with (`workflow:open`). */
+  workflowId?: string;
   /** Trace tabs only: the trace id the tab was opened with (`traces:open`). */
   traceId?: string;
   url?: string;
@@ -449,7 +452,7 @@ export class TabManager {
    * That tab is shown without taking keyboard focus (`ActivationOptions`).
    * `opts.focus: false` makes a normally activated tab visible without taking keyboard focus (`doc:open`).
    */
-  newTab(kind: TabKind = "editor", session?: string, opts: { activate?: boolean; docId?: string; traceId?: string; section?: string; focus?: boolean } = {}): number {
+  newTab(kind: TabKind = "editor", session?: string, opts: { activate?: boolean; docId?: string; workflowId?: string; traceId?: string; section?: string; focus?: boolean } = {}): number {
     // A trace tab is always opened for one trace (`traces:open`): no id, no tab (and no view is created).
     if (kind === "trace" && !isValidTraceId(opts.traceId)) throw new Error("trace tab needs a valid trace id");
     const id = this.nextId++;
@@ -457,11 +460,12 @@ export class TabManager {
     const entry: TabEntry = {
       id,
       session: kind === "browser" ? session : undefined,
-      title: kind === "browser" ? "New Tab" : kind === "doc" ? "Document" : kind === "trace" ? "Trace" : kind === "settings" ? "Settings" : kind === "passwords" ? "Passwords" : "Untitled",
+      title: kind === "browser" ? "New Tab" : kind === "doc" ? "Document" : kind === "workflow" ? "Workflow" : kind === "trace" ? "Trace" : kind === "settings" ? "Settings" : kind === "passwords" ? "Passwords" : "Untitled",
       kind,
       view,
       theme: null,
       docId: kind === "doc" ? opts.docId : undefined,
+      workflowId: kind === "workflow" ? opts.workflowId : undefined,
       traceId: kind === "trace" ? opts.traceId : undefined,
       url: kind === "browser" ? "" : undefined,
       canGoBack: kind === "browser" ? false : undefined,
@@ -474,7 +478,7 @@ export class TabManager {
       // `this.tabs`: record it, and let the push that adds the tab carry it.
       if (this.tabs.includes(entry)) this.emit();
     });
-    if (kind === "editor" || kind === "doc" || kind === "trace" || kind === "settings") {
+    if (kind === "editor" || kind === "doc" || kind === "workflow" || kind === "trace" || kind === "settings") {
       view.onDocumentTitleChanged((title) => {
         entry.title = title;
         this.emit();
@@ -493,7 +497,9 @@ export class TabManager {
       const target =
         kind === "doc"
           ? resolveDocTabUrl(this.opts.editorUrl, opts.docId)
-          : kind === "trace"
+          : kind === "workflow"
+            ? resolveWorkflowTabUrl(this.opts.editorUrl, opts.workflowId)
+            : kind === "trace"
             ? resolveTraceTabUrl(this.opts.editorUrl, opts.traceId as string)
             : kind === "settings"
               ? resolveSettingsTabUrl(this.opts.editorUrl, opts.section)
@@ -769,6 +775,16 @@ export class TabManager {
     return null;
   }
 
+  /** The id of the open workflow tab showing `workflowId` (live URL wins, like `findDocTab`), or null. */
+  findWorkflowTab(workflowId: string): number | null {
+    for (const t of this.tabs) {
+      if (t.kind !== "workflow") continue;
+      const live = t.view.getURL();
+      if ((live ? workflowIdOfUrl(live) : t.workflowId) === workflowId) return t.id;
+    }
+    return null;
+  }
+
   /** The id of the open Settings tab (a singleton), or null. */
   findSettingsTab(): number | null {
     return this.tabs.find((t) => t.kind === "settings")?.id ?? null;
@@ -943,12 +959,12 @@ export class TabManager {
    * of which tab is active — is picked up by the very next snapshot.
    */
   private resolveActiveTheme(active: TabEntry | undefined): UITheme | null {
-    if (active?.kind === "editor" || active?.kind === "doc" || active?.kind === "trace" || active?.kind === "settings") return active.theme;
+    if (active?.kind === "editor" || active?.kind === "doc" || active?.kind === "workflow" || active?.kind === "trace" || active?.kind === "settings") return active.theme;
     const lastEditor = this.tabs.find(
       (t) => t.kind === "editor" && t.view.getWebContentsId() === this.lastEditorWebContentsId,
     );
     if (lastEditor?.theme) return lastEditor.theme;
-    const anyEditorWithTheme = this.tabs.find((t) => (t.kind === "editor" || t.kind === "doc" || t.kind === "trace" || t.kind === "settings") && t.theme !== null);
+    const anyEditorWithTheme = this.tabs.find((t) => (t.kind === "editor" || t.kind === "doc" || t.kind === "workflow" || t.kind === "trace" || t.kind === "settings") && t.theme !== null);
     return anyEditorWithTheme?.theme ?? null;
   }
 

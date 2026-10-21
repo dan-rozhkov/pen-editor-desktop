@@ -16,6 +16,8 @@ export interface MenuActions {
   newBrowserTab(): void;
   /** Opens a new document tab (the frontend's markdown editor at `/doc`). */
   newDocTab(): void;
+  /** Opens a new workflow tab (the frontend's workflow editor at `/workflow`). */
+  newWorkflowTab(): void;
   /** Opens (or activates) the Settings tab. */
   openSettings(): void;
   /** Opens (or focuses) the Passwords tab. A local action: it forwards no `menu:command` id. */
@@ -62,7 +64,7 @@ function mcpStatusLabel(status: McpStatus): string {
  * The accelerator is display-only; the application menu owns ⌘T.
  */
 export function buildNewTabMenuTemplate(
-  actions: Pick<MenuActions, "newTab" | "newBrowserTab" | "newDocTab">,
+  actions: Pick<MenuActions, "newTab" | "newBrowserTab" | "newDocTab" | "newWorkflowTab">,
 ): MenuItemConstructorOptions[] {
   return [
     {
@@ -73,6 +75,7 @@ export function buildNewTabMenuTemplate(
     },
     { label: "New Browser Tab", click: () => actions.newBrowserTab() },
     { label: "New Document", click: () => actions.newDocTab() },
+    { label: "New Workflow", click: () => actions.newWorkflowTab() },
   ];
 }
 
@@ -101,6 +104,7 @@ export function buildMenuTemplate(
       { label: "New Canvas Tab", accelerator: "CmdOrCtrl+T", click: () => actions.newTab() },
       { label: "New Browser Tab", click: () => actions.newBrowserTab() },
       { label: "New Document Tab", accelerator: "CmdOrCtrl+Shift+D", click: () => actions.newDocTab() },
+      { label: "New Workflow Tab", click: () => actions.newWorkflowTab() },
       { label: "Passwords…", click: () => actions.openPasswords() },
       // On macOS Settings… lives in the app menu (below), as in every mac app.
       ...(opts.isMac ? [] : [settingsItem]),

@@ -57,6 +57,7 @@ import { FixtureOwners } from "./fixtureOwners";
 import { isBrowserOwner as isBrowserOwnerId, isOrphaningEvent } from "./orphanRelease";
 import { CanvasLinkRouter } from "./canvasLink";
 import { openDocTab } from "./docOpen";
+import { openWorkflowTab } from "./workflowOpen";
 import { addLoginCopy } from "./loginsIpc";
 import { handleDocDelete, handleDocList, handleDocSave, type DocIpcDeps } from "./docIpc";
 import { createDocStore, docDirFor, nodeDocFs, type DocStore } from "./docStore";
@@ -327,7 +328,7 @@ export function createMainWindow(
   // True while `rememberedEditorTheme` came from the agent panel page, not from an editor tab (an editor's own report always wins).
   let rememberedFromPanel = false;
   // Doc, trace and Settings tabs report the editor theme like canvas tabs do (same preload), so they count here.
-  const editorTabCount = (s: TabsSnapshot) => s.tabs.filter((t) => t.kind === "editor" || t.kind === "doc" || t.kind === "trace" || t.kind === "settings").length;
+  const editorTabCount = (s: TabsSnapshot) => s.tabs.filter((t) => t.kind === "editor" || t.kind === "doc" || t.kind === "workflow" || t.kind === "trace" || t.kind === "settings").length;
   let lastResolvedForTint: UITheme = FALLBACK_THEME;
   const emptyView = new WebContentsView({
     webPreferences: secureWebPreferences(path.join(__dirname, "../preload/empty.js")),
@@ -1047,7 +1048,7 @@ export function createMainWindow(
         });
       }
 
-      if (kind === "doc" || kind === "trace" || kind === "settings") {
+      if (kind === "doc" || kind === "workflow" || kind === "trace" || kind === "settings") {
         // A trace tab is the same kind of plain frontend page (`/trace/<id>`) as a document tab;
         // so is the Settings tab (`/settings`, default session: its localStorage is the editor's).
         // A document tab is a plain frontend page (`/doc`): same origin clamp and offline
@@ -1057,7 +1058,7 @@ export function createMainWindow(
         attachNavigationPolicy(view.webContents, editorOrigin, (url) => void shell.openExternal(url));
         attachOfflineFallback(view.webContents, offlineFile);
         view.webContents.on("page-title-updated", (_e, title) => {
-          titleCallbacks.get(viewId)?.(title.trim().slice(0, 200) || (kind === "trace" ? "Trace" : kind === "settings" ? "Settings" : "Document"));
+          titleCallbacks.get(viewId)?.(title.trim().slice(0, 200) || (kind === "trace" ? "Trace" : kind === "settings" ? "Settings" : kind === "workflow" ? "Workflow" : "Document"));
         });
       }
 
@@ -2267,6 +2268,20 @@ export function createMainWindow(
     ),
   );
 
+  // Workflows (the frontend's `/workflow`): the agent panel asks to open one; logic in workflowOpen.ts.
+  ipcMain.handle("workflow:open", (event, workflowId: unknown) =>
+    openWorkflowTab(
+      {
+        isPanel: (id) => panelWc()?.id === id,
+        findWorkflowTab: (id) => tabs.findWorkflowTab(id),
+        activate: (tabId, opts) => tabs.activate(tabId, opts),
+        newWorkflowTab: (id, opts) => tabs.newTab("workflow", undefined, { workflowId: id, focus: opts.focus }),
+      },
+      event.sender.id,
+      workflowId,
+    ),
+  );
+
   // Settings: the agent panel or any frontend tab asks for the Settings tab (singleton); logic in settingsOpen.ts.
   ipcMain.handle("settings:open", (event, section?: unknown) =>
     openSettings(
@@ -2384,6 +2399,7 @@ export function createMainWindow(
   const fromTabbarOrEmpty = (event: Electron.IpcMainEvent) => isTabCreationSender(event.sender.id, tabbarId, emptyId);
   const onTabbarNew = (e: Electron.IpcMainEvent) => fromTabbarOrEmpty(e) && tabs.newTab("editor");
   const onTabbarNewDoc = (e: Electron.IpcMainEvent) => fromTabbarOrEmpty(e) && tabs.newTab("doc");
+  const onTabbarNewWorkflow = (e: Electron.IpcMainEvent) => fromTabbarOrEmpty(e) && tabs.newTab("workflow");
   // Second-pass review finding 3: a user-driven "New Browser Tab" pins the
   // agent to it, the same as any other explicit user action that lands on a
   // browser tab (activate()'s tab-strip click, nextTab/prevTab's cycle) —
@@ -2405,6 +2421,7 @@ export function createMainWindow(
         newTab: () => tabs.newTab("editor"),
         newBrowserTab: newUserBrowserTab,
         newDocTab: () => void tabs.newTab("doc"),
+        newWorkflowTab: () => void tabs.newTab("workflow"),
       }),
     ).popup({ window: win, ...at });
   };
@@ -2526,6 +2543,7 @@ export function createMainWindow(
   ipcMain.on("tabbar:new", onTabbarNew);
   ipcMain.on("tabbar:new-browser", onTabbarNewBrowser);
   ipcMain.on("tabbar:new-doc", onTabbarNewDoc);
+  ipcMain.on("tabbar:new-workflow", onTabbarNewWorkflow);
   ipcMain.on("tabbar:new-menu", onTabbarNewMenu);
   ipcMain.on("tabbar:tools-menu", onTabbarToolsMenu);
   ipcMain.on("tabbar:activate", onTabbarActivate);
@@ -2554,6 +2572,7 @@ export function createMainWindow(
     ipcMain.removeListener("tabbar:new", onTabbarNew);
     ipcMain.removeListener("tabbar:new-browser", onTabbarNewBrowser);
     ipcMain.removeListener("tabbar:new-doc", onTabbarNewDoc);
+    ipcMain.removeListener("tabbar:new-workflow", onTabbarNewWorkflow);
     ipcMain.removeListener("tabbar:new-menu", onTabbarNewMenu);
     ipcMain.removeListener("tabbar:tools-menu", onTabbarToolsMenu);
     ipcMain.removeListener("tabbar:activate", onTabbarActivate);
@@ -2580,6 +2599,7 @@ export function createMainWindow(
     ipcMain.removeHandler("canvas:list");
     ipcMain.removeHandler("canvas:open");
     ipcMain.removeHandler("doc:open");
+    ipcMain.removeHandler("workflow:open");
     ipcMain.removeHandler("docs:list");
     ipcMain.removeHandler("docs:save");
     ipcMain.removeHandler("docs:delete");
@@ -2614,6 +2634,7 @@ export function createMainWindow(
         newTab: () => tabs.newTab("editor"),
         newBrowserTab: newUserBrowserTab,
         newDocTab: () => void tabs.newTab("doc"),
+        newWorkflowTab: () => void tabs.newTab("workflow"),
         openSettings: () => void tabs.openSettingsTab(undefined, { focus: true }),
         openPasswords: () => void tabs.openPasswordsTab({ focus: true }),
         signIn: () => desktopAuth.beginSignIn(),

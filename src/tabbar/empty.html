@@ -13,7 +13,7 @@
     <main class="empty" id="empty-state">
       <header class="intro">
         <h1 class="headline">Where shall we start?</h1>
-        <p class="hint">Canvas, browser and document tabs open here.</p>
+        <p class="hint">Canvas, browser, document and workflow tabs open here.</p>
       </header>
       <p class="note" id="sessions-note" hidden>Background browser sessions are running.</p>
       <div class="cards">
@@ -55,6 +55,22 @@
             <span class="title">Document</span>
             <span class="desc" id="doc-desc">Write notes, briefs and specs in Markdown.</span>
             <span class="cta"><span class="cta-label" id="doc-cta">New document</span></span>
+          </span>
+        </button>
+        <button id="new-workflow" class="card" aria-labelledby="workflow-cta" aria-describedby="workflow-desc">
+          <span class="preview" aria-hidden="true">
+            <span class="sheet sheet-back"></span>
+            <span class="sheet">
+              <span class="heading"></span>
+              <span class="check"><span class="box"></span><span class="line"></span></span>
+              <span class="check"><span class="box"></span><span class="line"></span></span>
+              <span class="check"><span class="box"></span><span class="line short"></span></span>
+            </span>
+          </span>
+          <span class="body">
+            <span class="title">Workflow</span>
+            <span class="desc" id="workflow-desc">Lay out a task as a list of steps.</span>
+            <span class="cta"><span class="cta-label" id="workflow-cta">New workflow</span></span>
           </span>
         </button>
       </div>

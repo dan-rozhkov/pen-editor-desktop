@@ -27,6 +27,7 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "tabbar:new", direction: "renderer->main" },
   { name: "tabbar:new-browser", direction: "renderer->main" },
   { name: "tabbar:new-doc", direction: "renderer->main" },
+  { name: "tabbar:new-workflow", direction: "renderer->main" },
   { name: "tabbar:new-menu", direction: "renderer->main" },
   { name: "tabbar:tools-menu", direction: "renderer->main" },
   { name: "tabbar:activate", direction: "renderer->main" },
@@ -55,6 +56,8 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "canvas:open", direction: "renderer->main" },
   // Documents: the panel or a trace tab asks main to open/focus a markdown doc tab (`/doc`).
   { name: "doc:open", direction: "renderer->main" },
+  // Workflows: the panel asks main to open/focus a workflow tab (`/workflow`).
+  { name: "workflow:open", direction: "renderer->main" },
   // Settings tab: the panel or any frontend tab asks main to open/activate it, optionally at a section.
   { name: "settings:open", direction: "renderer->main" },
   // Main tells an already-open Settings page to switch section (no reload).

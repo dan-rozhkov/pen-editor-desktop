@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, isDocPageUrl, isDocPageOn, resolveTraceTabUrl, resolveSettingsTabUrl, isValidSettingsSection, SETTINGS_SECTIONS, isValidTraceId, traceIdOfUrl, INITIAL_TABS } from "../src/main/config";
+import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, isDocPageUrl, isDocPageOn, resolveWorkflowTabUrl, isValidWorkflowId, workflowIdOfUrl, resolveTraceTabUrl, resolveSettingsTabUrl, isValidSettingsSection, SETTINGS_SECTIONS, isValidTraceId, traceIdOfUrl, INITIAL_TABS } from "../src/main/config";
 
 describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
@@ -139,6 +139,30 @@ describe("resolveDocTabUrl", () => {
     expect(resolveDocTabUrl("https://h/app/")).toBe("https://h/doc?new=1&chat=off");
     expect(resolveDocTabUrl("https://h/pen/x")).toBe("https://h/pen/doc?new=1&chat=off");
     expect(resolveDocTabUrl("https://h/")).toBe("https://h/doc?new=1&chat=off");
+  });
+});
+
+describe("resolveWorkflowTabUrl", () => {
+  it("swaps /app for /workflow with new=1 or id, then chat=off", () => {
+    expect(resolveWorkflowTabUrl(DEFAULT_EDITOR_URL)).toBe("https://app.sideform.pro/workflow?new=1&chat=off");
+    expect(resolveWorkflowTabUrl("http://localhost:5173/app", "wf_0123456789ab")).toBe("http://localhost:5173/workflow?id=wf_0123456789ab&chat=off");
+  });
+  it("keeps prefix and other params, drops hash, replaces id/new/chat", () => {
+    expect(resolveWorkflowTabUrl("https://h/pen/app?q=1&id=old&new=1&chat=on#x", "wf_a")).toBe("https://h/pen/workflow?q=1&id=wf_a&chat=off");
+    expect(resolveWorkflowTabUrl("https://h/app/")).toBe("https://h/workflow?new=1&chat=off");
+  });
+});
+
+describe("workflow id and page helpers", () => {
+  it("isValidWorkflowId accepts wf_ + 1-64 alphanumerics only", () => {
+    expect(isValidWorkflowId("wf_0123456789ab")).toBe(true);
+    expect(isValidWorkflowId("wf_" + "a".repeat(64))).toBe(true);
+    for (const bad of ["", "wf_", "abc", "wf_a-b", "wf_a b", "wf_../x", "wf_" + "a".repeat(65), 5, null, undefined, {}]) expect(isValidWorkflowId(bad)).toBe(false);
+  });
+  it("workflowIdOfUrl", () => {
+    expect(workflowIdOfUrl("https://h/workflow?id=wf_a&chat=off")).toBe("wf_a");
+    expect(workflowIdOfUrl("https://h/workflow?new=1")).toBeNull();
+    expect(workflowIdOfUrl("nope")).toBeNull();
   });
 });
 

@@ -145,6 +145,11 @@ const docs = {
   remove: (id: string): Promise<{ ok: true } | { error: string }> => ipcRenderer.invoke("docs:delete", id),
 };
 
+// Workflows (tabs at `/workflow`; stored in the frontend's localStorage only): ask main to open or focus one. Main checks the sender.
+const workflows = {
+  open: (workflowId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("workflow:open", workflowId),
+};
+
 // Browse-run traces: store a finished trace locally, open its viewer tab. Main checks the sender.
 const traces = {
   save: (payload: { manifest: unknown; assets: { path: string; dataUrl: string }[] }): Promise<{ id: string } | { error: string }> =>
@@ -187,7 +192,7 @@ const settings = {
   open: (section?: string): Promise<{ ok: boolean }> => ipcRenderer.invoke("settings:open", section),
 };
 
-contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser, docs, traces, auth, settings });
+contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser, docs, workflows, traces, auth, settings });
 
 // Theme report for main (channel `panel:theme`): the page paints the stored editor theme as the
 // class `dark` on <html>. Initial read on DOMContentLoaded, then a MutationObserver on that class.
