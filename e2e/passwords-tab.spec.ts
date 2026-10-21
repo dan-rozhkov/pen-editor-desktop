@@ -55,7 +55,7 @@ test.beforeAll(async () => {
       never: ["ads.example.net"],
     }),
   );
-  // One cached site icon (an SVG, shown through <img>), so both tile variants are visible.
+  // One cached site icon (an SVG, shown through <img>), so the list row shows it.
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#24292f"/><circle cx="16" cy="16" r="6" fill="#ffffff"/></svg>`;
   writeFileSync(
     path.join(userData, "browser-favicons.json"),
@@ -137,8 +137,8 @@ test("passwords tab: add, list, detail, search, edit, delete; light and dark", a
     await expect(pw.locator(".row[aria-selected=true]")).toHaveAttribute("aria-label", "news.ycombinator.com, pg, reader");
     await expect(pw.locator(".row .chip, .row .row-sub")).toHaveCount(0);
     await expect(pw.locator(".hero-title")).toHaveText("news.ycombinator.com");
-    await expect(pw.locator(".hero-sub")).toHaveText("reader");
-    await expect(pw.locator(".field-label")).toHaveText(["Username", "Website", "Last used"]);
+    await expect(pw.locator(".field-label")).toHaveText(["Username", "Website", "Label", "Last used"]);
+    await expect(pw.locator(".field").filter({ has: pw.locator(".field-label", { hasText: /^Label$/ }) }).locator(".field-value")).toHaveText("reader");
     await expect(pw.locator(".field-value", { hasText: "https://news.ycombinator.com" })).toBeVisible();
     // The password never shows up in the page.
     expect(await pw.content()).not.toContain("e2e-Secret-Password-1");
@@ -202,7 +202,7 @@ test("passwords tab: add, list, detail, search, edit, delete; light and dark", a
     await expect(pw.locator('input[aria-label="Website"]')).toBeDisabled();
     await pw.fill('input[aria-label="Label"]', "design");
     await pw.click("button[type=submit]");
-    await expect(pw.locator(".hero-sub")).toHaveText("design");
+    await expect(pw.locator(".field").filter({ has: pw.locator(".field-label", { hasText: /^Label$/ }) }).locator(".field-value")).toHaveText("design");
 
     // Delete asks for confirmation inline; Esc backs out, the second try deletes.
     await pw.click("text=Delete");

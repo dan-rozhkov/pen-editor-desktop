@@ -1,7 +1,7 @@
 // Plain script (no import/export): it runs from a CSP'd <script src>, like
 // src/tabbar/renderer.ts. Wrapped in a function so its names do not collide
 // with the other scripts' globals when they are compiled in one program.
-// Pure helpers (tile colour, search, dates) live in helpers.ts, loaded first.
+// Pure helpers (host names, search, dates) live in helpers.ts, loaded first.
 // Text goes in through textContent only. No password ever reaches this file:
 // the list has origin, username, label and the last-used time; a password only
 // travels the other way, from a form input to main, and is cleared with the form.
@@ -101,11 +101,11 @@
   // Site icon: the cached favicon through <img> (never inlined, even an SVG;
   // accepted only as an allowed image data: URL, which main checks too and the
   // CSP allows), else the Phosphor globe: "fill" weight on the selected row
-  // like SettingsNav's active item, regular otherwise. Used by rows and the hero tile.
-  function siteIcon(iconUrl?: string, imgClass = "row-icon", filled = false): Element {
+  // like SettingsNav's active item, regular otherwise. Used by the list rows.
+  function siteIcon(iconUrl?: string, filled = false): Element {
     const globe = () => icon(filled ? "i-globe-fill" : "i-globe");
     if (iconUrl && helpers.isIconDataUrl(iconUrl)) {
-      const img = el("img", imgClass);
+      const img = el("img", "row-icon");
       img.alt = "";
       img.draggable = false;
       img.addEventListener("error", () => img.replaceWith(globe()), { once: true });
@@ -113,14 +113,6 @@
       return img;
     }
     return globe();
-  }
-
-  // Large neutral tile for the detail hero.
-  function tile(iconUrl?: string): HTMLElement {
-    const t = el("div", "tile tile-lg");
-    t.setAttribute("aria-hidden", "true");
-    t.appendChild(siteIcon(iconUrl, "tile-img"));
-    return t;
   }
 
   // ---- derived state ----
@@ -160,7 +152,7 @@
     row.setAttribute("aria-selected", String(selected));
     row.dataset.id = e.id;
     row.setAttribute("aria-label", [host, e.username, e.label].filter(Boolean).join(", "));
-    row.append(siteIcon(e.icon, "row-icon", selected), el("span", "row-title", host));
+    row.append(siteIcon(e.icon, selected), el("span", "row-title", host));
     // Same site name on two or more logins: show a suffix so they differ.
     if (suffix) row.appendChild(el("span", "row-sub", "· " + suffix));
     row.addEventListener("click", () => guardNav(() => selectEntry(e.id)));
@@ -206,7 +198,9 @@
 
   function field(label: string, value: string): HTMLElement {
     const f = el("div", "field");
-    f.append(el("span", "field-label", label), el("span", "field-value", value));
+    const v = el("span", "field-value", value);
+    v.title = value; // the value is cut with an ellipsis when long
+    f.append(el("span", "field-label", label), v);
     return f;
   }
 
@@ -258,17 +252,15 @@
       );
     }
 
-    const heroText = el("div", "hero-text");
-    heroText.appendChild(el("h1", "hero-title", host));
-    if (entry.label) heroText.appendChild(el("p", "hero-sub", entry.label));
     const hero = el("div", "hero");
-    hero.append(tile(entry.icon), heroText, actions);
+    hero.append(el("h1", "hero-title", host), actions);
 
     const body = el("div", "detail-body");
     body.append(
       hero,
       field("Username", entry.username),
       field("Website", entry.origin),
+      ...(entry.label ? [field("Label", entry.label)] : []),
       field("Last used", helpers.formatLastUsed(entry.lastUsedAt, Date.now())),
     );
     detailEl.replaceChildren(body);
@@ -297,13 +289,6 @@
     pendingNav = null;
     const token = ++formTokenSeq;
     activeFormToken = token;
-    const hero = el("div", "hero");
-    const glyph = el("div", "tile tile-lg tile-plain");
-    glyph.appendChild(icon("i-key"));
-    const heroText = el("div", "hero-text");
-    heroText.appendChild(el("h1", "hero-title", adding ? "New login" : "Edit login"));
-    if (!adding) heroText.appendChild(el("p", "hero-sub", helpers.displayHost(existing.origin)));
-    hero.append(glyph, heroText);
 
     const form = el("form", "detail-body form");
     form.autocomplete = "off";
@@ -364,8 +349,11 @@
         ? site.input.value !== "" || username.input.value !== "" || password.input.value !== "" || label.input.value !== ""
         : username.input.value !== existing.username || label.input.value !== existing.label || password.input.value !== "";
     const cancel = button("Cancel", "btn btn-outline", cancelForm);
+    // Save and Cancel stay under the fields, next to the warning and error they cause, and last in tab order.
     const row = el("div", "form-actions");
-    row.append(save, cancel);
+    row.append(cancel, save);
+    const hero = el("div", "hero");
+    hero.appendChild(el("h1", "hero-title", adding ? "New login" : "Edit login"));
 
     form.append(hero, site.wrap, username.wrap, password.wrap, label.wrap, warning, error, row);
     form.addEventListener("submit", (event) => {

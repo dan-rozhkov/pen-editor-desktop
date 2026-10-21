@@ -1046,7 +1046,7 @@ changes; merge order there: backend, frontend, then this repo).
   failed, the feature is off for that tab. `e2e/saved-logins.spec.ts` drives
   it end to end with the native dialog stubbed.
 - **Passwords tab** — `TabKind` `"passwords"`, a SINGLETON per window opened by File ▸ Passwords… (a local action: it forwards no `menu:command` id, so pen-editor's pinned id list is unchanged; `TabManager.openPasswordsTab({focus:true})`, like the Settings tab). The tab loads the LOCAL page `dist/passwords/passwords.html` (`loadFile` in `window.ts` `createView`; `TabManager` never calls `loadURL` for it) with `preload/passwords.js` only (NOT `preload/tab.ts`, never the frontend URL), `contextIsolation`/`sandbox`, `attachLocalOnlyPolicy`. Title fixed "Passwords", tab icon Phosphor "Key" (light weight, like every tab icon), no address row. It is not a page tab (`isPageTab` is false: `settings:open` refuses it), not a canvas tab, not an editor theme source (`editorTabCount`, `resolveActiveTheme` ignore it; it shows the window's resolved theme), and gets no MCP, browser or auth wiring. Tabs are not persisted, so there is no restore path. Service `src/main/passwordsService.ts` (pure, Electron ports injected, `test/passwordsService.test.ts`), `src/passwords/` (plain-script renderer like the tab bar; CSP `default-src 'none'`), `src/preload/passwords.ts`,
-  request handling in `browser/passwordsApi.ts`. Site tiles are neutral (a
+  request handling in `browser/passwordsApi.ts`. Site icons are neutral (a
   globe, or the site's icon through `<img>`; CSP adds `img-src data:` only).
   Icons never come from the Passwords tab: `window.ts` listens to
   `page-favicon-updated` on browser tabs and `browser/faviconCache.ts` (pure,
@@ -1061,7 +1061,7 @@ changes; merge order there: backend, frontend, then this repo).
   an icon seen before the login was saved is fetched in the background on the
   next `list`, and every stored icon (that one or one from
   `page-favicon-updated` while the tab is open) sends `passwords:changed`,
-  so the tiles update without a manual refresh. The data-URL pattern for icons
+  so the row icons update without a manual refresh. The data-URL pattern for icons
   is a single copy, `isIconDataUrl` in `src/passwords/helpers.ts` (main
   `require`s it; the renderer, a plain script, uses it as a global).
   `passwords:add` answers `{ ok:false, exists:true, id }` when a login for the

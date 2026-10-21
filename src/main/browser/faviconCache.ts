@@ -97,7 +97,7 @@ export interface FaviconCacheDeps {
   fetchIcon: (url: string) => Promise<FetchedIcon | null>;
   /** True when a login is saved for this origin. */
   isWanted: (origin: string) => boolean;
-  /** Called after an icon was stored or replaced (the Passwords window refreshes its tiles). */
+  /** Called after an icon was stored or replaced (the Passwords window refreshes its row icons). */
   onChange?: () => void;
   /** Clock for the retry backoff; defaults to Date.now. */
   now?: () => number;

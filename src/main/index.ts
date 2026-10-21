@@ -169,7 +169,7 @@ const faviconCache = createFaviconCache({
   fs: nodeCredentialFs,
   fetchIcon: createIconFetcher((url, init) => session.fromPartition("persist:penbrowser").fetch(url, init)),
   isWanted: (origin) => credentialStore.list().some((e) => e.origin === origin),
-  // A new icon arrived: an open Passwords tab refreshes its tiles.
+  // A new icon arrived: an open Passwords tab refreshes its row icons.
   onChange: () => loginServices.passwords.notifyChanged(),
 });
 const loginServices = {
