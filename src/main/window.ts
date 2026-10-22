@@ -1,4 +1,5 @@
 import { shouldForwardMenuCommand } from "./menuTarget";
+import { captureWithRetry } from "./captureRetry";
 import { normalizePageColor, PAGE_BG_FALLBACK, SAMPLE_PAGE_BG_SCRIPT } from "./pageBackground";
 import path from "node:path";
 import { writeFile } from "node:fs/promises";
@@ -1441,6 +1442,7 @@ export function createMainWindow(
           return await withFrameTimeout(frame.executeJavaScript(code), timeoutMs);
         },
         isLoading: () => view.webContents.isLoading(),
+        isLoadingMainFrame: () => view.webContents.isLoadingMainFrame(),
         // View#getVisible() — "whether the view should be drawn", per
         // Electron's own doc comment for it (electron.d.ts) — is a real,
         // shipped API on the WebContentsView/View base class in this repo's
@@ -1469,7 +1471,15 @@ export function createMainWindow(
             // A never-shown view (an isolated-session tab) captures fine on
             // macOS; on Linux it returns an empty image (stayHidden does not
             // help), which the controller reports as an { error }.
-            const image = await view.webContents.capturePage();
+            // An empty image usually means no frame was painted yet (a Linux
+            // never-shown view may paint late): ask for one and retry once.
+            const image = await captureWithRetry(
+              () => view.webContents.capturePage(),
+              () => {
+                view.webContents.invalidate();
+                return new Promise<void>((r) => setTimeout(r, 150));
+              },
+            );
             if (image.isEmpty()) return null;
             const size = image.getSize();
             const SCREENSHOT_MAX_WIDTH = 1280;
@@ -2072,12 +2082,27 @@ export function createMainWindow(
         case "capture":
           return await controller.capture(payload.args);
         case "fillLogin": {
-          // The model gets only { ok, origin, label, filled, submitted, sessionEstablished?, note? } or a
+          // The model gets only { ok, origin, label, filled, submitted, url?, retried?, sessionEstablished?, note?, stillOnSignInPage? } or a
           // fixed error — never a password, a username or controller text.
           return await fillLogin(payload.args, {
             controller,
             store: loginServices.credentialStore,
-            getUrl: () => tabs.browserHandle(sessionId)?.getURL() ?? null,
+            // A destroyed webContents throws: null / false, so fillLogin keeps to its fixed results.
+            getUrl: () => {
+              try {
+                return tabs.browserHandle(sessionId)?.getURL() ?? null;
+              } catch {
+                return null;
+              }
+            },
+            isLoading: () => {
+              try {
+                const h = tabs.browserHandle(sessionId);
+                return (h?.isLoadingMainFrame ? h.isLoadingMainFrame() : h?.isLoading()) ?? false;
+              } catch {
+                return false;
+              }
+            },
           });
         }
         case "applyFixture": {

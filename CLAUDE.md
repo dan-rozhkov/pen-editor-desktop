@@ -1005,8 +1005,33 @@ changes; merge order there: backend, frontend, then this repo).
   prevented from this layer: the keystrokes of that one call go to whatever
   page is focused then. The re-checks shrink the window to one call; closing
   it needs a check inside the controller, between the animation and the
-  insert. The result is ONLY `{ ok, origin, label, filled, submitted }` or `{ ok:false, error }`
+  insert. The result is ONLY `{ ok, origin, label, filled, submitted, url?, retried?,
+  sessionEstablished?, note?, stillOnSignInPage? }` or `{ ok:false, error }`
   with fixed messages; controller results/errors are never passed through.
+  There is no wait before the first snapshot. After typing, a second snapshot
+  checks that the fields still hold text (a field the app cleared on late
+  hydration is typed again once; if the re-read fails or a picked field is
+  missing, one fresh snapshot is taken, and if that fails too Enter is NOT
+  pressed: `ok`, `submitted:false`). After Enter the page is watched for 3 s;
+  a fallback click on the submit button follows only if nothing changed.
+  At most TWO submits per call: the first (Enter, maybe the click) and ONE
+  retry (retype BOTH fields + Enter only, `retried:true`). The retry runs when
+  the form had a password field, the pre-submit ids were confirmed, and the
+  watch saw NO reaction: no URL change, no pending load (`isLoading` dep), the
+  same form fingerprint at every poll (snapshot elements' tag/label/role/
+  disabled/ops plus the snapshot's visible `text`; values, focus and `hasValue`
+  are excluded, so a disabled or relabelled button, a new element or a new
+  error text counts as a reaction; the act's own `changed` flag does not, it also
+  fires for focus moves), the page stayed readable. A cleared password with an unchanged fingerprint is a hydration
+  reset, not a reaction. Accepted risks: a wrong password can be submitted twice
+  per call, and an XHR response that changes nothing visible within the window
+  can cause a second submit; an error message the snapshot text cannot see (shadow
+  DOM, out of the viewport, past 6000 chars) is not detected as a reaction. A
+  password field that appears after typing (identifier-first form) is typed once
+  before Enter; a form whose password was not typed is never retried. Navigation
+  and success compare origin + path only (a query or hash change is neither). `url` is origin + path only, with the
+  saved username (and an email's local part of 3+ chars) redacted to "…"
+  from the path AND the host labels; common names are over-redacted on purpose.
 - **Save prompt** — `src/main/browser/loginCapture.ts`. On each main-frame
   `Page.frameNavigated` of a browser tab's existing CDP session, main creates
   an isolated world (`Page.createIsolatedWorld`, name `penLoginCapture`), adds

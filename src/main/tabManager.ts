@@ -119,6 +119,8 @@ export interface TabViewHandle {
    * merely for `getURL()` to change at navigation commit.
    */
   isLoading(): boolean;
+  /** Main frame only (`webContents.isLoadingMainFrame()`): subframe and ad loads do not count. fillLogin uses it. */
+  isLoadingMainFrame?(): boolean;
   /**
    * Resolves once this navigation's DOM is ready (`webContents`'s
    * `dom-ready` event) — the new document exists and its script/DOM APIs

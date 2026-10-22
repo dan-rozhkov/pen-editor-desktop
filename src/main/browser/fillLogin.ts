@@ -6,13 +6,19 @@ import { normalizeOrigin, type CredentialStore } from "./credentialStore";
  * docs/superpowers/specs/2026-10-16-browser-saved-logins-design.md).
  *
  * The model asks "fill the login here" and gets back only
- * `{ ok, origin, label, filled, submitted, sessionEstablished?, note? }` or `{ ok: false, error }`. Two
+ * `{ ok, origin, label, filled, submitted, url?, retried?, sessionEstablished?, note?, stillOnSignInPage? }` or `{ ok: false, error }`. Two
  * rules hold everywhere in this file:
  *  - The username and the password go into exactly one place: the `text` of a
  *    controller `perform` call. They are never put in a result, an error or a
  *    log line.
  *  - Nothing the controller returns is passed through (its results can carry
  *    page text and `changes`). Every error here is a fixed message.
+ *
+ * A submit is attempted at most twice per call: Enter (plus a fallback click when Enter did
+ * nothing), then ONE retry (retype both fields, Enter) if the page showed no sign that the app
+ * reacted (no navigation, no pending load, same form fingerprint). Accepted risk: a wrong
+ * password can be submitted twice per call, and an error message the snapshot text cannot see
+ * (shadow DOM, out of the viewport, past 6000 characters) is not detected as a reaction.
  *
  * Pure and Electron-free: the controller, the store and the current-URL reader
  * are injected.
@@ -29,6 +35,11 @@ export interface FillLoginDeps {
   store: Pick<CredentialStore, "findForOrigin" | "markUsed">;
   /** URL of the agent's current browser tab, or null when there is none. */
   getUrl(): string | null;
+  /**
+   * True while the agent tab is mid-navigation (`webContents.isLoadingMainFrame()`: subframe and ad loads do not count). A pending
+   * navigation counts as an effect of the submit: no fallback click, no retry.
+   */
+  isLoading?(): boolean;
   /** Test seam: waits between submit checks. Default is a real timer. */
   sleep?(ms: number): Promise<void>;
 }
@@ -46,10 +57,19 @@ export type FillLoginResult =
       label: string;
       filled: ("username" | "password")[];
       submitted: boolean;
+      /**
+       * The tab's URL at the end: origin + pathname ONLY (a native GET submit can put the password in the query),
+       * the username redacted from the path ("…"). Omitted when the tab is not on an http(s) page.
+       */
+      url?: string;
       /** Only when a submit was attempted: the URL changed or the password field is gone. */
       sessionEstablished?: boolean;
       /** Only when `sessionEstablished` is false. Fixed text. */
       note?: string;
+      /** Only when a submit was attempted and the final page could be read: the sign-in fields are still there and the URL did not change. */
+      stillOnSignInPage?: boolean;
+      /** Only when a submit was attempted: the type + Enter cycle ran a second time. */
+      retried?: boolean;
     }
   | { ok: false; error: string };
 
@@ -76,6 +96,8 @@ export interface SnapshotElement {
   hasValue: boolean | undefined;
   disabled: boolean;
   frame: boolean;
+  /** Whether the field holds any text now (`value` non-empty, else `hasValue`); undefined when the snapshot does not say. Never the text itself. */
+  holdsText?: boolean | undefined;
   /** Carries a select's `options`, an `expanded` flag or a `checked` state: not a plain text field. */
   widget: boolean;
 }
@@ -126,6 +148,8 @@ function readElements(snapshot: Record<string, unknown>): SnapshotElement[] | nu
       isPassword: e.isPassword === true,
       hasValue: typeof e.hasValue === "boolean" ? e.hasValue : undefined,
       disabled: e.disabled === true,
+      holdsText:
+        typeof e.value === "string" ? e.value !== "" : typeof e.hasValue === "boolean" ? e.hasValue : undefined,
       // Any value means the element lives in a child iframe: never touched.
       frame: e.frame !== undefined && e.frame !== null && e.frame !== false,
       widget: e.options !== undefined || e.expanded !== undefined || e.checked !== undefined || e.inputType !== undefined,
@@ -187,6 +211,8 @@ export const SESSION_NOT_ESTABLISHED_NOTE =
   "The form was submitted but the page still shows the login form. The session is not established. Take a snapshot; check for an error message or a captcha before you continue.";
 
 const SETTLE_MS = 3000;
+/** Wait between typing and the check that the fields still hold their text. */
+const AFTER_TYPE_SETTLE_MS = 300;
 const POLL_MS = 250;
 const SUBMIT_LABEL = /sign\s*in|log\s*in|login|submit|continue|войти|вход|продолжить|далее|отправить/i;
 const NOT_SUBMIT_LABEL =
@@ -216,14 +242,128 @@ export function pickSubmitButton(elements: SnapshotElement[]): number | null {
   return (after ?? candidates[0]).index;
 }
 
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * What must not appear in the reported path or host: the username, and for an email its local part
+ * and the full address. A local part under 3 characters is NOT redacted (it would shred ordinary
+ * paths); the full username always is, so a very short username without "@" can garble the host.
+ * Over-redaction of a common username (e.g. "admin" in a path) is accepted: safety over usefulness.
+ */
+function redactionNeedles(username: string): string[] {
+  const out = new Set<string>();
+  const u = username.trim();
+  if (u !== "") out.add(u);
+  const at = u.lastIndexOf("@");
+  if (at > 0) {
+    const local = u.slice(0, at);
+    if (local.length >= 3) out.add(local);
+  }
+  return [...out].sort((a, b) => b.length - a.length);
+}
+
+const REDACTED = "\u2026";
+
+/** Case-insensitive replace of every needle in `text`, longest first. */
+function redactText(text: string, needles: string[]): string {
+  if (needles.length === 0) return text;
+  const re = new RegExp(needles.map(escapeRegExp).join("|"), "gi");
+  return text.replace(re, REDACTED);
+}
+
+/**
+ * origin + pathname only (query and hash can carry a password after a native GET
+ * submit), with the saved username redacted from the path (a post-login path can
+ * be /u/<name>/dashboard) and from the host labels (a tenant host can be <name>.app.com). The raw segment and its
+ * once and twice decoded forms are checked (jdoe%40corp.test, jdoe%2540corp.test); a decoded ? or # stays encoded. Null unless the URL is http(s).
+ */
+function publicUrl(url: string, username: string): string | null {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    const needles = redactionNeedles(username);
+    // Per segment: a decoded "?" or "#" must stay encoded (%3F / %23), or it would turn the rest of
+    // the path into a query or hash. Each segment is checked raw and decoded once and twice
+    // (a double-encoded form like jdoe%2540corp.test), the most decoded level that exposes a needle wins.
+    const safeDecode = (t: string): string => {
+      try {
+        return decodeURIComponent(t);
+      } catch {
+        return t;
+      }
+    };
+    const path = u.pathname
+      .split("/")
+      .map((seg) => {
+        const d1 = safeDecode(seg);
+        const d2 = safeDecode(d1);
+        for (const level of [d2, d1]) {
+          const redacted = redactText(level, needles);
+          if (redacted !== level) {
+            return redacted
+              .split(REDACTED)
+              .map((part) => encodeURIComponent(part))
+              .join(REDACTED);
+          }
+        }
+        // The raw segment as well (an undecodable one, or a form decoding did not expose).
+        return redactText(seg, needles);
+      })
+      .join("/");
+    return `${u.protocol}//${redactText(u.host, needles)}${path}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The form "fingerprint": what the snapshot shows of the page's structure, WITHOUT field values, focus
+ * or `hasValue` (so typing and a hydration reset do not change it). A button that gets disabled or
+ * relabelled ("Signing in..."), an element that appears or goes, or new visible page text (an error
+ * message, the snapshot's `text`) all change it: the app reacted. Text that changes by itself (a
+ * clock, a banner) also counts as a reaction, which is the safe side (no second submit).
+ */
+export function formFingerprint(elements: SnapshotElement[], text: string): string {
+  return JSON.stringify([
+    elements.map((e) => [e.tag, e.label, e.role, e.disabled, e.frame, e.isPassword, e.ops.join(",")]),
+    text.replace(/\s+/g, " ").trim(),
+  ]);
+}
+
 const originOf = (url: string | null): string | null => (url === null ? null : normalizeOrigin(url));
+
+/** origin + pathname: a query or hash change (/login?error=1) is not a navigation. */
+function locationKey(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return url;
+  }
+}
 
 export async function fillLogin(rawArgs: unknown, deps: FillLoginDeps): Promise<FillLoginResult> {
   const args = parseFillLoginArgs(rawArgs);
   if (!args) return fail('Invalid arguments. Use { label?: string, submit?: boolean }.');
 
-  const startUrl = deps.getUrl();
+  // A destroyed tab can make a dep throw: a dep never breaks the fixed results.
+  const currentUrl = (): string | null => {
+    try {
+      return deps.getUrl();
+    } catch {
+      return null;
+    }
+  };
+  const loading = (): boolean => {
+    try {
+      return deps.isLoading?.() === true;
+    } catch {
+      return false;
+    }
+  };
+  const startUrl = currentUrl();
   if (startUrl === null) return fail("No browser tab is open.");
+  const startKey = locationKey(startUrl);
   const origin = originOf(startUrl);
   if (!origin) return fail("The current tab is not an http(s) page.");
 
@@ -244,30 +384,50 @@ export async function fillLogin(rawArgs: unknown, deps: FillLoginDeps): Promise<
   }
   const entry = found.entry;
 
-  let snapshot: Record<string, unknown>;
-  try {
-    snapshot = await deps.controller.snapshot();
-  } catch {
-    return fail("Could not read the page.");
-  }
-  const snapshotId = snapshot.snapshotId;
-  const elements = "error" in snapshot ? null : readElements(snapshot);
-  if (!elements || typeof snapshotId !== "string" || snapshotId === "") return fail("Could not read the page.");
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
-  const fields = pickLoginFields(elements);
+  interface PageRead {
+    id: string;
+    url: string | undefined;
+    elements: SnapshotElement[];
+    /** The snapshot's visible page text (or ""): only ever hashed into the fingerprint, never returned. */
+    text: string;
+  }
+  /** The one snapshot reader. Null when the page cannot be read (error, throw, no elements, no snapshot id). */
+  const readPage = async (): Promise<PageRead | null> => {
+    try {
+      const snap = await deps.controller.snapshot();
+      const elements = "error" in snap ? null : readElements(snap);
+      const id = snap.snapshotId;
+      if (!elements || typeof id !== "string" || id === "") return null;
+      return { id, url: typeof snap.url === "string" ? snap.url : undefined, elements, text: typeof snap.text === "string" ? snap.text : "" };
+    } catch {
+      return null;
+    }
+  };
+
+  // No fixed wait before the first snapshot: a page that is still hydrating takes
+  // keystrokes the app never sees (a controlled input keeps its state "" while the
+  // DOM shows text) or clears the fields when it finishes. The controller has no
+  // "app is ready" signal, so the post-type check below (cleared fields are typed
+  // again) and the one guarded retry after the submit are the real guard.
+  const first = await readPage();
+  if (!first) return fail("Could not read the page.");
+  let snapshotId = first.id;
+  let fields = pickLoginFields(first.elements);
   if (fields.username === undefined && fields.password === undefined) {
     return fail("No sign-in fields found on this page.");
   }
 
   const filled: ("username" | "password")[] = [];
-  let lastIndex: number | null = null;
 
-  const typeInto = async (kind: "username" | "password", index: number, text: string): Promise<boolean> => {
+  const typeInto = async (kind: "username" | "password", index: number, text: string, id: string): Promise<boolean> => {
     // The tab may have navigated since the origin was matched: a saved login is
-    // only ever typed into a page of its own origin.
-    if (originOf(deps.getUrl()) !== origin) return false;
+    // only ever typed into a page of its own origin. (Checked on every typing,
+    // the retry included.)
+    if (originOf(currentUrl()) !== origin) return false;
     try {
-      const res = await deps.controller.perform({ operation: "TYPE_TEXT", index, text, snapshotId });
+      const res = await deps.controller.perform({ operation: "TYPE_TEXT", index, text, snapshotId: id });
       if ("error" in res) return false;
     } catch {
       return false;
@@ -276,111 +436,243 @@ export async function fillLogin(rawArgs: unknown, deps: FillLoginDeps): Promise<
     // perform() ends the fill here, so no later field is typed and nothing is
     // submitted. (The text of THIS call already went to whatever page was
     // there; see "known limit" in CLAUDE.md.)
-    if (originOf(deps.getUrl()) !== origin) return false;
-    filled.push(kind);
-    lastIndex = index;
+    if (originOf(currentUrl()) !== origin) return false;
+    if (!filled.includes(kind)) filled.push(kind);
     return true;
   };
 
-  if (fields.username !== undefined && !(await typeInto("username", fields.username, entry.username))) {
-    return fail("Could not type into the sign-in form. Nothing was submitted.");
+  const typeFields = async (
+    picked: PickedFields,
+    id: string,
+    kinds: ("username" | "password")[],
+  ): Promise<boolean> => {
+    if (kinds.includes("username") && picked.username !== undefined) {
+      if (!(await typeInto("username", picked.username, entry.username, id))) return false;
+    }
+    if (kinds.includes("password") && picked.password !== undefined) {
+      if (!(await typeInto("password", picked.password, entry.password, id))) return false;
+    }
+    return true;
+  };
+  const TYPE_FAILED = "Could not type into the sign-in form. Nothing was submitted.";
+
+  if (!(await typeFields(fields, snapshotId, ["username", "password"]))) return fail(TYPE_FAILED);
+
+  // Settle, look again: a field that does not hold a value any more was cleared
+  // (the app hydrated and reset it). Type it once more. Only the snapshot's own
+  // `value` / `hasValue` flags are read, never a password.
+  //
+  // Indices and the snapshot id always come from ONE snapshot. If a field picked
+  // before is missing from the new snapshot (the page re-rendered), take one more
+  // snapshot and re-pick; if it is still missing, the fields are "stale": Enter is
+  // not pressed (the result is ok with submitted:false), because the old index
+  // could now point at another element.
+  await sleep(AFTER_TYPE_SETTLE_MS);
+  const missingPick = (p: PickedFields): boolean =>
+    (["username", "password"] as const).some((k) => fields[k] !== undefined && p[k] === undefined);
+  let staleFields = false;
+  // A failed re-read (null) is handled like a missing field: one fresh snapshot, re-pick;
+  // if that fails too, the old fields are stale and Enter is not pressed.
+  let checked = await readPage();
+  let again = checked ? pickLoginFields(checked.elements) : null;
+  if (!checked || !again || missingPick(again)) {
+    checked = await readPage();
+    again = checked ? pickLoginFields(checked.elements) : null;
+    if (!checked || !again || missingPick(again)) staleFields = true;
   }
-  if (fields.password !== undefined && !(await typeInto("password", fields.password, entry.password))) {
-    return fail("Could not type into the sign-in form. Nothing was submitted.");
+  // The fingerprint baseline is the page as it was just before the first submit (values excluded). A
+  // retype below changes the page's state (and may fire app handlers), so after one the page is read
+  // again and THAT read is the baseline: the retype itself is not counted as a reaction.
+  let baseline: string | null = null;
+  if (checked && again && !staleFields) {
+    const byIndex = new Map(checked.elements.map((e) => [e.index, e]));
+    const cleared = (["username", "password"] as const).filter((kind) => {
+      const idx = again![kind];
+      return filled.includes(kind) && idx !== undefined && byIndex.get(idx)?.holdsText === false;
+    });
+    snapshotId = checked.id;
+    fields = again;
+    baseline = formFingerprint(checked.elements, checked.text);
+    // An identifier-first form that reveals its password field inline: the password was not typed
+    // before (there was no field), so it is typed once now (the origin guard is in typeInto).
+    const revealed = !filled.includes("password") && again.password !== undefined;
+    const retype: ("username" | "password")[] = [...cleared, ...(revealed ? (["password"] as const) : [])];
+    if (retype.length > 0) {
+      if (!(await typeFields(again, checked.id, retype))) return fail(TYPE_FAILED);
+      const after = await readPage();
+      const afterPick = after ? pickLoginFields(after.elements) : null;
+      if (after && afterPick && !missingPick(afterPick) && (!revealed || afterPick.password !== undefined)) {
+        snapshotId = after.id;
+        fields = afterPick;
+        baseline = formFingerprint(after.elements, after.text);
+      }
+      // else: keep the earlier ids and baseline (the retype may then count as a reaction: the safe side).
+    }
   }
 
+  /** Enter goes to the last field of the form: the password, else the username. */
+  const pressTarget = (picked: PickedFields): number | null =>
+    filled.includes("password") && picked.password !== undefined
+      ? picked.password
+      : filled.includes("username") && picked.username !== undefined
+        ? picked.username
+        : null;
+
+  // A form whose password was not really typed (a two-step sign-in's first page) is never retried.
+  const hadPassword = filled.includes("password");
   let submitted = false;
+  let submitAttempted = false;
   let sessionEstablished: boolean | undefined;
-  if (args.submit && lastIndex !== null && originOf(deps.getUrl()) === origin) {
-    const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-    const navigated = (resUrl: unknown): boolean => {
-      const now = deps.getUrl();
-      return (typeof resUrl === "string" && resUrl !== startUrl) || (now !== null && now !== startUrl);
-    };
-    const hadPassword = fields.password !== undefined;
-    const urlMoved = (resUrl?: unknown): boolean => navigated(resUrl);
-    /**
-     * Watches the page for the full window (early exit only on a URL change or a
-     * confirmed login). Established = the URL moved on, or the password field
-     * existed before, is gone now, and the act reported a change. `pageChanged`
-     * is any sign the submit did something: a second submit is then unsafe.
-     */
-    const settle = async (actChanged: boolean, actUrlMoved: boolean) => {
-      let moved = actUrlMoved;
-      let seen = false;
-      let pwGone = false;
-      let pwCleared = false;
-      for (let waited = 0; ; waited += POLL_MS) {
-        if (urlMoved()) moved = true;
-        if (moved) return { established: true, pageChanged: true };
-        try {
-          const snap = await deps.controller.snapshot();
-          if (!("error" in snap)) {
-            const els = readElements(snap);
-            if (typeof snap.url === "string" && snap.url !== startUrl) return { established: true, pageChanged: true };
-            if (els) {
-              seen = true;
-              const pw = els.find((e) => !e.frame && e.isPassword);
-              pwGone = hadPassword && !pw;
-              pwCleared = pw?.hasValue === false;
-              if (pwGone && actChanged) return { established: true, pageChanged: true };
-            }
-          }
-        } catch {
-          // The page may be mid-navigation: look again.
-        }
-        if (waited >= SETTLE_MS) break;
-        await sleep(POLL_MS);
-      }
-      // `seen` false: the page could not be read, so nothing is known: no second submit.
-      return { established: false, pageChanged: actChanged || pwGone || pwCleared || !seen };
-    };
-    const act = async (args2: Record<string, unknown>) => {
-      try {
-        const res = await deps.controller.act(args2);
-        if ("error" in res) return { ok: false, changed: false, moved: false };
-        return { ok: true, changed: res.changed === true, moved: navigated(res.url) };
-      } catch {
-        return { ok: false, changed: false, moved: false };
-      }
-    };
+  let stillOnSignInPage: boolean | undefined;
+  let retried = false;
 
-    const first = await act({ action: "press", key: "Enter", index: lastIndex, snapshotId });
-    submitted = first.ok;
-    const afterEnter = await settle(first.changed, first.moved);
-    let established = afterEnter.established;
+  const navigated = (resUrl: unknown): boolean => {
+    const now = currentUrl();
+    return (
+      (typeof resUrl === "string" && locationKey(resUrl) !== startKey) || (now !== null && locationKey(now) !== startKey)
+    );
+  };
+
+  /**
+   * Watches the page for the full window (early exit only on a URL change or a
+   * confirmed login) and returns the last page it read. Established = the URL moved
+   * on, or the password field existed before, is gone now, and the act reported a
+   * change. `pageChanged` = a sign that the app REACTED to the act: a navigation is
+   * pending (`isLoading`), the form fingerprint differs from the pre-submit one at ANY
+   * poll (see `formFingerprint`), or the page could not be read at all. The act's own
+   * `changed` flag is NOT a reaction: it also fires for a focus move or a field edit
+   * (seen in e2e under load with a silent, unhydrated form). A cleared password with an unchanged fingerprint is a
+   * hydration reset, NOT a reaction: the retry is allowed then and retypes both fields.
+   *
+   * Accepted risk: an XHR whose response changes nothing visible within the window
+   * (no text, no element change) looks like "no reaction" and can get a second submit.
+   */
+  const settle = async (actChanged: boolean, actUrlMoved: boolean) => {
+    let moved = actUrlMoved;
+    let seen = false;
+    let sawSign = false; // sticky: a pending navigation or a fingerprint change at ANY poll
+    let last: PageRead | null = null;
+    for (let waited = 0; ; waited += POLL_MS) {
+      if (navigated(undefined)) moved = true;
+      if (moved) return { established: true, pageChanged: true, last };
+      if (loading()) sawSign = true;
+      last = await readPage();
+      if (last) {
+        if (last.url !== undefined && locationKey(last.url) !== startKey) return { established: true, pageChanged: true, last };
+        seen = true;
+        if (navigated(undefined)) return { established: true, pageChanged: true, last };
+        const pw = last.elements.find((e) => !e.frame && e.isPassword);
+        const pwGone = hadPassword && !pw;
+        if (baseline !== null && formFingerprint(last.elements, last.text) !== baseline) sawSign = true;
+        if (pwGone && actChanged) return { established: true, pageChanged: true, last };
+      }
+      if (waited >= SETTLE_MS) break;
+      await sleep(POLL_MS);
+    }
+    // `seen` false: the page could not be read, so nothing is known: no second submit.
+    return { established: false, pageChanged: sawSign || !seen, last };
+  };
+
+  const act = async (args2: Record<string, unknown>) => {
+    try {
+      const res = await deps.controller.act(args2);
+      if ("error" in res) return { ok: false, changed: false, moved: false };
+      return { ok: true, changed: res.changed === true, moved: navigated(res.url) };
+    } catch {
+      return { ok: false, changed: false, moved: false };
+    }
+  };
+
+  /**
+   * One submit: Enter in `index`, watch the page, and (only when `allowClick`)
+   * the fallback click when Enter changed nothing at all.
+   */
+  const submitOnce = async (index: number, id: string, allowClick: boolean) => {
+    const pressed = await act({ action: "press", key: "Enter", index, snapshotId: id });
+    let didSubmit = pressed.ok;
+    const afterEnter = await settle(pressed.changed, pressed.moved);
+    let { established, pageChanged, last } = afterEnter;
 
     // Fallback click ONLY when Enter changed nothing at all: otherwise a slow
-    // server or a re-render would get a second submit.
-    if (!established && !afterEnter.pageChanged && originOf(deps.getUrl()) === origin) {
-      try {
-        const snap = await deps.controller.snapshot();
-        const els = "error" in snap ? null : readElements(snap);
-        const id = snap.snapshotId;
-        const btn = els ? pickSubmitButton(els) : null;
-        if (btn !== null && typeof id === "string" && id !== "") {
-          const clicked = await act({ action: "click", index: btn, snapshotId: id });
-          if (clicked.ok) submitted = true;
-          established = (await settle(clicked.changed, clicked.moved)).established;
+    // server or a re-render would get a second submit. (Uses settle's last read.)
+    if (allowClick && !established && !pageChanged && last && originOf(currentUrl()) === origin) {
+      const btn = pickSubmitButton(last.elements);
+      if (btn !== null) {
+        const click = await act({ action: "click", index: btn, snapshotId: last.id });
+        if (click.ok) didSubmit = true;
+        const afterClick = await settle(click.changed, click.moved);
+        established = afterClick.established;
+        pageChanged = pageChanged || afterClick.pageChanged;
+        last = afterClick.last;
+      }
+    }
+    return { submitted: didSubmit, established, pageChanged, last };
+  };
+
+  const target = pressTarget(fields);
+  if (args.submit && !staleFields && target !== null && originOf(currentUrl()) === origin) {
+    submitAttempted = true;
+    const run1 = await submitOnce(target, snapshotId, true);
+    submitted = run1.submitted;
+    let established = run1.established;
+    let finalPage = run1.last;
+
+    // At most TWO submits per call: the first (Enter, maybe the fallback click) and ONE
+    // retry (Enter only). The retry runs only when the form had a password field, the
+    // pre-submit fields were confirmed (not stale) and settle saw NO sign that the app
+    // reacted (see `settle`): no navigation, no pending load, the same form fingerprint,
+    // the sign-in fields still there. Then the app most likely had not hydrated when we
+    // typed (even if the fallback click was sent: it hit an app with empty state): type
+    // BOTH fields again (TYPE_TEXT fires input events) and submit once more.
+    // Accepted risk: a wrong password can be submitted twice per call (lockout counters).
+    if (!established && !run1.pageChanged && hadPassword && run1.last !== null && originOf(currentUrl()) === origin) {
+      const page = run1.last;
+      const picked = pickLoginFields(page.elements);
+      const kinds = filled.filter((k) => picked[k] !== undefined);
+      const retryTarget = pressTarget(picked);
+      if (kinds.length === filled.length && retryTarget !== null) {
+        retried = true;
+        // If typing fails here run 1 has already submitted: report that (submitted,
+        // retried, not established), never "nothing was submitted".
+        if (await typeFields(picked, page.id, [...kinds])) {
+          const run2 = await submitOnce(retryTarget, page.id, false); // Enter only: the third action is never a click
+          submitted = submitted || run2.submitted;
+          established = run2.established;
+          finalPage = run2.last;
         }
-      } catch {
-        // Keep the earlier result.
       }
     }
     sessionEstablished = established;
+
+    if (established) {
+      stillOnSignInPage = false;
+    } else if (finalPage) {
+      // Unknown (omitted) when the final page cannot be read.
+      const p = pickLoginFields(finalPage.elements);
+      stillOnSignInPage = (p.username !== undefined || p.password !== undefined) && !navigated(undefined);
+    }
   }
 
-  deps.store.markUsed(entry.id);
+  try {
+    deps.store.markUsed(entry.id);
+  } catch {
+    // A failed bookkeeping write never changes the result.
+  }
+  const publicLocation = publicUrl(currentUrl() ?? startUrl, entry.username);
   return {
     ok: true,
     origin,
     label: entry.label,
     filled,
     submitted,
+    ...(publicLocation === null ? {} : { url: publicLocation }),
     ...(sessionEstablished === undefined
       ? {}
       : sessionEstablished
         ? { sessionEstablished: true }
         : { sessionEstablished: false, note: SESSION_NOT_ESTABLISHED_NOTE }),
+    ...(submitAttempted
+      ? { ...(stillOnSignInPage === undefined ? {} : { stillOnSignInPage }), retried }
+      : {}),
   };
 }
