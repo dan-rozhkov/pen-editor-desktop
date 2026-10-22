@@ -233,6 +233,9 @@ const docStorage = {
   list: (): Promise<{ docs: unknown[] } | { error: string }> => ipcRenderer.invoke("docs:list"),
   save: (doc: unknown): Promise<{ ok: true; rev: number; stale?: true } | { error: string }> => ipcRenderer.invoke("docs:save", doc),
   remove: (id: string): Promise<{ ok: true } | { error: string }> => ipcRenderer.invoke("docs:delete", id),
+  // Saves the doc page as a PDF (native save dialog). Main answers only the top frame of a doc tab on the doc page.
+  exportPdf: (fileName: string): Promise<{ ok: true; path: string } | { canceled: true } | { error: string }> =>
+    ipcRenderer.invoke("docs:export-pdf", fileName),
 };
 const docs = {
   ...docStorage,

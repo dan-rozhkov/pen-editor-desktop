@@ -67,6 +67,7 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "docs:list", direction: "renderer->main" },
   { name: "docs:save", direction: "renderer->main" },
   { name: "docs:delete", direction: "renderer->main" },
+  { name: "docs:export-pdf", direction: "renderer->main" },
   // Browse-run traces (invoke/handle): save/read stored traces, open a trace tab. See CLAUDE.md "Trace tabs".
   { name: "traces:save", direction: "renderer->main" },
   { name: "traces:read", direction: "renderer->main" },

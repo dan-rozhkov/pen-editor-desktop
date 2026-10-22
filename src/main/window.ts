@@ -1,6 +1,7 @@
 import { shouldForwardMenuCommand } from "./menuTarget";
 import { normalizePageColor, PAGE_BG_FALLBACK, SAMPLE_PAGE_BG_SCRIPT } from "./pageBackground";
 import path from "node:path";
+import { writeFile } from "node:fs/promises";
 import { app, BaseWindow, View, WebContentsView, Menu, dialog, ipcMain, nativeTheme, session, shell, systemPreferences, webContents } from "electron";
 import {
   TabManager,
@@ -59,6 +60,7 @@ import { CanvasLinkRouter } from "./canvasLink";
 import { openDocTab } from "./docOpen";
 import { openWorkflowTab } from "./workflowOpen";
 import { addLoginCopy } from "./loginsIpc";
+import { handleDocExportPdf } from "./docPdfExport";
 import { handleDocDelete, handleDocList, handleDocSave, type DocIpcDeps } from "./docIpc";
 import { createDocStore, docDirFor, nodeDocFs, type DocStore } from "./docStore";
 import { openTraceTab } from "./traceOpen";
@@ -2306,6 +2308,25 @@ export function createMainWindow(
   ipcMain.handle("docs:list", (event) => handleDocList(docIpc, event.sender.id));
   ipcMain.handle("docs:save", (event, doc: unknown) => handleDocSave(docIpc, event.sender.id, doc));
   ipcMain.handle("docs:delete", (event, id: unknown) => handleDocDelete(docIpc, event.sender.id, id));
+  // `docs:export-pdf`: the doc page saves itself as a PDF; rules and flow in docPdfExport.ts.
+  ipcMain.handle("docs:export-pdf", (event, fileName: unknown) =>
+    handleDocExportPdf(
+      {
+        port: { isDocViewer: (id, frameUrl) => tabs.isDocViewer(id, frameUrl) },
+        printToPDF: () => event.sender.printToPDF({ printBackground: true, preferCSSPageSize: true, pageSize: "A4" }),
+        showSaveDialog: async (name) => {
+          const r = await dialog.showSaveDialog(win, {
+            defaultPath: path.join(app.getPath("downloads"), name),
+            filters: [{ name: "PDF", extensions: ["pdf"] }],
+          });
+          return r.canceled || !r.filePath ? undefined : r.filePath;
+        },
+        writeFile: (p, data) => writeFile(p, data),
+      },
+      { senderId: event.sender.id, topFrame: event.senderFrame != null && event.senderFrame === event.sender.mainFrame, frameUrl: event.senderFrame?.url },
+      fileName,
+    ),
+  );
   // `logins:*` (the doc tabs' @ mention picker) is registered once per process in the passwords service; this window only
   // lends it this window's doc viewers and its confirm dialog, withdrawn when the window closes (the handlers must not be registered twice).
   const withdrawDocTabLogins = loginServices.passwords.addDocWindow({
@@ -2600,6 +2621,7 @@ export function createMainWindow(
     ipcMain.removeHandler("docs:list");
     ipcMain.removeHandler("docs:save");
     ipcMain.removeHandler("docs:delete");
+    ipcMain.removeHandler("docs:export-pdf");
     ipcMain.removeHandler("settings:open");
     ipcMain.removeHandler("traces:save");
     ipcMain.removeHandler("traces:read");

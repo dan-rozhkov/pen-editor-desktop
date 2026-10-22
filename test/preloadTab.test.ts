@@ -317,7 +317,7 @@ describe("preload/tab.ts docs bridge", () => {
 
   it("on every page exposes list, save and remove over docs:list / docs:save / docs:delete", async () => {
     await load("/app");
-    expect(Object.keys(exposedApi.docs).sort()).toEqual(["list", "remove", "save"]);
+    expect(Object.keys(exposedApi.docs).sort()).toEqual(["exportPdf", "list", "remove", "save"]);
     invokeMock.mockResolvedValueOnce({ docs: [] });
     await expect(exposedApi.docs.list()).resolves.toEqual({ docs: [] });
     expect(invokeMock).toHaveBeenLastCalledWith("docs:list");
@@ -328,11 +328,14 @@ describe("preload/tab.ts docs bridge", () => {
     invokeMock.mockResolvedValueOnce({ ok: true });
     await expect(exposedApi.docs.remove("a")).resolves.toEqual({ ok: true });
     expect(invokeMock).toHaveBeenLastCalledWith("docs:delete", "a");
+    invokeMock.mockResolvedValueOnce({ ok: true, path: "/x.pdf" });
+    await expect(exposedApi.docs.exportPdf("T")).resolves.toEqual({ ok: true, path: "/x.pdf" });
+    expect(invokeMock).toHaveBeenLastCalledWith("docs:export-pdf", "T");
   });
 
   it("on the trace viewer page adds open, over doc:open", async () => {
     await load("/trace/abc");
-    expect(Object.keys(exposedApi.docs).sort()).toEqual(["list", "open", "remove", "save"]);
+    expect(Object.keys(exposedApi.docs).sort()).toEqual(["exportPdf", "list", "open", "remove", "save"]);
     invokeMock.mockResolvedValueOnce({ ok: true });
     await expect(exposedApi.docs.open("abc_1")).resolves.toEqual({ ok: true });
     expect(invokeMock).toHaveBeenLastCalledWith("doc:open", "abc_1");
