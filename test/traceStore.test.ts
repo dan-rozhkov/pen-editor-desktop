@@ -266,6 +266,27 @@ describe("traceStore.read", () => {
     expect(full.trace.frames.map((f) => f.src)).toEqual([JPG, PNG]);
   });
 
+  it("{ frames: true, frameIds } inlines only those frames and reads only their files", async () => {
+    const { io, store: s } = store();
+    await s.save(payload(manifest("t1", [{ id: 0, src: "frames/0.jpg" }, { id: 1, src: "frames/1.png" }]), [{ path: "frames/0.jpg", dataUrl: JPG }, { path: "frames/1.png", dataUrl: PNG }]));
+    const reads: string[] = [];
+    const orig = io.read;
+    io.read = async (p) => {
+      reads.push(p);
+      return orig(p);
+    };
+    const r = await s.read("t1", { frames: true, frameIds: [1] });
+    if (!("trace" in r)) throw new Error("expected a trace");
+    expect(r.trace.frames.map((f) => f.src)).toEqual(["frames/0.jpg", PNG]);
+    expect(reads).toHaveLength(2); // trace.json + frame 1
+    const none = await s.read("t1", { frames: true, frameIds: [] });
+    if (!("trace" in none)) throw new Error("expected a trace");
+    expect(none.trace.frames.map((f) => f.src)).toEqual(["frames/0.jpg", "frames/1.png"]);
+    const off = await s.read("t1", { frames: false, frameIds: [1] });
+    if (!("trace" in off)) throw new Error("expected a trace");
+    expect(off.trace.frames.map((f) => f.src)).toEqual(["frames/0.jpg", "frames/1.png"]);
+  });
+
   it("rejects ids that are not trace ids before touching the fs", async () => {
     const { io, store: s } = store();
     io.read = async () => { throw new Error("must not read"); };

@@ -82,6 +82,10 @@ describe("traces:save / traces:read sender rules", () => {
     expect(d.store.read).toHaveBeenLastCalledWith("t1", { frames: false });
     await handleTraceRead(d, 1, "t1", { frames: true, extra: 1 });
     expect(d.store.read).toHaveBeenLastCalledWith("t1", { frames: true });
+    await handleTraceRead(d, 1, "t1", { frames: true, frameIds: [2, 5] });
+    expect(d.store.read).toHaveBeenLastCalledWith("t1", { frames: true, frameIds: [2, 5] });
+    await handleTraceRead(d, 1, "t1", { frames: true, frameIds: [1, "x"] });
+    expect(d.store.read).toHaveBeenLastCalledWith("t1", { frames: true });
     for (const bad of [undefined, null, "x", 5, [], [false], { frames: "no" }, { frames: 0 }, {}, new Map(), Object.create({ frames: false })]) {
       await handleTraceRead(d, 1, "t1", bad);
       expect(d.store.read, String(bad)).toHaveBeenLastCalledWith("t1");

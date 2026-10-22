@@ -6,7 +6,7 @@ import { normalizeOrigin, type CredentialStore } from "./credentialStore";
  * docs/superpowers/specs/2026-10-16-browser-saved-logins-design.md).
  *
  * The model asks "fill the login here" and gets back only
- * `{ ok, origin, label, filled, submitted }` or `{ ok: false, error }`. Two
+ * `{ ok, origin, label, filled, submitted, sessionEstablished?, note? }` or `{ ok: false, error }`. Two
  * rules hold everywhere in this file:
  *  - The username and the password go into exactly one place: the `text` of a
  *    controller `perform` call. They are never put in a result, an error or a
@@ -29,6 +29,8 @@ export interface FillLoginDeps {
   store: Pick<CredentialStore, "findForOrigin" | "markUsed">;
   /** URL of the agent's current browser tab, or null when there is none. */
   getUrl(): string | null;
+  /** Test seam: waits between submit checks. Default is a real timer. */
+  sleep?(ms: number): Promise<void>;
 }
 
 export interface FillLoginArgs {
@@ -44,6 +46,10 @@ export type FillLoginResult =
       label: string;
       filled: ("username" | "password")[];
       submitted: boolean;
+      /** Only when a submit was attempted: the URL changed or the password field is gone. */
+      sessionEstablished?: boolean;
+      /** Only when `sessionEstablished` is false. Fixed text. */
+      note?: string;
     }
   | { ok: false; error: string };
 
@@ -66,6 +72,8 @@ export interface SnapshotElement {
   role: string;
   ops: string[];
   isPassword: boolean;
+  /** `hasValue` as the snapshot reports it for a password field; undefined when absent. */
+  hasValue: boolean | undefined;
   disabled: boolean;
   frame: boolean;
   /** Carries a select's `options`, an `expanded` flag or a `checked` state: not a plain text field. */
@@ -116,6 +124,7 @@ function readElements(snapshot: Record<string, unknown>): SnapshotElement[] | nu
       role: typeof e.role === "string" ? e.role.toLowerCase() : "",
       ops: Array.isArray(e.ops) ? e.ops.filter((o): o is string => typeof o === "string") : [],
       isPassword: e.isPassword === true,
+      hasValue: typeof e.hasValue === "boolean" ? e.hasValue : undefined,
       disabled: e.disabled === true,
       // Any value means the element lives in a child iframe: never touched.
       frame: e.frame !== undefined && e.frame !== null && e.frame !== false,
@@ -172,6 +181,39 @@ export function pickLoginFields(elements: SnapshotElement[]): PickedFields {
 export function pickFromSnapshot(snapshot: Record<string, unknown>): PickedFields | null {
   const elements = readElements(snapshot);
   return elements ? pickLoginFields(elements) : null;
+}
+
+export const SESSION_NOT_ESTABLISHED_NOTE =
+  "The form was submitted but the page still shows the login form. The session is not established. Take a snapshot; check for an error message or a captcha before you continue.";
+
+const SETTLE_MS = 3000;
+const POLL_MS = 250;
+const SUBMIT_LABEL = /sign\s*in|log\s*in|login|submit|continue|войти|вход|продолжить|далее|отправить/i;
+const NOT_SUBMIT_LABEL =
+  /sign\s*up|register|create|forgot|reset|google|apple|facebook|github|microsoft|sso|регистр|создать|забыл|сброс/i;
+
+/**
+ * The button that submits the sign-in form: a non-frame, enabled, clickable
+ * button (or input / role=button) whose label looks like a sign-in action.
+ * The nearest one AFTER the password field wins, else the first match.
+ */
+export function pickSubmitButton(elements: SnapshotElement[]): number | null {
+  const password = elements.find((e) => isTypable(e) && e.isPassword);
+  const candidates = elements.filter(
+    (e) =>
+      !e.frame &&
+      !e.disabled &&
+      e.ops.includes("CLICK") &&
+      !e.ops.includes("TYPE_TEXT") &&
+      !e.widget && // checkbox / radio / switch / popup triggers: "Keep me signed in" is not a submit
+      !WIDGET_ROLES.has(e.role) &&
+      (e.tag === "button" || e.tag === "input" || e.role === "button") &&
+      SUBMIT_LABEL.test(e.label) &&
+      !NOT_SUBMIT_LABEL.test(e.label),
+  );
+  if (candidates.length === 0) return null;
+  const after = password ? candidates.find((e) => e.index > password.index) : undefined;
+  return (after ?? candidates[0]).index;
 }
 
 const originOf = (url: string | null): string | null => (url === null ? null : normalizeOrigin(url));
@@ -248,15 +290,97 @@ export async function fillLogin(rawArgs: unknown, deps: FillLoginDeps): Promise<
   }
 
   let submitted = false;
+  let sessionEstablished: boolean | undefined;
   if (args.submit && lastIndex !== null && originOf(deps.getUrl()) === origin) {
-    try {
-      const res = await deps.controller.act({ action: "press", key: "Enter", index: lastIndex, snapshotId });
-      submitted = !("error" in res);
-    } catch {
-      submitted = false;
+    const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    const navigated = (resUrl: unknown): boolean => {
+      const now = deps.getUrl();
+      return (typeof resUrl === "string" && resUrl !== startUrl) || (now !== null && now !== startUrl);
+    };
+    const hadPassword = fields.password !== undefined;
+    const urlMoved = (resUrl?: unknown): boolean => navigated(resUrl);
+    /**
+     * Watches the page for the full window (early exit only on a URL change or a
+     * confirmed login). Established = the URL moved on, or the password field
+     * existed before, is gone now, and the act reported a change. `pageChanged`
+     * is any sign the submit did something: a second submit is then unsafe.
+     */
+    const settle = async (actChanged: boolean, actUrlMoved: boolean) => {
+      let moved = actUrlMoved;
+      let seen = false;
+      let pwGone = false;
+      let pwCleared = false;
+      for (let waited = 0; ; waited += POLL_MS) {
+        if (urlMoved()) moved = true;
+        if (moved) return { established: true, pageChanged: true };
+        try {
+          const snap = await deps.controller.snapshot();
+          if (!("error" in snap)) {
+            const els = readElements(snap);
+            if (typeof snap.url === "string" && snap.url !== startUrl) return { established: true, pageChanged: true };
+            if (els) {
+              seen = true;
+              const pw = els.find((e) => !e.frame && e.isPassword);
+              pwGone = hadPassword && !pw;
+              pwCleared = pw?.hasValue === false;
+              if (pwGone && actChanged) return { established: true, pageChanged: true };
+            }
+          }
+        } catch {
+          // The page may be mid-navigation: look again.
+        }
+        if (waited >= SETTLE_MS) break;
+        await sleep(POLL_MS);
+      }
+      // `seen` false: the page could not be read, so nothing is known: no second submit.
+      return { established: false, pageChanged: actChanged || pwGone || pwCleared || !seen };
+    };
+    const act = async (args2: Record<string, unknown>) => {
+      try {
+        const res = await deps.controller.act(args2);
+        if ("error" in res) return { ok: false, changed: false, moved: false };
+        return { ok: true, changed: res.changed === true, moved: navigated(res.url) };
+      } catch {
+        return { ok: false, changed: false, moved: false };
+      }
+    };
+
+    const first = await act({ action: "press", key: "Enter", index: lastIndex, snapshotId });
+    submitted = first.ok;
+    const afterEnter = await settle(first.changed, first.moved);
+    let established = afterEnter.established;
+
+    // Fallback click ONLY when Enter changed nothing at all: otherwise a slow
+    // server or a re-render would get a second submit.
+    if (!established && !afterEnter.pageChanged && originOf(deps.getUrl()) === origin) {
+      try {
+        const snap = await deps.controller.snapshot();
+        const els = "error" in snap ? null : readElements(snap);
+        const id = snap.snapshotId;
+        const btn = els ? pickSubmitButton(els) : null;
+        if (btn !== null && typeof id === "string" && id !== "") {
+          const clicked = await act({ action: "click", index: btn, snapshotId: id });
+          if (clicked.ok) submitted = true;
+          established = (await settle(clicked.changed, clicked.moved)).established;
+        }
+      } catch {
+        // Keep the earlier result.
+      }
     }
+    sessionEstablished = established;
   }
 
   deps.store.markUsed(entry.id);
-  return { ok: true, origin, label: entry.label, filled, submitted };
+  return {
+    ok: true,
+    origin,
+    label: entry.label,
+    filled,
+    submitted,
+    ...(sessionEstablished === undefined
+      ? {}
+      : sessionEstablished
+        ? { sessionEstablished: true }
+        : { sessionEstablished: false, note: SESSION_NOT_ESTABLISHED_NOTE }),
+  };
 }

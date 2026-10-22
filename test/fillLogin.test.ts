@@ -3,8 +3,10 @@ import {
   fillLogin,
   parseFillLoginArgs,
   pickFromSnapshot,
+  pickSubmitButton,
   type FillLoginDeps,
   type LoginController,
+  SESSION_NOT_ESTABLISHED_NOTE,
 } from "../src/main/browser/fillLogin";
 import { createCredentialStore } from "../src/main/browser/credentialStore";
 
@@ -87,6 +89,14 @@ const loginForm = (): El[] => [
   field(0, { label: "Search" }),
   typedField(1, { label: "Email address" }),
   passwordField(2),
+  button(3),
+];
+
+/** The form as a fresh snapshot shows it after a no-op submit: the password still holds its value. */
+const filledForm = (): El[] => [
+  field(0, { label: "Search" }),
+  typedField(1, { label: "Email address" }),
+  passwordField(2, { hasValue: true }),
   button(3),
 ];
 
@@ -184,6 +194,30 @@ describe("pickFromSnapshot (real snapshot element shapes)", () => {
   });
 });
 
+describe("pickSubmitButton", () => {
+  const el = (index: number, extra: Record<string, unknown> = {}) =>
+    pickSubmitButton(
+      ([passwordField(0), { index, tag: "button", label: "Sign in", ops: ["CLICK"], ...extra }] as El[]).map((e) => ({
+        index: e.index as number,
+        tag: String(e.tag),
+        label: String(e.label),
+        role: typeof e.role === "string" ? e.role : "",
+        ops: e.ops as string[],
+        isPassword: e.isPassword === true,
+        hasValue: undefined,
+        disabled: false,
+        frame: false,
+        widget: e.checked !== undefined || e.inputType !== undefined || e.expanded !== undefined,
+      })),
+    );
+  it("picks a sign-in button", () => expect(el(1)).toBe(1));
+  it("never picks a checkbox, radio or switch", () => {
+    expect(el(1, { label: "Keep me signed in", checked: false, inputType: "checkbox" })).toBeNull();
+    expect(el(1, { label: "Sign in automatically", role: "switch" })).toBeNull();
+    expect(el(1, { label: "Log in as admin", role: "radio" })).toBeNull();
+  });
+});
+
 describe("fillLogin", () => {
   it("types username then password with the snapshot id and returns no secret", async () => {
     const { deps, performCalls } = setup(loginForm());
@@ -199,15 +233,154 @@ describe("fillLogin", () => {
   it("submit presses Enter in the last filled field", async () => {
     const { deps, actCalls } = setup(loginForm());
     const result = await fillLogin({ submit: true }, deps);
-    expect(result).toMatchObject({ ok: true, submitted: true });
+    expect(result).toMatchObject({ ok: true, submitted: true, sessionEstablished: true });
+    expect(result).not.toHaveProperty("note");
     expect(actCalls).toEqual([{ action: "press", key: "Enter", index: 2, snapshotId: "snap-1" }]);
     noSecret(result);
   });
 
   it("a failed Enter still reports the fill, with submitted false", async () => {
-    const { deps } = setup(loginForm(), undefined, { pressError: true });
-    const result = await fillLogin({ submit: true }, deps);
-    expect(result).toEqual({ ok: true, origin: "https://example.com", label: "main", filled: ["username", "password"], submitted: false });
+    const { deps, controller } = setup(loginForm(), undefined, { pressError: true });
+    (controller.snapshot as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+      snapshotId: "snap-1",
+      url: "https://www.example.com/login",
+      elements: filledForm(),
+    }));
+    const result = await fillLogin({ submit: true }, { ...deps, sleep: async () => {} });
+    expect(result).toEqual({
+      ok: true,
+      origin: "https://example.com",
+      label: "main",
+      filled: ["username", "password"],
+      submitted: false,
+      sessionEstablished: false,
+      note: SESSION_NOT_ESTABLISHED_NOTE,
+    });
+  });
+
+  describe("submit verification", () => {
+    const sleep = async () => {};
+    const stuck = () => {
+      const s = setup(loginForm(), "https://example.com/login");
+      (s.controller.act as ReturnType<typeof vi.fn>).mockImplementation(async (a: Record<string, unknown>) => {
+        s.actCalls.push(a);
+        return { ok: true, url: "https://example.com/login" };
+      });
+      (s.controller.snapshot as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+        snapshotId: "snap-2",
+        url: "https://example.com/login",
+        elements: filledForm(),
+      }));
+      return s;
+    };
+
+    it("Enter navigates: established, no click", async () => {
+      const { deps, actCalls } = setup(loginForm());
+      const result = await fillLogin({ submit: true }, { ...deps, sleep });
+      expect(result).toMatchObject({ submitted: true, sessionEstablished: true });
+      expect(actCalls).toHaveLength(1);
+    });
+
+    it("Enter does nothing but the fallback click navigates: established", async () => {
+      const s = stuck();
+      (s.controller.act as ReturnType<typeof vi.fn>).mockImplementation(async (a: Record<string, unknown>) => {
+        s.actCalls.push(a);
+        return a.action === "click" ? { ok: true, url: "https://example.com/home" } : { ok: true, url: "https://example.com/login" };
+      });
+      const result = await fillLogin({ submit: true }, { ...s.deps, sleep });
+      expect(result).toMatchObject({ ok: true, submitted: true, sessionEstablished: true });
+      expect(result).not.toHaveProperty("note");
+      expect(s.actCalls[1]).toEqual({ action: "click", index: 3, snapshotId: "snap-2" });
+      noSecret(result);
+    });
+
+    it("password field disappears and the act reported a change: established", async () => {
+      const s = stuck();
+      (s.controller.act as ReturnType<typeof vi.fn>).mockImplementation(async (a: Record<string, unknown>) => {
+        s.actCalls.push(a);
+        return { ok: true, changed: true, url: "https://example.com/login" };
+      });
+      (s.controller.snapshot as ReturnType<typeof vi.fn>)
+        .mockImplementationOnce(async () => ({ snapshotId: "snap-1", elements: loginForm() }))
+        .mockImplementation(async () => ({ snapshotId: "snap-2", elements: [button(0, "Log out")] }));
+      const result = await fillLogin({ submit: true }, { ...s.deps, sleep });
+      expect(result).toMatchObject({ sessionEstablished: true });
+      expect(s.actCalls).toHaveLength(1);
+    });
+
+    it("password field gone but the act reported no change (spinner hiding the form): not established, no click", async () => {
+      const s = stuck();
+      (s.controller.snapshot as ReturnType<typeof vi.fn>)
+        .mockImplementationOnce(async () => ({ snapshotId: "snap-1", elements: loginForm() }))
+        .mockImplementation(async () => ({ snapshotId: "snap-2", elements: [button(0, "Loading")] }));
+      const result = await fillLogin({ submit: true }, { ...s.deps, sleep });
+      expect(result).toMatchObject({ sessionEstablished: false, note: SESSION_NOT_ESTABLISHED_NOTE });
+      expect(s.actCalls.map((c) => c.action)).toEqual(["press"]);
+    });
+
+    it("two-step page (no password before submit): a missing password field is NOT proof", async () => {
+      const s = stuck();
+      (s.controller.snapshot as ReturnType<typeof vi.fn>)
+        .mockImplementationOnce(async () => ({ snapshotId: "snap-1", elements: [typedField(0, { label: "Email" }), button(1, "Next")] }))
+        .mockImplementation(async () => ({ snapshotId: "snap-2", elements: [button(0, "Next")] }));
+      const result = await fillLogin({ submit: true }, { ...s.deps, sleep });
+      expect(result).toMatchObject({ sessionEstablished: false, note: SESSION_NOT_ESTABLISHED_NOTE });
+    });
+
+    it("Enter changed the page but the form is still there (slow server): no second submit", async () => {
+      const s = stuck();
+      (s.controller.act as ReturnType<typeof vi.fn>).mockImplementation(async (a: Record<string, unknown>) => {
+        s.actCalls.push(a);
+        return { ok: true, changed: true, url: "https://example.com/login" };
+      });
+      const result = await fillLogin({ submit: true }, { ...s.deps, sleep });
+      expect(result).toMatchObject({ sessionEstablished: false, note: SESSION_NOT_ESTABLISHED_NOTE });
+      expect(s.actCalls.map((c) => c.action)).toEqual(["press"]);
+    });
+
+    it("the form was re-rendered with an empty password: no second submit", async () => {
+      const s = stuck();
+      (s.controller.snapshot as ReturnType<typeof vi.fn>)
+        .mockImplementationOnce(async () => ({ snapshotId: "snap-1", elements: loginForm() }))
+        .mockImplementation(async () => ({ snapshotId: "snap-2", elements: loginForm() }));
+      const result = await fillLogin({ submit: true }, { ...s.deps, sleep });
+      expect(result).toMatchObject({ sessionEstablished: false });
+      expect(s.actCalls.map((c) => c.action)).toEqual(["press"]);
+    });
+
+    it("waits the full window before the fallback", async () => {
+      const s = stuck();
+      let slept = 0;
+      await fillLogin({ submit: true }, { ...s.deps, sleep: async (ms) => void (slept += ms) });
+      expect(slept).toBeGreaterThanOrEqual(3000);
+    });
+
+    it("neither Enter nor the click helps: not established, fixed note", async () => {
+      const s = stuck();
+      (s.controller.snapshot as ReturnType<typeof vi.fn>)
+        .mockImplementationOnce(async () => ({ snapshotId: "snap-1", elements: loginForm() }))
+        .mockImplementation(async () => ({ snapshotId: "snap-2", url: "https://example.com/login", elements: filledForm() }));
+      const result = await fillLogin({ submit: true }, { ...s.deps, sleep });
+      expect(result).toEqual({
+        ok: true,
+        origin: "https://example.com",
+        label: "main",
+        filled: ["username", "password"],
+        submitted: true,
+        sessionEstablished: false,
+        note: SESSION_NOT_ESTABLISHED_NOTE,
+      });
+      expect(s.actCalls.map((c) => c.action)).toEqual(["press", "click"]);
+      noSecret(result);
+    });
+
+    it("submit false: no verification, no extra fields", async () => {
+      const s = stuck();
+      const result = await fillLogin({ submit: false }, { ...s.deps, sleep });
+      expect(result).toEqual({ ok: true, origin: "https://example.com", label: "main", filled: ["username", "password"], submitted: false });
+      expect(s.actCalls).toEqual([]);
+      expect(s.controller.snapshot).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("two-step page fills only the username", async () => {

@@ -75,6 +75,7 @@ import { computerUseAvailable, setNativeCursorEnabled } from "./computerUse/help
 import { CURSOR_SETTINGS_FILE, type CursorSettings, readCursorSettings, resolveCursorSettings, writeCursorSettings } from "./cursorSettings";
 import type { McpService, IpcListenerGateway } from "./mcp/service";
 import { fillLogin } from "./browser/fillLogin";
+import { releaseAnswer } from "./releaseAnswer";
 import { isLoginBindingCall, promptChoiceFromButton, savePromptCopy, type LoginCapture } from "./browser/loginCapture";
 import { normalizeOrigin, type CredentialStore } from "./browser/credentialStore";
 import type { FaviconCache } from "./browser/faviconCache";
@@ -1772,11 +1773,18 @@ export function createMainWindow(
     const owned = fixtureOwners.takeOwnedBy(owner);
     if (owned) void releaseSharedFixture(owned.token);
   };
-  const releaseSharedFixture = (token?: string): Promise<void> =>
-    browserController
-      .releaseFixture(token)
-      .catch((err) => console.error("shared browser: releaseFixture failed", err))
-      .then(() => resetViewportRecords(agentEmulation.release(token)));
+  // releaseFixture is typed Promise<void> in the installed browser-agent; newer
+  // versions resolve to { mockHits }. Read it as unknown so this compiles on both.
+  const releaseSharedFixture = (token?: string): Promise<unknown> =>
+    (browserController.releaseFixture(token) as Promise<unknown>)
+      .catch((err) => {
+        console.error("shared browser: releaseFixture failed", err);
+        return undefined;
+      })
+      .then((released) => {
+        resetViewportRecords(agentEmulation.release(token));
+        return released;
+      });
 
   // Agent run start (runBoundary.ts): empties every tab's diagnostics buffers in
   // the scope so earlier failures are not reported inside the new run.
@@ -2064,7 +2072,7 @@ export function createMainWindow(
         case "capture":
           return await controller.capture(payload.args);
         case "fillLogin": {
-          // The model gets only { ok, origin, label, filled, submitted } or a
+          // The model gets only { ok, origin, label, filled, submitted, sessionEstablished?, note? } or a
           // fixed error — never a password, a username or controller text.
           return await fillLogin(payload.args, {
             controller,
@@ -2107,11 +2115,12 @@ export function createMainWindow(
         }
         case "releaseFixture": {
           if (sessionId === undefined) {
-            await releaseSharedFixture(rawToken(payload.args));
+            const released = await releaseSharedFixture(rawToken(payload.args));
             fixtureOwners.released(rawToken(payload.args));
+            return releaseAnswer(released);
           }
-          else await controller.releaseFixture(rawToken(payload.args));
-          return { ok: true };
+          // Isolated QA session: the real release happens here too, so it reports hits too.
+          return releaseAnswer(await (controller.releaseFixture(rawToken(payload.args)) as Promise<unknown>));
         }
         // Checkpoint journal. Args are untrusted: malformed ones are ignored.
         // The CheckpointResult (cookies/storage) goes back to the calling

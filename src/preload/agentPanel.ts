@@ -158,7 +158,7 @@ const traces = {
   listTabs: (): Promise<{ tabs: { traceId: string; title: string; active: boolean }[] } | { error: string }> =>
     ipcRenderer.invoke("traces:list-tabs"),
   // `opts.frames === false` skips the frame files (no base64 over IPC). Main validates `opts`.
-  read: (id: string, opts?: { frames?: boolean }): Promise<{ trace: unknown } | { error: string }> =>
+  read: (id: string, opts?: { frames?: boolean; frameIds?: number[] }): Promise<{ trace: unknown } | { error: string }> =>
     opts === undefined ? ipcRenderer.invoke("traces:read", id) : ipcRenderer.invoke("traces:read", id, opts),
 };
 

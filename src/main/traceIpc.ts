@@ -47,10 +47,16 @@ export function parseTraceReadOptions(raw: unknown): TraceReadOptions | undefine
   const proto = Object.getPrototypeOf(raw);
   if (proto !== Object.prototype && proto !== null) return undefined;
   const frames = (raw as { frames?: unknown }).frames;
-  return typeof frames === "boolean" ? { frames } : undefined;
+  const rawIds = (raw as { frameIds?: unknown }).frameIds;
+  const frameIds =
+    Array.isArray(rawIds) && rawIds.length <= 10_000 && rawIds.every((n) => Number.isInteger(n))
+      ? (rawIds as number[])
+      : undefined;
+  if (typeof frames !== "boolean") return undefined;
+  return { frames, ...(frameIds ? { frameIds } : {}) };
 }
 
-/** `traces:read` (invoke): a trace tab, the agent panel or an editor tab. `opts` is optional (`{ frames: false }`). */
+/** `traces:read` (invoke): a trace tab, the agent panel or an editor tab. `opts` is optional (`{ frames: false }` or `{ frames: true, frameIds }`). */
 export async function handleTraceRead(deps: TraceIpcDeps, sender: number, id: unknown, opts?: unknown): Promise<TraceReadResult> {
   if (!deps.isPanel(sender) && !deps.isEditorTab(sender) && !deps.isTraceTab(sender)) {
     return { error: "traces:read is not allowed from this sender" };

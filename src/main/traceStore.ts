@@ -114,6 +114,8 @@ export type TraceReadResult = { trace: BrowseTrace } | { error: string };
 /** Options of `read`. `frames: false` skips loading the frame files: `frame.src` stays the stored asset path. */
 export interface TraceReadOptions {
   frames?: boolean;
+  /** With frames on: inline only these frame ids; the rest keep their asset path `src`. */
+  frameIds?: number[];
 }
 
 export interface TraceStore {
@@ -260,9 +262,10 @@ export function createTraceStore(opts: TraceStoreOptions): TraceStore {
       if (parsed.trace.id !== id) return { error: "invalid trace: id mismatch" };
       const frames = [];
       const withFrames = opts?.frames !== false;
+      const only = withFrames && opts?.frameIds ? new Set(opts.frameIds) : null;
       for (const frame of parsed.trace.frames) {
         if (!BROWSE_TRACE_ASSET_PATH.test(frame.src)) return { error: `frame ${frame.id}: invalid src` };
-        if (!withFrames) {
+        if (!withFrames || (only && !only.has(frame.id))) {
           frames.push(frame); // no file I/O: the src stays the stored asset path (a valid frame src for parseBrowseTrace)
           continue;
         }
