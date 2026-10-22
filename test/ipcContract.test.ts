@@ -27,7 +27,6 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "tabbar:new", direction: "renderer->main" },
   { name: "tabbar:new-browser", direction: "renderer->main" },
   { name: "tabbar:new-doc", direction: "renderer->main" },
-  { name: "tabbar:new-workflow", direction: "renderer->main" },
   { name: "tabbar:new-menu", direction: "renderer->main" },
   { name: "tabbar:tools-menu", direction: "renderer->main" },
   { name: "tabbar:activate", direction: "renderer->main" },

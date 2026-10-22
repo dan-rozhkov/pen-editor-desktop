@@ -2399,7 +2399,6 @@ export function createMainWindow(
   const fromTabbarOrEmpty = (event: Electron.IpcMainEvent) => isTabCreationSender(event.sender.id, tabbarId, emptyId);
   const onTabbarNew = (e: Electron.IpcMainEvent) => fromTabbarOrEmpty(e) && tabs.newTab("editor");
   const onTabbarNewDoc = (e: Electron.IpcMainEvent) => fromTabbarOrEmpty(e) && tabs.newTab("doc");
-  const onTabbarNewWorkflow = (e: Electron.IpcMainEvent) => fromTabbarOrEmpty(e) && tabs.newTab("workflow");
   // Second-pass review finding 3: a user-driven "New Browser Tab" pins the
   // agent to it, the same as any other explicit user action that lands on a
   // browser tab (activate()'s tab-strip click, nextTab/prevTab's cycle) —
@@ -2543,7 +2542,6 @@ export function createMainWindow(
   ipcMain.on("tabbar:new", onTabbarNew);
   ipcMain.on("tabbar:new-browser", onTabbarNewBrowser);
   ipcMain.on("tabbar:new-doc", onTabbarNewDoc);
-  ipcMain.on("tabbar:new-workflow", onTabbarNewWorkflow);
   ipcMain.on("tabbar:new-menu", onTabbarNewMenu);
   ipcMain.on("tabbar:tools-menu", onTabbarToolsMenu);
   ipcMain.on("tabbar:activate", onTabbarActivate);
@@ -2572,7 +2570,6 @@ export function createMainWindow(
     ipcMain.removeListener("tabbar:new", onTabbarNew);
     ipcMain.removeListener("tabbar:new-browser", onTabbarNewBrowser);
     ipcMain.removeListener("tabbar:new-doc", onTabbarNewDoc);
-    ipcMain.removeListener("tabbar:new-workflow", onTabbarNewWorkflow);
     ipcMain.removeListener("tabbar:new-menu", onTabbarNewMenu);
     ipcMain.removeListener("tabbar:tools-menu", onTabbarToolsMenu);
     ipcMain.removeListener("tabbar:activate", onTabbarActivate);
