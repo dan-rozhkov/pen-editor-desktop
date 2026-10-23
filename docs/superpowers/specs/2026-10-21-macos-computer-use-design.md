@@ -142,7 +142,9 @@ It never throws; every failure is `{ error }`.
   The current window starts as the focused one, else the main one, else the first.
 - `open({url})` → `{ error: ERR_NATIVE_OPEN_LOCKED }` (same intent as `lockNavigation`).
 - `snapshot()` → `{ snapshotId, url, title, elements, scroll: { y: 0, height: 0, atBottom: true },
-  truncated? }` with `maxElements = 120` (the browser cap).
+  truncated?, note? }` with `maxElements = 120` (the browser cap). A truncated snapshot carries
+  `note` (`NATIVE_LIST_TRUNCATED_NOTE`): `target` searches further, and the app's own search field
+  makes the list shorter.
 - `perform({snapshotId,index,operation,text})`: `CLICK` → helper `perform press`, and when the
   element has no `AXPress` (`code: "NO_ACTION"`) → `elementFrame` + `click` at its centre.
   `TYPE_TEXT` → `focus` + `setValue`, read back via a fresh `snapshot` entry value; when it did not
@@ -151,7 +153,9 @@ It never throws; every failure is `{ error }`.
 - `act(args)`: one action or `actions` (batch, ≤ 10, stop at first error) with the browse_act
   vocabulary. `click`/`type`/`select`/`hover`/`press`/`scroll` by `index`+`snapshotId`, or by
   `target` (case-insensitive trimmed match against the labels of a fresh snapshot, exact first,
-  then substring). `wait` (`ms`, cap 15000; or `text` polled through `read`). `back`, `forward`,
+  then substring). When the 120 snapshot is truncated and has no exact match, a second snapshot
+  with `TARGET_SEARCH_MAX_ELEMENTS` (1000, the helper's cap) is searched for an exact match, then for
+  a substring if the small list had none; its element list never reaches the model. `wait` (`ms`, cap 15000; or `text` polled through `read`). `back`, `forward`,
   `reload`, `upload`, `viewport` → `{ error: ERR_NATIVE_UNSUPPORTED(action) }`. Result
   `{ url, title, matched, changed, snapshot }` where `snapshot` is a fresh one taken 300 ms after
   the action and `changed` compares element labels/values with the snapshot before.
@@ -161,7 +165,18 @@ It never throws; every failure is `{ error }`.
   `title`), downscaled to ≤ 1280 px wide with `nativeImage`. `annotate: true` adds `snapshotId` and
   `elements` of a fresh snapshot (labels are not drawn; *builder's call*). Missing Screen Recording →
   `{ error: ERR_NO_SCREEN_RECORDING }` (and the helper was asked to prompt).
-- `findImages`, `assert`, `requests` → `{ error: ERR_NATIVE_UNSUPPORTED(...) }`.
+- `findImages`, `requests` → `{ error: ERR_NATIVE_UNSUPPORTED(...) }`.
+- `assert({checks})` (added 2026-10-23, after a QA session where every check failed and turned a
+  correct `passed` into `failed`): input validated with `parseQaChecks`. `text` → one `read`
+  (`maxChars` 100000), case-insensitive, whitespace squashed; `absent` on a truncated read is an
+  error, never a pass. `element`/`value` with `index` → the entry of the latest snapshot the model
+  saw in the current window, found again by tag + label in a fresh 1000 snapshot. Presence = any
+  element with that tag + label; not found in a truncated snapshot, an unlabeled entry (`<tag> #N`),
+  an ambiguous match for a one-element state, no `checked` field, no `value`, or another window →
+  `passed:false` with an error. A CSS selector, `count` and `url` → `passed:false` with
+  `ERR_NATIVE_CHECK_UNSUPPORTED`. `no_console_errors`/`no_failed_requests` return `passed:true`: the
+  package evaluates them from run history, which a native app does not have. Limits: AX skips
+  content outside the window frame (absent = not visible), values are clipped at 200 chars.
 - Before each action that has a point, it tells the cursor overlay to animate there.
 
 Errors (exported constants, short, written for the model):
@@ -229,8 +244,8 @@ stays as today (the golden tests prove it). The variant says: `app` may be the a
 the Dock or window title (for example "Qure Dev") or a `.app` path; an app that is already running
 is controlled without a restart, any macOS app, through its accessibility tree and window
 screenshots, in the user's own session; elements' `tag` is the accessibility role; browse_tabs lists
-its windows; back/forward/reload/upload/viewport, browse_find_images, browse_capture and assertions
-are not available there; a permission error must be passed to the user, not retried; actions may
+its windows; back/forward/reload/upload/viewport, browse_find_images and browse_capture
+are not available there; QA checks work only for text, and for element or value with an index; a permission error must be passed to the user, not retried; actions may
 bring the app to the front and move the pointer, so do not act faster than needed.
 
 ### 6. Frontend (pen-editor)

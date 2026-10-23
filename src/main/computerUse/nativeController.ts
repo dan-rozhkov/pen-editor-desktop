@@ -2,9 +2,12 @@
 // (spec section 2). Never throws: every failure is an `{ error }` result. Electron-free:
 // image re-encoding, the cursor overlay and the clock are injected.
 
+import { parseQaChecks } from "@sideform/browser-agent/controller";
 import type { AppController } from "../appTargets";
 import {
   ERR_HELPER_MISSING,
+  ERR_NATIVE_CHECK_NO_INDEX,
+  ERR_NATIVE_CHECK_UNSUPPORTED,
   ERR_NATIVE_NO_CAPTURE,
   ERR_NATIVE_NO_WINDOW,
   ERR_NATIVE_NOT_FRONTMOST,
@@ -15,6 +18,14 @@ import {
   ERR_NATIVE_UNSUPPORTED,
   ERR_NO_ACCESSIBILITY,
   ERR_NO_SCREEN_RECORDING,
+  NATIVE_LIST_TRUNCATED_NOTE,
+  ERR_NATIVE_CHECK_CUT,
+  ERR_NATIVE_CHECK_NO_CHECKED,
+  ERR_NATIVE_CHECK_NO_VALUE,
+  ERR_NATIVE_CHECK_NO_LABEL,
+  ERR_NATIVE_CHECK_EMPTY_TEXT,
+  ERR_NATIVE_CHECK_AMBIGUOUS,
+  ERR_NATIVE_TEXT_ABSENT_CUT,
 } from "./errors";
 import { HelperError, type ComputerUseHelper } from "./helperClient";
 import { isBlockedShortcut } from "./shortcuts";
@@ -49,6 +60,11 @@ export interface NativeControllerDeps {
 export type NativeAppController = AppController & { currentWindowId(): number | undefined };
 
 const MAX_ELEMENTS = 120;
+/** The helper clamps `maxElements` to 1000. A big snapshot stays internal: `target` search and QA checks, never shown to the model. */
+const TARGET_SEARCH_MAX_ELEMENTS = 1000;
+/** `read` limit for a text check. */
+const ASSERT_READ_MAX_CHARS = 100000;
+const ACTUAL_MAX_CHARS = 120;
 const MAX_BATCH = 10;
 const READ_MAX_CHARS = 12000;
 const SCREENSHOT_MAX_WIDTH = 1280;
@@ -77,6 +93,7 @@ interface NativeElement {
   label?: string;
   value?: string;
   checked?: boolean;
+  disabled?: boolean;
   ops?: string[];
   isPassword?: boolean;
   hasValue?: boolean;
@@ -156,6 +173,7 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
     if (!chosen) throw new Fail(ERR_NATIVE_NO_WINDOW);
     windowId = chosen.windowId;
     lastWindow = { x: chosen.x, y: chosen.y, width: chosen.width, height: chosen.height };
+    if (latestShown && latestShown.windowId !== chosen.windowId) latestShown = undefined;
     return chosen;
   }
 
@@ -178,20 +196,27 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
     return await fn((await currentWindow()).windowId);
   }
 
+  /** The snapshot the model saw last (`browse_snapshot`, or the result of `browse_act`): QA checks by index refer to it. Dropped when the window changes. */
+  let latestShown: { windowId: number; elements: NativeElement[] } | undefined;
+
   /** Elements of recent snapshots, so a later read-back can tell which element it is looking at. */
   const knownElements = new Map<string, NativeElement[]>();
+  /** Ids of big (search-sized) snapshots among them: a read-back after typing into one must use the big cap too. */
+  const bigSnapshotIds = new Set<string>();
 
-  async function takeSnapshot(): Promise<Snap> {
+  async function takeSnapshot(maxElements: number = MAX_ELEMENTS): Promise<Snap> {
     let id = 0;
     const res = await withWindow((wid) => {
       id = wid;
-      return call("snapshot", { pid, windowId: wid, maxElements: MAX_ELEMENTS });
+      return call("snapshot", { pid, windowId: wid, maxElements });
     });
     const w = rec(res.window);
     if (typeof w.width === "number") lastWindow = { x: num(w.x), y: num(w.y), width: num(w.width), height: num(w.height) };
     const elements = Array.isArray(res.elements) ? (res.elements as NativeElement[]) : [];
     knownElements.set(str(res.snapshotId), elements);
     while (knownElements.size > 8) knownElements.delete(knownElements.keys().next().value as string);
+    if (maxElements > MAX_ELEMENTS) bigSnapshotIds.add(str(res.snapshotId));
+    while (bigSnapshotIds.size > 8) bigSnapshotIds.delete(bigSnapshotIds.keys().next().value as string);
     return {
       windowId: id,
       snapshotId: str(res.snapshotId),
@@ -202,6 +227,7 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
   }
 
   function snapshotResult(s: Snap): Record<string, unknown> {
+    latestShown = { windowId: s.windowId, elements: s.elements };
     const id = s.windowId;
     const out: Record<string, unknown> = {
       snapshotId: s.snapshotId,
@@ -210,7 +236,10 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
       elements: s.elements,
       scroll: { y: 0, height: 0, atBottom: true },
     };
-    if (s.truncated) out.truncated = true;
+    if (s.truncated) {
+      out.truncated = true;
+      out.note = NATIVE_LIST_TRUNCATED_NOTE(MAX_ELEMENTS, TARGET_SEARCH_MAX_ELEMENTS);
+    }
     return out;
   }
 
@@ -251,6 +280,15 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
     return { done: true, via: "event" };
   }
 
+  /** Indices can shift between snapshots: the element is the same only when tag and label agree. Same index first, else a unique match. */
+  function reidentify(orig: NativeElement, index: number, elements: NativeElement[]): NativeElement | undefined {
+    const all = candidatesOf(orig, elements);
+    return all.find((e) => e.index === index) ?? (all.length === 1 ? all[0] : undefined);
+  }
+
+  const candidatesOf = (orig: NativeElement, elements: NativeElement[]): NativeElement[] =>
+    elements.filter((e) => (e.tag ?? "") === (orig.tag ?? "") && (e.label ?? "") === (orig.label ?? ""));
+
   async function typeText(snapshotId: string, index: number, text: string): Promise<{ done: true; via: string; verified?: false }> {
     if (cursor) await aimAt(snapshotId, index, "type").catch(() => undefined);
     const orig = knownElements.get(snapshotId)?.find((e) => e.index === index);
@@ -258,14 +296,9 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
     let stuck = false;
     try {
       await perform({ snapshotId, index, action: "setValue", text });
-      const fresh = (await takeSnapshot()).elements;
-      // Indices can shift after setValue: the element is the same only when tag and label agree.
-      const same = (e: NativeElement): boolean => !!orig && (e.tag ?? "") === (orig.tag ?? "") && (e.label ?? "") === (orig.label ?? "");
-      let el = fresh.find((e) => e.index === index && same(e));
-      if (!el) {
-        const all = fresh.filter(same);
-        if (all.length === 1) el = all[0];
-      }
+      const fresh = (await takeSnapshot(bigSnapshotIds.has(snapshotId) ? TARGET_SEARCH_MAX_ELEMENTS : MAX_ELEMENTS)).elements;
+      // Indices can shift after setValue.
+      const el = orig ? reidentify(orig, index, fresh) : undefined;
       // The value cannot be read back: do not type again or send Select All to another control.
       if (!el) return { done: true, via: "ax", verified: false };
       if (el.isPassword) {
@@ -336,12 +369,13 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
   const norm = (s: string): string => s.trim().toLowerCase();
 
   /** Exact label first, then substring; among elements that support `op` when any do. */
-  function findByTarget(elements: NativeElement[], target: string, op?: string): NativeElement | undefined {
+  function findByTarget(elements: NativeElement[], target: string, op?: string, exactOnly = false): NativeElement | undefined {
     const t = norm(target);
     const withOp = op ? elements.filter((e) => e.ops?.includes(op)) : [];
     for (const pool of withOp.length > 0 ? [withOp] : [elements]) {
       const exact = pool.find((e) => norm(e.label ?? "") === t);
       if (exact) return exact;
+      if (exactOnly) continue;
       const part = pool.find((e) => t !== "" && norm(e.label ?? "").includes(t));
       if (part) return part;
     }
@@ -358,9 +392,21 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
   async function locate(step: Record<string, unknown>, op: string | undefined, fresh: () => Promise<Snap>): Promise<Located | undefined> {
     if (typeof step.target === "string" && step.target.trim() !== "") {
       const snap = await fresh();
-      const el = findByTarget(snap.elements, step.target, op);
-      if (!el) throw new Fail(`No element matched target "${step.target}". Call browse_snapshot to see the available elements.`);
-      return { snapshotId: snap.snapshotId, index: el.index, matched: el.label };
+      const t = norm(step.target);
+      let el = findByTarget(snap.elements, step.target, op);
+      const isExact = (e: NativeElement): boolean => norm(e.label ?? "") === t;
+      if (el && (!snap.truncated || isExact(el))) return { snapshotId: snap.snapshotId, index: el.index, matched: el.label };
+      if (snap.truncated) {
+        // The model-sized list stops early: search the whole window. This big snapshot is never shown to the model.
+        // An exact label anywhere beats a partial match in the short list.
+        const big = await takeSnapshot(TARGET_SEARCH_MAX_ELEMENTS);
+        const exact = findByTarget(big.elements, step.target, op, true);
+        if (exact) return { snapshotId: big.snapshotId, index: exact.index, matched: exact.label };
+        if (el) return { snapshotId: snap.snapshotId, index: el.index, matched: el.label };
+        el = findByTarget(big.elements, step.target, op);
+        if (el) return { snapshotId: big.snapshotId, index: el.index, matched: el.label };
+      }
+      throw new Fail(`No element matched target "${step.target}". Call browse_snapshot to see the available elements.`);
     }
     if (step.index !== undefined || step.snapshotId !== undefined) {
       if (typeof step.index !== "number" || !Number.isInteger(step.index) || step.index < 0 || typeof step.snapshotId !== "string" || step.snapshotId === "") {
@@ -513,6 +559,125 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
       }
     };
 
+  // ---- assert (QA checks) ----
+
+  // Local copies: `cut` and QA_CHECK_ACTUAL_MAX_CHARS are not exported by an entry of @sideform/browser-agent the desktop imports.
+  const cut = (v: string, n = ACTUAL_MAX_CHARS): string => (v.length > n ? `${v.slice(0, n - 3)}...` : v);
+  const squash = (v: string): string => v.replace(/\s+/g, " ").trim().toLowerCase();
+
+  type CheckResult = { check: unknown; passed: boolean; actual?: string; error?: string };
+  type Verdict = { passed: boolean; actual?: string; error?: string };
+
+  /** `el` is the single element the check is about; `present` says whether any candidate with the same tag and label exists. */
+  function elementState(present: boolean, el: NativeElement | undefined, state: string, label: string): Verdict {
+    if (state === "absent") return present ? { passed: false, actual: "found" } : { passed: true };
+    if (state === "hidden") return present ? { passed: false, actual: "visible" } : { passed: true, actual: "not found" };
+    if (state === "exists" || state === "visible") return present ? { passed: true } : { passed: false, actual: "not found" };
+    if (!el) return present ? { passed: false, error: label } : { passed: false, actual: "not found" };
+    switch (state) {
+      case "enabled":
+        return el.disabled === true ? { passed: false, actual: "disabled" } : { passed: true };
+      case "disabled":
+        return el.disabled === true ? { passed: true } : { passed: false, actual: "enabled" };
+      case "checked":
+        if (typeof el.checked !== "boolean") return { passed: false, error: ERR_NATIVE_CHECK_NO_CHECKED };
+        return el.checked ? { passed: true } : { passed: false, actual: "unchecked" };
+      default: // unchecked
+        if (typeof el.checked !== "boolean") return { passed: false, error: ERR_NATIVE_CHECK_NO_CHECKED };
+        return el.checked ? { passed: false, actual: "checked" } : { passed: true };
+    }
+  }
+
+  // The value is clipped to 200 chars by the helper, so a longer expected value can fail wrongly (a false fail, never a false pass).
+  function valueCheck(el: NativeElement, check: Record<string, unknown>): Verdict {
+    if (el.isPassword) {
+      return check.equals === "" && el.hasValue !== true ? { passed: true } : { passed: false, actual: "value hidden (password field)" };
+    }
+    if (typeof el.value !== "string") return { passed: false, error: ERR_NATIVE_CHECK_NO_VALUE };
+    const v = el.value;
+    const okEquals = typeof check.equals !== "string" || v === check.equals;
+    const okContains = typeof check.contains !== "string" || v.includes(check.contains);
+    return okEquals && okContains ? { passed: true } : { passed: false, actual: cut(`value ${JSON.stringify(cut(v, 100))}`) };
+  }
+
+  async function assertChecks(args: unknown): Promise<unknown> {
+    if (typeof args !== "object" || args === null) throw new Fail('assert requires an object with "checks".');
+    const parsed = parseQaChecks(rec(args).checks);
+    if (!parsed.ok) throw new Fail(`assert: ${parsed.errors.join("; ")}`);
+    const results: CheckResult[] = [];
+    let read: { text: string; truncated: boolean } | undefined;
+    let big: Snap | undefined;
+    for (const raw of parsed.value) {
+      const check = raw as unknown as Record<string, unknown>;
+      const type = str(check.type);
+      if (type === "no_console_errors" || type === "no_failed_requests") {
+        // A native app has no console or request log. The agent layer judges these two from the run history anyway.
+        results.push({ check, passed: true });
+      } else if (type === "text") {
+        if (!read) {
+          const r = await withWindow((wid) => call("read", { pid, windowId: wid, maxChars: ASSERT_READ_MAX_CHARS }));
+          read = { text: squash(str(r.text)), truncated: r.truncated === true };
+        }
+        const needle = squash(str(check.text));
+        if (needle === "") {
+          results.push({ check, passed: false, error: ERR_NATIVE_CHECK_EMPTY_TEXT });
+          continue;
+        }
+        const found = read.text.includes(needle);
+        if (check.absent === true) {
+          if (found) results.push({ check, passed: false, actual: "found" });
+          else if (read.truncated) results.push({ check, passed: false, error: ERR_NATIVE_TEXT_ABSENT_CUT });
+          else results.push({ check, passed: true });
+        } else if (found) results.push({ check, passed: true });
+        else results.push({ check, passed: false, actual: read.truncated ? "not found (the window text was cut, so it may be lower down)" : "not found" });
+      } else if ((type === "element" || type === "value") && check.selector === undefined && typeof check.index === "number") {
+        const index = check.index;
+        const wid = await winId();
+        const shown = latestShown && latestShown.windowId === wid ? latestShown : undefined;
+        const orig = shown?.elements.find((e) => e.index === index);
+        if (!orig) {
+          results.push({ check, passed: false, error: ERR_NATIVE_CHECK_NO_INDEX(index) });
+          continue;
+        }
+        if (!orig.label?.trim() || orig.label === `${orig.tag ?? ""} #${orig.index}`) {
+          results.push({ check, passed: false, error: ERR_NATIVE_CHECK_NO_LABEL(index) });
+          continue;
+        }
+        // One big snapshot for all index checks of this call, so a lower element is not missed.
+        big ??= await takeSnapshot(TARGET_SEARCH_MAX_ELEMENTS);
+        if (big.windowId !== shown?.windowId) {
+          results.push({ check, passed: false, error: ERR_NATIVE_CHECK_NO_INDEX(index) });
+          continue;
+        }
+        const cands = candidatesOf(orig, big.elements);
+        const present = cands.length > 0;
+        if (!present && big.truncated) {
+          results.push({ check, passed: false, error: ERR_NATIVE_CHECK_CUT });
+          continue;
+        }
+        const el = reidentify(orig, index, big.elements);
+        const ambiguous = ERR_NATIVE_CHECK_AMBIGUOUS(index, orig.tag ?? "", orig.label ?? "");
+        if (type === "element") {
+          results.push({ check, ...elementState(present, el, str(check.state), ambiguous) });
+        } else if (!present) {
+          results.push({ check, passed: false, actual: "not found" });
+        } else if (!el) {
+          results.push({ check, passed: false, error: ambiguous });
+        } else {
+          results.push({ check, ...valueCheck(el, check) });
+        }
+      } else if (type === "url") {
+        results.push({ check, passed: false, error: ERR_NATIVE_CHECK_UNSUPPORTED("url check") });
+      } else if (type === "element" || type === "value" || type === "count") {
+        const what = check.selector !== undefined || type === "count" ? `${type} check with a CSS selector` : `${type} check without an index`;
+        results.push({ check, passed: false, error: ERR_NATIVE_CHECK_UNSUPPORTED(what) });
+      } else {
+        results.push({ check, passed: false, error: ERR_NATIVE_CHECK_UNSUPPORTED(`${type || "unknown"} check`) });
+      }
+    }
+    return { ok: true, passed: results.every((r) => r.passed), results };
+  }
+
   const unsupported = (name: string) => async () => ({ error: ERR_NATIVE_UNSUPPORTED(name) });
 
   return {
@@ -520,7 +685,7 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
 
     open: async () => ({ error: ERR_NATIVE_OPEN_LOCKED }),
     findImages: unsupported("findImages"),
-    assert: unsupported("assert"),
+    assert: safe(assertChecks),
     requests: unsupported("requests"),
 
     tabs: safe(async (args: unknown) => {
@@ -532,6 +697,7 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         const tabId = rec(args).tabId;
         const target = ws.find((w) => w.windowId === tabId);
         if (!target) return { error: `No window with id ${String(tabId)}. Use browse_tabs list.` };
+        if (target.windowId !== windowId) latestShown = undefined;
         windowId = target.windowId;
         lastWindow = { x: target.x, y: target.y, width: target.width, height: target.height };
         ws = await listWindows();
@@ -609,6 +775,7 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         title,
       };
       if (snap) {
+        latestShown = { windowId: snap.windowId, elements: snap.elements };
         result.snapshotId = snap.snapshotId;
         result.marked = snap.elements.length;
         result.elements = snap.elements;
