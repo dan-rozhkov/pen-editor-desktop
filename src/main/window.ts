@@ -3,7 +3,7 @@ import { captureWithRetry } from "./captureRetry";
 import { normalizePageColor, PAGE_BG_FALLBACK, SAMPLE_PAGE_BG_SCRIPT } from "./pageBackground";
 import path from "node:path";
 import { writeFile } from "node:fs/promises";
-import { app, BaseWindow, View, WebContentsView, Menu, dialog, ipcMain, nativeTheme, session, shell, systemPreferences, webContents } from "electron";
+import { app, BaseWindow, View, WebContentsView, Menu, Notification, dialog, ipcMain, nativeTheme, session, shell, systemPreferences, webContents } from "electron";
 import {
   TabManager,
   shouldFocusAddressBar,
@@ -84,7 +84,7 @@ import type { FaviconCache } from "./browser/faviconCache";
 import type { PasswordsService } from "./passwordsService";
 import { appKey, errorForPlan, openApp, ownedBySender, ownedBySession, planAppCommand, routeAppCommand } from "./appTargets";
 import { appConfirm, appRegistry, cancelWaiters, findUserRunningPids, quitUserApp, reopenApp, reopenWhenGone, validateRequestedApp } from "./appTargetsService";
-import { createTabAgentActivity, isAgentPageCommand } from "./agentActivity";
+import { AGENT_AWAKE_HOLD_MS, MINIMIZED_AGENT_NOTICE_BODY, MINIMIZED_AGENT_NOTICE_TITLE, createTabAgentActivity, isAgentPageCommand } from "./agentActivity";
 import { decideCloseTarget } from "./closeTarget";
 import { focusAfterCollapse, isTabCreationSender, planEmptyViewUpdate, resolveFocusTarget, type EmptyViewState } from "./emptyView";
 import { GLASS_SOLID, adoptPanelTheme, contentBackground, FALLBACK_THEME, glassTint, isPanelDocument, resolveWindowTheme, } from "./windowTheme";
@@ -624,6 +624,8 @@ export function createMainWindow(
   // Drives the tab strip's agent-cursor icons, one tracker per tab; the
   // hold/flicker rules live in agentActivity.ts.
   const agentActivity = createTabAgentActivity({ onChange: (tabId, working) => tabs.setAgentTabWorking(tabId, working) });
+  // Same calls, longer hold: keeps the tab rendering (see TabManager view modes) while the LLM thinks.
+  const agentAwake = createTabAgentActivity({ idleMs: AGENT_AWAKE_HOLD_MS, onChange: (tabId, awake) => tabs.setAgentTabAwake(tabId, awake) });
   // Review finding 3: each tab's own dialog queue is capped — an agent loop
   // that never drains it (a crashed/stuck agent, or a page that spams
   // dialogs) must not grow this without bound; the oldest entries are
@@ -689,6 +691,7 @@ export function createMainWindow(
               },
       );
       win.contentView.addChildView(view);
+      let atBack = false; // see setViewMode in the handle below
       // The tab content is an island with rounded corners (radius set once, here).
       view.setBorderRadius(ISLAND_RADIUS);
       const viewId = view.webContents.id;
@@ -1294,6 +1297,26 @@ export function createMainWindow(
         },
         setBounds: (b) => view.setBounds(b),
         setVisible: (v) => view.setVisible(v),
+        // "awake": visible but at the BOTTOM of the z-order, fully under the active tab (or the
+        // empty view), so Chromium keeps rendering it (a hidden view gets rAF 0, 1/s timers and
+        // empty captures). Index 0 is below glassTintView too: harmless, nothing shows through
+        // because the covering tab has the same bounds and radius. Tab views are created after the
+        // tab bar, agent panel and empty view and so already sit above them; re-adding to the top
+        // restores exactly that order. A tab never awake is never reordered.
+        setViewMode: (mode) => {
+          if (mode === "hidden") {
+            view.setVisible(false);
+            return;
+          }
+          view.setVisible(true);
+          if (mode === "awake" && !atBack) {
+            win.contentView.addChildView(view, 0);
+            atBack = true;
+          } else if (mode === "shown" && atBack) {
+            win.contentView.addChildView(view);
+            atBack = false;
+          }
+        },
         destroy: () => {
           themeCallbacks.delete(viewId);
           titleCallbacks.delete(viewId);
@@ -2049,7 +2072,10 @@ export function createMainWindow(
     const drivesPage = isAgentPageCommand(payload.command, payload.args);
     // The tab this command starts on (null for a session that has no tab yet).
     const startTab = drivesPage ? tabs.currentBrowserTabId(sessionId) : null;
-    if (startTab !== null) agentActivity.begin(startTab);
+    if (startTab !== null) {
+      agentActivity.begin(startTab);
+      agentAwake.begin(startTab);
+    }
     try {
       // A page-changing command from a tab that does not own the running
       // journal would be recorded into it: end that journal first. (A session
@@ -2170,11 +2196,17 @@ export function createMainWindow(
       if (!passive) runBoundary.commandEnd(runScope);
       // A command can settle after the window closed: never push state then.
       if (!win.isDestroyed()) {
-        if (startTab !== null) agentActivity.end(startTab);
+        if (startTab !== null) {
+          agentActivity.end(startTab);
+          agentAwake.end(startTab);
+        }
         // `tabs new`/`switch` and popups repoint the agent mid-command: the tab
         // it landed on gets the icon too (and holds it for the idle period).
         const endTab = tabs.currentBrowserTabId(sessionId);
-        if (drivesPage && endTab !== null && endTab !== startTab) agentActivity.pulse(endTab);
+        if (drivesPage && endTab !== null && endTab !== startTab) {
+          agentActivity.pulse(endTab);
+          agentAwake.pulse(endTab);
+        }
       }
     }
   };
@@ -2446,6 +2478,12 @@ export function createMainWindow(
   };
   win.on("resize", layout);
   layout();
+  // A minimized window is always hidden by Chromium: an awake agent tab freezes. Tell the person once.
+  const onMinimize = () => {
+    if (!tabs.hasAwakeTab() || !Notification.isSupported()) return;
+    new Notification({ title: MINIMIZED_AGENT_NOTICE_TITLE, body: MINIMIZED_AGENT_NOTICE_BODY }).show();
+  };
+  win.on("minimize", onMinimize);
 
   // --- tab bar IPC (scoped to this window's tabbar webContents) ---
   const tabbarId = tabbarView.webContents.id;
@@ -2669,6 +2707,8 @@ export function createMainWindow(
     unsubscribeMcpStatus();
     mcpService.setOnDemandTabOpener(null);
     agentActivity.dispose();
+    agentAwake.dispose();
+    win.removeListener("minimize", onMinimize);
     tabs.destroyAll();
     tabbarView.webContents.close();
     agentPanelView.webContents.close();

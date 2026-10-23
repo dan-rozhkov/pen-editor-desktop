@@ -54,10 +54,24 @@ export interface BrowserNavState {
   canGoForward: boolean;
 }
 
+export type ViewMode = "shown" | "awake" | "hidden";
+
+/** shown: the active tab. awake: a browser tab the agent drives, kept rendering under the active one. */
+export function resolveViewMode(tab: { id: number; kind: TabKind }, activeId: number | null, awakeIds: ReadonlySet<number>): ViewMode {
+  if (tab.id === activeId) return "shown";
+  if (tab.kind === "browser" && awakeIds.has(tab.id)) return "awake";
+  return "hidden";
+}
+
 export interface TabViewHandle {
   loadURL(url: string): Promise<void>;
   setBounds(bounds: { x: number; y: number; width: number; height: number }): void;
   setVisible(visible: boolean): void;
+  /**
+   * Optional richer visibility: "awake" keeps the view rendering while it is covered by the
+   * active tab. Without it TabManager falls back to `setVisible(mode !== "hidden")`.
+   */
+  setViewMode?(mode: ViewMode): void;
   destroy(): void;
   sendMenuCommand(commandId: string): void;
   /** Settings tabs only: tells the open page to switch to a section (no reload). */
@@ -409,6 +423,8 @@ export class TabManager {
   private lastEditorWebContentsId: number | null = null;
   /** Browser tabs the agent is working in (icon targets; see agentActivity.ts). */
   private readonly agentWorkingTabs = new Set<number>();
+  /** Browser tabs kept rendering in the background (see resolveViewMode). Not tab-bar state. */
+  private readonly agentAwakeTabs = new Set<number>();
   private lastLayout: { x: number; y: number; width: number; height: number } | null = null;
   /**
    * Full browser use (design doc `2026-09-23-full-browser-use-design.md`):
@@ -532,7 +548,7 @@ export class TabManager {
     if (background) {
       // An isolated session's tab (or an explicit background open) opens in the
       // BACKGROUND: the editor keeps focus and the active tab. The user can click it to watch.
-      view.setVisible(false);
+      this.applyViewMode(entry);
       this.emit();
     } else {
       // A background request that only became active because the window had no
@@ -560,6 +576,7 @@ export class TabManager {
     if (this.agentBrowserTabId === id) this.agentBrowserTabId = null;
     for (const [sid, tid] of this.sessionAgentTabIds) if (tid === id) this.sessionAgentTabIds.delete(sid);
     this.agentWorkingTabs.delete(id);
+    this.agentAwakeTabs.delete(id);
     const isSession = (t: TabEntry) => t.kind === "browser" && t.session !== undefined;
     // "Last tab closed" also covers: only background session tabs remain, which
     // are never auto-activated. The window then keeps zero active tabs
@@ -711,6 +728,27 @@ export class TabManager {
     if (working) this.agentWorkingTabs.add(id);
     else this.agentWorkingTabs.delete(id);
     this.emit();
+  }
+
+  /** Keeps a browser tab rendering under the active tab (or lets it hide again). No snapshot: not tab-bar state. */
+  setAgentTabAwake(id: number, awake: boolean): void {
+    if (this.agentAwakeTabs.has(id) === awake) return;
+    if (awake) this.agentAwakeTabs.add(id);
+    else this.agentAwakeTabs.delete(id);
+    const tab = this.tabs.find((t) => t.id === id);
+    if (tab) this.applyViewMode(tab);
+  }
+
+  hasAwakeTab(): boolean {
+    return this.tabs.some((t) => t.kind === "browser" && this.agentAwakeTabs.has(t.id));
+  }
+
+  private applyViewMode(tab: TabEntry): void {
+    const mode = resolveViewMode(tab, this.activeId, this.agentAwakeTabs);
+    // Without setViewMode the view cannot go under the active tab, so an awake tab must stay hidden:
+    // shown would cover the tab the person is looking at.
+    if (tab.view.setViewMode) tab.view.setViewMode(mode);
+    else tab.view.setVisible(mode === "shown");
   }
 
   private isLiveBrowserTab(id: number): boolean {
@@ -991,14 +1029,15 @@ export class TabManager {
   }
 
   /**
-   * Like `layout`, but moves only the ACTIVE tab's view. Per-frame use (the panel slide): hidden
+   * Like `layout`, but moves only the ACTIVE and awake tab views. Per-frame use (the panel slide): hidden
    * tab views need no setBounds until the final full `layout`. `lastLayout` is updated, so a tab
    * created or activated meanwhile is placed at the latest frame.
    */
   layoutActive(area: { x: number; y: number; width: number; height: number }): void {
     this.lastLayout = area;
-    const active = this.tabs.find((t) => t.id === this.activeId);
-    if (active) this.applyLayout(active);
+    for (const tab of this.tabs) {
+      if (resolveViewMode(tab, this.activeId, this.agentAwakeTabs) !== "hidden") this.applyLayout(tab);
+    }
   }
 
   count(): number {
@@ -1014,6 +1053,7 @@ export class TabManager {
     const closing = this.tabs;
     this.tabs = [];
     this.activeId = null;
+    this.agentAwakeTabs.clear();
     for (const tab of closing) {
       try {
         tab.view.destroy();
@@ -1049,7 +1089,7 @@ export class TabManager {
 
   private setActive(id: number, opts: ActivationOptions = {}): void {
     this.activeId = id;
-    for (const tab of this.tabs) tab.view.setVisible(tab.id === id);
+    for (const tab of this.tabs) this.applyViewMode(tab);
     const active = this.tabs.find((t) => t.id === id);
     if (opts.focus !== false) active?.view.focus();
     if (active?.kind === "editor") this.lastEditorWebContentsId = active.view.getWebContentsId();

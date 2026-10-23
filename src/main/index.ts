@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { app, BaseWindow, ipcMain, safeStorage, session, shell } from "electron";
+import { KEEP_RENDERING_WHEN_OCCLUDED_SWITCH } from "./agentActivity";
 import { DISPLAY_APP_NAME, STORAGE_IDENTITY_FILE, resolveEditorUrl, resolveStorageIdentity, storageIdentityFileText } from "./config";
 import { createMainWindow } from "./window";
 import { appRegistry } from "./appTargetsService";
@@ -17,6 +18,11 @@ import { runOriginMigrationOnStartup } from "./originMigrationRunner";
 import { createMigrationGuard } from "./migrationGuard";
 
 const editorUrl = resolveEditorUrl(process.env);
+
+// A window covered by another app's window must keep rendering, or the agent's browser tab freezes
+// (rAF stops, screenshots come back empty). Cost: the editor canvas also keeps rendering while
+// covered; it renders on demand, so the idle cost is small. Must run before ready.
+app.commandLine.appendSwitch(KEEP_RENDERING_WHEN_OCCLUDED_SWITCH);
 
 // Storage identity (config.ts resolveStorageIdentity). The app was renamed from
 // "Pineapple Editor" to "Sideform Desktop". An existing install keeps its

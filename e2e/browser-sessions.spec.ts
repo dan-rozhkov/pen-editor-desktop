@@ -83,6 +83,21 @@ async function launch(env: Record<string, string> = {}): Promise<{ app: Electron
   return { app, editor };
 }
 
+
+/** Every page view of the window, bottom to top of the z-order (`contentView.children` order). */
+async function tabViewsBottomToTop(app: ElectronApplication): Promise<{ url: string; visible: boolean; shared: boolean }[]> {
+  return app.evaluate(({ BaseWindow, session }) => {
+    const shared = session.fromPartition("persist:penbrowser");
+    return BaseWindow.getAllWindows()
+      .flatMap((w) => w.contentView.children)
+      .flatMap((v) => {
+        if (!("webContents" in v)) return [];
+        const wc = (v as unknown as { webContents: Electron.WebContents }).webContents;
+        return [{ url: wc.getURL(), visible: v.getVisible(), shared: wc.session === shared }];
+      });
+  });
+}
+
 test("two parallel isolated sessions keep separate cookies, network mocks and tabs; the shared browser sees neither", async () => {
   const { app, editor } = await launch();
   try {
@@ -94,14 +109,12 @@ test("two parallel isolated sessions keep separate cookies, network mocks and ta
     expect(setA.error).toBeUndefined();
     expect(setB.error).toBeUndefined();
 
-    // --- session tabs open in the background: the canvas tab stays the visible view ---
-    const views = await app.evaluate(({ BaseWindow }) =>
-      BaseWindow.getAllWindows()
-        .flatMap((w) => w.contentView.children)
-        .flatMap((v) => ("webContents" in v ? [{ url: (v as unknown as { webContents: { getURL(): string } }).webContents.getURL(), visible: v.getVisible() }] : [])),
-    );
-    expect(views.filter((v) => v.url.startsWith(`${site}/set`)).map((v) => v.visible)).toEqual([false, false]);
-    expect(views.find((v) => isCanvasPage(v.url, editorBaseUrl))?.visible).toBe(true);
+    // --- session tabs open in the background: the canvas tab stays the view on top ---
+    // (a session tab the agent drives is awake: visible, but UNDER the active tab)
+    const views = await tabViewsBottomToTop(app);
+    const onTop = views.filter((v) => v.visible && (v.url.startsWith(site) || isCanvasPage(v.url, editorBaseUrl))).at(-1);
+    expect(onTop && isCanvasPage(onTop.url, editorBaseUrl)).toBe(true);
+    expect(views.filter((v) => v.url.startsWith(`${site}/set`))).toHaveLength(2);
 
     const [meA, meB] = await Promise.all([
       call(editor, "A", "open", { url: `${site}/me` }),
@@ -224,14 +237,11 @@ test("a popup of a session tab stays in that session", async () => {
     const list = (await call(editor, "P", "tabs", { action: "list" })).tabs as { tabId: number; url: string; current?: boolean }[];
     const other = list.find((t) => !t.current)!;
     expect((await call(editor, "P", "tabs", { action: "switch", tabId: other.tabId })).error).toBeUndefined();
-    const views = await app.evaluate(({ BaseWindow }) =>
-      BaseWindow.getAllWindows()
-        .flatMap((w) => w.contentView.children)
-        .flatMap((v) => ("webContents" in v ? [{ url: (v as unknown as { webContents: { getURL(): string } }).webContents.getURL(), visible: v.getVisible() }] : [])),
-    );
-    // Only the shared tab (it activated when opened) is visible: the editor lost
-    // the foreground to it, never to a session tab.
-    expect(views.filter((v) => v.url.startsWith(site)).filter((v) => v.visible)).toHaveLength(1);
+    const views = await tabViewsBottomToTop(app);
+    // The shared tab (it activated when opened) is the view on top: the editor lost
+    // the foreground to it, never to a session tab (an awake session tab sits under it).
+    const onTop = views.filter((v) => v.visible && v.url.startsWith(site)).at(-1);
+    expect(onTop?.shared).toBe(true);
   } finally {
     await app.close();
   }

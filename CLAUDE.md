@@ -522,6 +522,30 @@ extra IPC channel). The renderer draws the same arrow geometry as the in-page
 cursor from `@sideform/browser-agent`, plus a visually hidden "Agent is
 working" label.
 
+**Awake agent tabs.** A `WebContentsView` with `setVisible(false)` gets
+`document.visibilityState = "hidden"`: `requestAnimationFrame` never fires,
+timers run at 1/s and `capturePage` returns an empty image. Sites that hydrate
+on rAF then hang and agent screenshots fail. So `TabManager` gives each tab a
+view mode (`resolveViewMode`): `shown` (the active tab), `awake` (a browser tab
+the agent drove, not active) or `hidden`. An awake view stays visible but sits at
+the BOTTOM of the window's view z-order (`setViewMode` in `window.ts`'s handle,
+`addChildView(view, 0)`), under the active tab with the same bounds and radius,
+so it is fully covered and never shows. It renders at full speed. Going back to
+`shown` re-adds it on top. A tab that was never awake is never reordered.
+`layoutActive` moves awake tabs too. A second `createTabAgentActivity` in
+`window.ts` (`AGENT_AWAKE_HOLD_MS` = 60 s, called in the same places as the icon
+tracker) feeds `TabManager.setAgentTabAwake`; the 60 s hold covers the LLM
+thinking between steps. Awake is not tab-bar state: no snapshot is emitted.
+`index.ts` also sets the Chromium switch `disable-backgrounding-occluded-windows`
+(before ready), so a window covered by another app's window keeps rendering. Cost:
+the editor canvas also renders while covered; it renders on demand, so the idle
+cost is small. A MINIMIZED window cannot be fixed: Chromium always hides it. On
+`minimize`, if a tab is awake, the main window shows one Notification ("The
+agent's browser tab is paused") telling the person to open the window. Awake
+also lasts through the 60 s hold after the agent finished, so the text never
+claims the agent is running. A handle without `setViewMode` (test fakes) cannot
+go under the active tab, so there an awake tab stays hidden.
+
 A browser tab's `WebContentsView` is constructed with
 `partition: "persist:penbrowser"` — its own session, separate from the
 editor tabs' — and **no preload at all**: `contextIsolation`/`sandbox` are
@@ -1230,8 +1254,10 @@ without sharing cookies, tabs, fixtures or mocks. The shared browser
   tab never auto-activates a session tab: with only session tabs left no editor tab
   is respawned: the window stays at zero active tabs.
 - **Background tabs.** A session tab never becomes active and gets no address-bar
-  focus (`setVisible(false)`); the editor keeps focus. The user clicks it to
-  watch. A hidden session tab still screenshots. Shared tabs behave as before.
+  focus; the editor keeps focus. It opens `setVisible(false)`. While the agent
+  drives it, it is awake: visible but under the active tab (see "Awake agent tabs"),
+  so it renders and screenshots. After the 60 s hold it hides again. The user clicks
+  it to watch. Shared tabs behave as before.
   Limit: on Linux a never-shown view MAY not paint, so `screenshot` of a
   session tab may answer `Screenshot capture failed (empty image).` (`capturePage`
   `stayHidden` does not help). It depends on the Chromium build / compositor, so

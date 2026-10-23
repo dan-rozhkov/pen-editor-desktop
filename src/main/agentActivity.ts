@@ -12,6 +12,23 @@ import { PAGE_DRIVING_COMMANDS } from "./browserCommands";
 
 export const AGENT_ACTIVITY_IDLE_MS = 4000;
 
+/**
+ * How long a browser tab the agent drove stays rendering in the background
+ * after its last page-driving command. It covers the LLM thinking between
+ * steps; the 4 s icon hold is too short for that. A tab that is not shown
+ * would otherwise freeze (rAF stops, timers run at 1/s, captures are empty).
+ */
+export const AGENT_AWAKE_HOLD_MS = 60_000;
+
+/** Notification shown when the window is minimized while an agent tab is awake. */
+// Shown during the whole awake hold, also after the agent finished, so it must not claim the agent is running.
+export const MINIMIZED_AGENT_NOTICE_TITLE = "The agent's browser tab is paused";
+export const MINIMIZED_AGENT_NOTICE_BODY =
+  "Pages in the agent's browser tab stop while the window is minimized. If the agent is still working, open the window to let it continue.";
+
+/** Chromium switch: a window covered by another app's window keeps rendering. */
+export const KEEP_RENDERING_WHEN_OCCLUDED_SWITCH = "disable-backgrounding-occluded-windows";
+
 const PAGE_COMMANDS = PAGE_DRIVING_COMMANDS;
 
 /**
