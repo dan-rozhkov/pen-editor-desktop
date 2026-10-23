@@ -25,7 +25,7 @@ export const NATIVE_LIST_TRUNCATED_NOTE = (max: number, searchMax: number): stri
   `The list stops at ${max} elements; elements lower in the window are not listed. browse_act with "target" also searches further, up to ${searchMax} elements, by label. To get a shorter list, type into the app's own search or filter field.`;
 /** `what` is e.g. "url check" or "element check with a CSS selector". */
 export const ERR_NATIVE_CHECK_UNSUPPORTED = (what: string): string =>
-  `A ${what} is not available for an app controlled through macOS accessibility. Use a text check, or an element or value check with an index from browse_snapshot.`;
+  `The ${what} is not available for an app controlled through macOS accessibility. Use a text check, or an element or value check with an index from browse_snapshot.`;
 export const ERR_NATIVE_CHECK_NO_INDEX = (index: number | string): string =>
   `No element with index ${index} in the latest snapshot. Call browse_snapshot first.`;
 export const ERR_NATIVE_CHECK_CUT =
