@@ -2,37 +2,30 @@
 // click-through window above the target window. Created on the first move, only while the
 // "Show Agent Cursor" setting is on. Screenshots never include it (window-only capture).
 import { BrowserWindow } from "electron";
-import { HIDE_AFTER_MS, planMove, type Point } from "./cursorMath";
+import { ARGS_MARKER, CURSOR_JS } from "@sideform/browser-agent/controller";
 import type { CursorSink, WindowFrame } from "./nativeController";
 
-// Inline page: no remote content, no preload. Driven only through numeric arguments.
+// Inline page: no remote content, no preload, no cursor markup of its own. The cursor is drawn by browser-agent's
+// CURSOR_JS (the script browser tabs use), run once per move, so arrow, motion, glow and ripple are identical.
 const PAGE = `<!doctype html><html><head><meta charset="utf-8"><style>
 html,body{margin:0;height:100%;overflow:hidden;background:transparent}
-#c{position:absolute;left:0;top:0;width:24px;height:24px;opacity:0;transition:opacity .15s;will-change:transform;filter:drop-shadow(0 1px 2px rgba(0,0,0,.35))}
-.r{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;border:2px solid #4f7cff;opacity:.9;animation:rip .5s ease-out forwards}
-@keyframes rip{to{transform:scale(3.2);opacity:0}}
-</style></head><body>
-<svg id="c" viewBox="0 0 24 24"><path d="M4 2 L4 19 L8.6 14.9 L11.6 21.6 L14.2 20.5 L11.3 14 L17.4 14 Z" fill="#4f7cff" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg>
-<script>
-var c=document.getElementById("c"),timer=0;
-function place(x,y){c.style.transform="translate("+x+"px,"+y+"px)"}
-window.__move=function(flat,ms){
-  cancelAnimationFrame(timer);c.style.opacity=1;
-  var n=flat.length/2,t0=performance.now();
-  if(ms<=0||n<2){place(flat[flat.length-2],flat[flat.length-1]);return}
-  (function step(now){
-    var k=Math.min(1,(now-t0)/ms),i=Math.round(k*(n-1));
-    place(flat[i*2],flat[i*2+1]);
-    if(k<1)timer=requestAnimationFrame(step);
-  })(t0);
-};
-window.__ripple=function(x,y){var r=document.createElement("div");r.className="r";r.style.left=x+"px";r.style.top=y+"px";document.body.appendChild(r);setTimeout(function(){r.remove()},600)};
-window.__hide=function(){c.style.opacity=0};
-</script></body></html>`;
+</style></head><body></body></html>`;
+
+/** Bound on awaiting one move (page load included): same as the browser controller's CURSOR_TIMEOUT_MS. */
+const MOVE_TIMEOUT_MS = 900;
+/** CURSOR_JS fades its own root out after 8 s idle (400 ms transition); only then may the window go. */
+const HIDE_AFTER_MS = 8000 + 400;
 
 // Every overlay window ever made (weak: a destroyed window just disappears). Code that decides about "the main
 // window" (dock reopen, second launch) must not count these: they are click-through decoration.
 const overlayWindows = new WeakSet<object>();
+// Live overlays, so unticking "Show Agent Cursor" can hide them all at once (like the browser tab's hideCursorOverlay).
+const liveOverlays = new Set<{ hideNow(): void }>();
+
+/** Hide every live cursor overlay right away ("Show Agent Cursor" was just unticked). The next move shows it again. */
+export function hideAllCursorOverlays(): void {
+  for (const o of liveOverlays) o.hideNow();
+}
 
 /** True for a cursor overlay window. Use it to leave overlays out of any "which is the main window" decision. */
 export const isCursorOverlayWindow = (win: object | null | undefined): boolean => win != null && overlayWindows.has(win);
@@ -42,14 +35,29 @@ export interface CursorOverlay extends CursorSink {
   destroy(): void;
 }
 
-const finite = (n: number): number => (Number.isFinite(n) ? Math.round(n * 100) / 100 : 0);
+const toLocal = (p: { x: number; y: number }, f: WindowFrame): { x: number; y: number } => ({ x: p.x - f.x, y: p.y - f.y });
+
+/**
+ * Runs before CURSOR_JS when the window was re-bounded. CURSOR_JS keeps its resting point window-local and clamps
+ * targets to innerWidth/innerHeight, so: shift that point by the frame origin's move (it stays at the same screen
+ * spot), then wait (a few frames at most) until the renderer reports the new size.
+ */
+const reboundJs = (dx: number, dy: number, width: number, height: number): string => `new Promise(function (resolve) {
+  var st = window.__penCursor;
+  if (st && st.pos) st.pos = { x: st.pos.x + ${dx}, y: st.pos.y + ${dy} };
+  var n = 0;
+  (function check() {
+    if ((window.innerWidth === ${width} && window.innerHeight === ${height}) || ++n > 10) resolve(null);
+    else requestAnimationFrame(check);
+  })();
+})`;
 
 export function createCursorOverlay(deps: { enabled: () => boolean }): CursorOverlay {
   let win: BrowserWindow | null = null;
   let ready: Promise<void> | null = null;
-  let last: Point | null = null;
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
   let destroyed = false;
+  let bounds: WindowFrame | null = null;
 
   const ensure = (frame: WindowFrame): BrowserWindow => {
     if (win && !win.isDestroyed()) return win;
@@ -65,7 +73,8 @@ export function createCursorOverlay(deps: { enabled: () => boolean }): CursorOve
       hasShadow: false,
       resizable: false,
       skipTaskbar: true,
-      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+      // backgroundThrottling off: after an idle hide, the first move must animate at once, not wait out a paused rAF.
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
     });
     overlayWindows.add(win);
     win.setIgnoreMouseEvents(true);
@@ -82,50 +91,63 @@ export function createCursorOverlay(deps: { enabled: () => boolean }): CursorOve
     return w;
   };
 
-  const run = (w: BrowserWindow, code: string): void => {
-    void (ready ?? Promise.resolve()).then(() => {
-      if (!w.isDestroyed()) return w.webContents.executeJavaScript(code).catch(() => undefined);
-      return undefined;
-    });
+  /** Run CURSOR_JS in the overlay page; resolves when its promise settles. Never rejects. */
+  const run = async (w: BrowserWindow, code: string): Promise<void> => {
+    await (ready ?? Promise.resolve());
+    if (w.isDestroyed()) return;
+    await w.webContents.executeJavaScript(code).catch(() => undefined);
   };
 
   const hide = (): void => {
     hideTimer = null;
-    if (!win || win.isDestroyed()) return;
-    run(win, "window.__hide()");
-    const w = win;
-    setTimeout(() => {
-      if (!w.isDestroyed() && hideTimer === null) w.hide();
-    }, 250);
+    if (win && !win.isDestroyed()) win.hide();
   };
 
+  const self = {
+    hideNow(): void {
+      if (hideTimer) clearTimeout(hideTimer);
+      hide();
+    },
+  };
+  liveOverlays.add(self);
+
   return {
-    moveTo(point, opts) {
+    async moveTo(point, opts) {
       try {
         if (destroyed || !deps.enabled()) return;
         const f = opts.windowFrame;
         const w = ensure(f);
-        w.setBounds({ x: Math.round(f.x), y: Math.round(f.y), width: Math.max(1, Math.round(f.width)), height: Math.max(1, Math.round(f.height)) });
+        const next = { x: Math.round(f.x), y: Math.round(f.y), width: Math.max(1, Math.round(f.width)), height: Math.max(1, Math.round(f.height)) };
+        const prev = bounds;
+        const rebound = !prev || prev.x !== next.x || prev.y !== next.y || prev.width !== next.width || prev.height !== next.height;
+        if (rebound) w.setBounds(next);
+        bounds = next;
         if (!w.isVisible()) w.showInactive();
-        const { path, durationMs } = planMove(last, point, f);
-        last = point;
-        const flat = path.flatMap((p) => [finite(p.x), finite(p.y)]).join(",");
-        run(w, `window.__move([${flat}],${finite(durationMs)})`);
-        if (opts.click) {
-          const end = path[path.length - 1];
-          const delay = Math.round(durationMs);
-          setTimeout(() => {
-            if (!w.isDestroyed()) run(w, `window.__ripple(${finite(end.x)},${finite(end.y)})`);
-          }, delay);
-        }
         if (hideTimer) clearTimeout(hideTimer);
-        hideTimer = setTimeout(hide, HIDE_AFTER_MS);
+        hideTimer = null;
+        // No `from`: CURSOR_JS keeps its own position and starts at the same spot as in a browser tab.
+        const args = { action: opts.action, point: toLocal(point, f) };
+        const pre = rebound && prev ? `${reboundJs(prev.x - next.x, prev.y - next.y, next.width, next.height)}.then(function () { return ` : "";
+        const code = CURSOR_JS.replace(ARGS_MARKER, () => JSON.stringify(args));
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const bound = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, MOVE_TIMEOUT_MS);
+        });
+        try {
+          await Promise.race([run(w, pre ? `${pre}${code}; })` : code), bound]);
+        } finally {
+          clearTimeout(timer);
+          // Armed once the move ran: CURSOR_JS starts its own 8 s fade then, so the window goes after the fade.
+          if (hideTimer) clearTimeout(hideTimer);
+          hideTimer = destroyed ? null : setTimeout(hide, HIDE_AFTER_MS);
+        }
       } catch {
         /* cosmetic: never fails the action */
       }
     },
     destroy() {
       destroyed = true;
+      liveOverlays.delete(self);
       if (hideTimer) clearTimeout(hideTimer);
       hideTimer = null;
       try {

@@ -72,6 +72,7 @@ import { FetchRouter } from "./fetchRouting";
 import { BLANK_DOCUMENT_URL, createCommitGate } from "./commitGate";
 import * as fixtureSession from "./fixtureSession";
 import { computerUseDeps } from "./computerUse/service";
+import { hideAllCursorOverlays } from "./computerUse/cursorOverlay";
 import { computerUseAvailable, setNativeCursorEnabled } from "./computerUse/helper";
 import { CURSOR_SETTINGS_FILE, type CursorSettings, readCursorSettings, resolveCursorSettings, writeCursorSettings } from "./cursorSettings";
 import type { McpService, IpcListenerGateway } from "./mcp/service";
@@ -2712,7 +2713,10 @@ export function createMainWindow(
           // Unticked: hide the overlay on the current page right away
           // (best effort). Re-enabling needs nothing: the next move's
           // show() makes it visible again.
-          if (!enabled) void browserController.hideCursorOverlay();
+          if (!enabled) {
+            void browserController.hideCursorOverlay();
+            hideAllCursorOverlays();
+          }
         },
         },
         { isMac: process.platform === "darwin", appName: app.name, agentPanel: { collapsed: panelCollapsed } },

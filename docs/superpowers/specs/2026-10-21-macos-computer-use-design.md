@@ -211,11 +211,14 @@ native handles as well. A native handle holds no profile lock.
 A transparent, frameless, non-focusable `BrowserWindow` per native handle, `setIgnoreMouseEvents(true)`,
 `setAlwaysOnTop(true, "screen-saver")`, `setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })`,
 `hasShadow: false`, shown inactive, covering the target window's frame (re-read before each action).
-Its page (inline HTML, no remote content, no preload, `sandbox: true`) draws the same arrow cursor the
-browser tabs use and animates to a point along a short arc (~350 ms, ease-out), with a ripple on click.
-It follows the existing "Show Agent Cursor" setting; when the setting is off, no overlay is created.
-Screenshots never include it (window-only capture). It hides 1.5 s after the last action and on
-close.
+Its page (inline HTML, no remote content, no preload, `sandbox: true`) is an empty transparent document;
+each move runs browser-agent's `CURSOR_JS` in it (the script browser tabs use), so the arrow, motion, glow,
+click ripple and 8 s idle fade are identical to browser use. The point is window-local and the action kind
+(`click`, `type`, `select`, `scroll`, `hover`, `press`) is passed through; `CursorSink.moveTo` returns a
+promise that the controller awaits, so the action starts after the cursor arrives (bounded to 900 ms, and it
+never fails the action). It follows the existing "Show Agent Cursor" setting; when the setting is off, no
+overlay is created. Screenshots never include it (window-only capture). The window hides 8.4 s after the
+last move (after the 8 s fade) and on close.
 
 ### 5. Backend text (pen-editor-backend)
 

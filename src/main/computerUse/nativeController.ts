@@ -26,9 +26,12 @@ export interface WindowFrame {
   height: number;
 }
 
+/** The action kinds browser-agent's CURSOR_JS knows (it animates a click, a type, ... differently). */
+export type CursorAction = "click" | "type" | "select" | "scroll" | "hover" | "press";
+
 export interface CursorSink {
-  /** Animate the agent cursor to a global screen point (top-left origin). */
-  moveTo(point: { x: number; y: number }, opts: { click: boolean; windowFrame: WindowFrame }): void;
+  /** Animate the agent cursor to a global screen point (top-left origin). The promise settles when it arrives (or gives up). */
+  moveTo(point: { x: number; y: number }, opts: { action: CursorAction; windowFrame: WindowFrame }): Promise<void> | void;
 }
 
 export interface NativeControllerDeps {
@@ -217,38 +220,39 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
   }
 
   /** Tell the cursor overlay where the next action lands. Cosmetic: never fails the action. */
-  function pointCursor(point: { x: number; y: number }, click: boolean): void {
+  async function pointCursor(point: { x: number; y: number }, action: CursorAction): Promise<void> {
     if (!cursor || !lastWindow) return;
     try {
-      cursor.moveTo(point, { click, windowFrame: lastWindow });
+      await cursor.moveTo(point, { action, windowFrame: lastWindow });
     } catch {
       /* cosmetic */
     }
   }
 
   /** Centre of an element, moving the cursor there when one is attached. */
-  async function aimAt(snapshotId: string, index: number, click: boolean): Promise<WindowFrame> {
+  async function aimAt(snapshotId: string, index: number, action: CursorAction): Promise<WindowFrame> {
     const f = await frameOf(snapshotId, index);
-    pointCursor(centre(f), click);
+    await pointCursor(centre(f), action);
     return f;
   }
 
   async function press(snapshotId: string, index: number): Promise<{ done: true; via: string }> {
-    if (cursor) await aimAt(snapshotId, index, true).catch(() => undefined);
+    const aimed = cursor ? await aimAt(snapshotId, index, "click").catch(() => undefined) : undefined;
     try {
       const r = await perform({ snapshotId, index, action: "press" });
       return { done: true, via: str(r.via) || "ax" };
     } catch (e) {
       if (!(e instanceof HelperError) || e.code !== "NO_ACTION") throw e;
     }
-    const f = await aimAt(snapshotId, index, true);
+    // The cursor already went there (and rippled): one aim per click, not two.
+    const f = aimed ?? (await aimAt(snapshotId, index, "click"));
     const c = centre(f);
     await call("click", { pid, x: c.x, y: c.y });
     return { done: true, via: "event" };
   }
 
   async function typeText(snapshotId: string, index: number, text: string): Promise<{ done: true; via: string; verified?: false }> {
-    if (cursor) await aimAt(snapshotId, index, false).catch(() => undefined);
+    if (cursor) await aimAt(snapshotId, index, "type").catch(() => undefined);
     const orig = knownElements.get(snapshotId)?.find((e) => e.index === index);
     await perform({ snapshotId, index, action: "focus" });
     let stuck = false;
@@ -283,11 +287,11 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
   async function scrollBy(snapshotId: string | undefined, index: number | undefined, dy: number): Promise<{ done: true }> {
     let at: { x: number; y: number };
     if (snapshotId !== undefined && index !== undefined) {
-      at = centre(await aimAt(snapshotId, index, false));
+      at = centre(await aimAt(snapshotId, index, "scroll"));
     } else {
       if (!lastWindow) await currentWindow();
       at = centre(lastWindow as WindowFrame);
-      pointCursor(at, false);
+      await pointCursor(at, "scroll");
     }
     await call("scroll", { pid, x: at.x, y: at.y, dx: 0, dy });
     return { done: true };
@@ -312,7 +316,7 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
       case "SELECT": {
         if (typeof text !== "string") throw new Fail('"SELECT" requires a string "text".');
         const i = needIndex();
-        if (cursor) await aimAt(snapshotId, i, true).catch(() => undefined);
+        if (cursor) await aimAt(snapshotId, i, "select").catch(() => undefined);
         const r = await perform({ snapshotId, index: i, action: "pick", text });
         out = { done: true, via: str(r.via) || "ax" };
         break;
@@ -420,7 +424,7 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
       case "hover": {
         const l = await locate(step, undefined, fresh);
         if (!l) throw new Fail('browse_act "hover" requires a "target" (or "index" with "snapshotId").');
-        const c = centre(await aimAt(l.snapshotId, l.index, false));
+        const c = centre(await aimAt(l.snapshotId, l.index, "hover"));
         await call("move", { pid, x: c.x, y: c.y });
         return l.matched;
       }
@@ -428,7 +432,10 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         if (typeof step.key !== "string" || step.key.trim() === "") throw new Fail('browse_act "press" requires a non-empty string "key".');
         if (isBlockedShortcut(step.key)) throw new Fail(ERR_NATIVE_SHORTCUT_BLOCKED(step.key));
         const l = await locate(step, undefined, fresh);
-        if (l) await perform({ snapshotId: l.snapshotId, index: l.index, action: "focus" });
+        if (l) {
+          if (cursor) await aimAt(l.snapshotId, l.index, "press").catch(() => undefined);
+          await perform({ snapshotId: l.snapshotId, index: l.index, action: "focus" });
+        }
         await call("key", { pid, key: step.key, modifiers: [] });
         return l?.matched;
       }

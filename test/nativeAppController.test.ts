@@ -588,14 +588,47 @@ describe("screenshot", () => {
 });
 
 describe("agent cursor", () => {
-  it("moves to the element centre with click true for a click and false for hover", async () => {
+  it("moves to the element centre with the action kind of each operation", async () => {
     const cursor: CursorSink = { moveTo: vi.fn() };
     const { ctl } = setup({}, { cursor });
     const s = await first(ctl);
     await ctl.perform({ snapshotId: s.snapshotId, index: 0, operation: "CLICK" });
-    expect(cursor.moveTo).toHaveBeenLastCalledWith({ x: 250, y: 120 }, { click: true, windowFrame: { x: 100, y: 50, width: 800, height: 600 } });
+    expect(cursor.moveTo).toHaveBeenLastCalledWith({ x: 250, y: 120 }, { action: "click", windowFrame: { x: 100, y: 50, width: 800, height: 600 } });
     await ctl.act({ action: "hover", index: 2, snapshotId: s.snapshotId });
-    expect(cursor.moveTo).toHaveBeenLastCalledWith({ x: 250, y: 120 }, expect.objectContaining({ click: false }));
+    expect(cursor.moveTo).toHaveBeenLastCalledWith({ x: 250, y: 120 }, expect.objectContaining({ action: "hover" }));
+  });
+
+  it("passes type and scroll actions", async () => {
+    const cursor: CursorSink = { moveTo: vi.fn() };
+    const { ctl } = setup({}, { cursor });
+    const s = await first(ctl);
+    await ctl.perform({ snapshotId: s.snapshotId, index: 0, operation: "TYPE_TEXT", text: "hi" });
+    expect(cursor.moveTo).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ action: "type" }));
+    await ctl.perform({ snapshotId: s.snapshotId, index: 0, operation: "SCROLL_DOWN" });
+    expect(cursor.moveTo).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ action: "scroll" }));
+  });
+
+  it("awaits the cursor before acting, and a rejecting cursor does not fail the action", async () => {
+    const cursor: CursorSink = { moveTo: () => Promise.reject(new Error("overlay gone")) };
+    const { ctl } = setup({}, { cursor });
+    const s = await first(ctl);
+    expect(await ctl.perform({ snapshotId: s.snapshotId, index: 0, operation: "CLICK" })).toMatchObject({ done: true });
+  });
+
+  it("a CLICK that falls back to an event click aims the cursor once", async () => {
+    const cursor: CursorSink = { moveTo: vi.fn() };
+    const { ctl, of } = setup(
+      {
+        perform: () => {
+          throw new HelperError("no press", "NO_ACTION");
+        },
+      },
+      { cursor },
+    );
+    const s = await first(ctl);
+    expect(await ctl.perform({ snapshotId: s.snapshotId, index: 0, operation: "CLICK" })).toMatchObject({ done: true, via: "event" });
+    expect(cursor.moveTo).toHaveBeenCalledTimes(1);
+    expect(of("click")[0].args).toEqual({ pid: 42, x: 250, y: 120 });
   });
 
   it("a throwing cursor does not fail the action", async () => {
