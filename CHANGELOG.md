@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.9.1](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.9.0...v0.9.1) (2026-10-23)
+
+
+### Features
+
+* **apps:** block password managers and harden the confirm for risky apps ([ae9d8c7](https://github.com/dan-rozhkov/pen-editor-desktop/commit/ae9d8c73cf50f8e41b45c1fa1e089a8702e736c1))
+* **apps:** control an already running macOS app without a restart ([f20bd67](https://github.com/dan-rozhkov/pen-editor-desktop/commit/f20bd67fc156d2545fbf252b124aadf08d6e2545))
+* **browser:** verified saved-login submit, mock hits, single-frame trace reads ([b0ddfcc](https://github.com/dan-rozhkov/pen-editor-desktop/commit/b0ddfcc57e7983d11d1fad1a9a5e26a377722c61))
+* **computer-use:** native agent cursor is browser-agent's CURSOR_JS ([b9617ec](https://github.com/dan-rozhkov/pen-editor-desktop/commit/b9617ec9bb1fc1fa7c45a9705bf697df620cacd1))
+* **doc:** save a document tab as PDF ([4a21a11](https://github.com/dan-rozhkov/pen-editor-desktop/commit/4a21a118f9c640b7f142756aadafb54f6945ef79))
+* **docs:** store Markdown documents on disk next to browse traces ([6b3a06f](https://github.com/dan-rozhkov/pen-editor-desktop/commit/6b3a06f9ac7cfc05eff642c3f6ce8df3c7aebc80))
+* move to app.sideform.pro and sign in through the system browser ([280ad45](https://github.com/dan-rozhkov/pen-editor-desktop/commit/280ad45364204572f80e0b4eb6bffbeb3cf24685))
+* open Passwords as a tab styled like Settings ([3d2c3a1](https://github.com/dan-rozhkov/pen-editor-desktop/commit/3d2c3a17f801ac6d4be9f01cb532d68b21af54f0))
+* **passwords:** bring back the large site favicon in the detail header ([d643420](https://github.com/dan-rozhkov/pen-editor-desktop/commit/d6434200014514fd4c327ba997d507fc298a301c))
+* **passwords:** list pane matches the Settings nav 1:1 ([7c9b082](https://github.com/dan-rozhkov/pen-editor-desktop/commit/7c9b0824d6f0b28eef3c4fe7a1db21ea45a3a7e9))
+* **passwords:** saved logins for @ mentions in doc tabs ([73da277](https://github.com/dan-rozhkov/pen-editor-desktop/commit/73da27789ddbe9ecc33b0b8c3e056b5c47c14e97))
+* Settings tab (Cmd+,) for the /settings page ([7de0eb2](https://github.com/dan-rozhkov/pen-editor-desktop/commit/7de0eb256f08f8f785f96f6b0180c11c4f6a6b72))
+* **settings:** accept the "browser" settings section ([090eb03](https://github.com/dan-rozhkov/pen-editor-desktop/commit/090eb036bd8dee0d14b65e620b56f379e0059fb2))
+* **tabbar:** "Where shall we start?" heading on the empty tab area ([c35c3cd](https://github.com/dan-rozhkov/pen-editor-desktop/commit/c35c3cdc724708c1bbc23b2b54f5785de6bcc6ab))
+* **tabs:** workflow tab kind for the /workflow editor ([3f92440](https://github.com/dan-rozhkov/pen-editor-desktop/commit/3f924403bc36ee52b178b374979739b94c76ccb2))
+* **trace:** a trace tab can open a document tab ([d0672b9](https://github.com/dan-rozhkov/pen-editor-desktop/commit/d0672b9460f45a4d412df0a048e96be4e32f75b5))
+* **trace:** request log of browser tabs and a `requests` command ([483ce13](https://github.com/dan-rozhkov/pen-editor-desktop/commit/483ce1327cf0f74c613c757b3095308722e7af00))
+* **trace:** store browse run traces locally and open them in a trace tab ([5d5f30c](https://github.com/dan-rozhkov/pen-editor-desktop/commit/5d5f30c3aa45b5b018606ba726144f561c6e980d))
+* **trace:** the agent panel can list open trace tabs and read traces ([286ae85](https://github.com/dan-rozhkov/pen-editor-desktop/commit/286ae8571bccb7832d17a0d2f0d1ba1ab3c27cc7))
+
+
+### Bug Fixes
+
+* **browser:** agent tabs keep rendering in the background ([0a9903d](https://github.com/dan-rozhkov/pen-editor-desktop/commit/0a9903d1d870b90ddf0d9f2191b5a039fd44baae))
+* **browser:** saved login survives late hydration; retry an empty screenshot ([342e7b5](https://github.com/dan-rozhkov/pen-editor-desktop/commit/342e7b5da391a6ef301eb1ad345f622e41208d78))
+* **computer-use:** article in the unsupported-check error ([dc897a3](https://github.com/dan-rozhkov/pen-editor-desktop/commit/dc897a31a277d1269a2b72ef701da5aea24a4383))
+* **computer-use:** QA checks and lower targets in native macOS apps ([2ca344f](https://github.com/dan-rozhkov/pen-editor-desktop/commit/2ca344f20eb2334f9d855b82ee28817c3bc8f61b))
+* **deps:** @sideform/browser-agent v0.3.6 — a revealed password never reaches the model ([b4d1fbb](https://github.com/dan-rozhkov/pen-editor-desktop/commit/b4d1fbb4b0c7e78d91b7bb8f13de13fea9769127))
+* **deps:** browser-agent v0.3.1 — drive the app window, not a hidden service window ([8b68a12](https://github.com/dan-rozhkov/pen-editor-desktop/commit/8b68a12f7b31cd3723b5eeaa7ca8bddf4aca75ef))
+* **deps:** update @sideform/browser-agent to v0.4.0 ([f362996](https://github.com/dan-rozhkov/pen-editor-desktop/commit/f362996618db1c17c1b05521d6d73e501b82bdb0))
+* **empty-state:** no Workflow card on the start screen ([ff985f2](https://github.com/dan-rozhkov/pen-editor-desktop/commit/ff985f2cb3d2b367fe388bd2ecca6e7fb3b89ae6))
+* **tabbar:** match the frontend header controls ([87bd845](https://github.com/dan-rozhkov/pen-editor-desktop/commit/87bd8455418ad5b3d6eaef4a6ce81384699b603c))
+
 ## [0.9.0](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.8.1...v0.9.0) (2026-10-20)
 
 
