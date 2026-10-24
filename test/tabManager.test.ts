@@ -343,6 +343,47 @@ describe("TabManager", () => {
     });
   });
 
+  describe("canvas tabs by id", () => {
+    it("newTab(editor, canvasId) loads canvas=<id> and findCanvasTab matches it", () => {
+      const a = tm.newTab("editor", undefined, { canvasId: "cv_a" });
+      tm.newTab("editor");
+      expect(views[0].loadURL).toHaveBeenCalledWith("https://pen-editor.onrender.com/?canvas=cv_a&chat=off".replace("/?", "/?"));
+      expect(tm.findCanvasTab("cv_a")).toBe(a);
+      expect(tm.findCanvasTab("zzz")).toBeNull();
+    });
+
+    it("the live URL wins once the view reports one (the frontend adds canvas= by replaceState)", () => {
+      const a = tm.newTab("editor");
+      const b = tm.newTab("editor", undefined, { canvasId: "cv_b" });
+      (views[0].getURL as unknown as ReturnType<typeof vi.fn>).mockReturnValue("https://pen-editor.onrender.com/?canvas=cv_new&chat=off");
+      expect(tm.findCanvasTab("cv_new")).toBe(a);
+      expect(tm.findCanvasTab("cv_b")).toBe(b);
+    });
+
+    it("falls back to the opening id when the live URL has no canvas param", () => {
+      const a = tm.newTab("editor", undefined, { canvasId: "cv_open" });
+      (views[0].getURL as unknown as ReturnType<typeof vi.fn>).mockReturnValue("https://pen-editor.onrender.com/?chat=off");
+      expect(tm.findCanvasTab("cv_open")).toBe(a);
+      expect(tm.findCanvasTab("other")).toBeNull();
+    });
+
+    it("canvasTabCount counts editor tabs only and flushCanvasTabs reaches each of them", async () => {
+      tm.newTab("editor");
+      tm.newTab("editor");
+      tm.newTab("doc", undefined, { docId: "d1" });
+      expect(tm.canvasTabCount()).toBe(2);
+      const flush = vi.fn(async () => undefined);
+      for (const v of views.slice(0, 3)) (v as unknown as { flushCanvas?: unknown }).flushCanvas = flush;
+      await tm.flushCanvasTabs();
+      expect(flush).toHaveBeenCalledTimes(2);
+    });
+
+    it("ignores doc tabs with the same id", () => {
+      tm.newTab("doc", undefined, { docId: "same" });
+      expect(tm.findCanvasTab("same")).toBeNull();
+    });
+  });
+
   describe("passwords tab", () => {
     it("opens as a local tab: titled Passwords, active, loads no URL", () => {
       const id = tm.openPasswordsTab({ focus: true });

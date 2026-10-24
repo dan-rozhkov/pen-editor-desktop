@@ -66,8 +66,8 @@ describe("agent panel preload", () => {
     await import("../src/preload/agentPanel");
   });
 
-  it("exposes version 2 with canvas, browser, docs, workflows, traces, auth and settings only", () => {
-    expect(Object.keys(exposed.penAgentPanel).sort()).toEqual(["auth", "browser", "canvas", "docs", "settings", "traces", "version", "workflows"]);
+  it("exposes version 2 with canvas, browser, docs, canvases, workflows, traces, auth and settings only", () => {
+    expect(Object.keys(exposed.penAgentPanel).sort()).toEqual(["auth", "browser", "canvas", "canvases", "docs", "settings", "traces", "version", "workflows"]);
     expect(exposed.penAgentPanel.version).toBe(2);
   });
 
@@ -103,6 +103,12 @@ describe("agent panel preload", () => {
     expect(invoke).toHaveBeenLastCalledWith("docs:save", doc);
     await exposed.penAgentPanel.docs.remove("a");
     expect(invoke).toHaveBeenLastCalledWith("docs:delete", "a");
+  });
+
+  it("canvases has exactly list, over canvases:list", async () => {
+    expect(Object.keys(exposed.penAgentPanel.canvases)).toEqual(["list"]);
+    await exposed.penAgentPanel.canvases.list();
+    expect(invoke).toHaveBeenLastCalledWith("canvases:list");
   });
 
   it("docs.open invokes doc:open with the id and returns main's reply", async () => {

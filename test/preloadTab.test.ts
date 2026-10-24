@@ -347,6 +347,30 @@ describe("preload/tab.ts docs bridge", () => {
   });
 });
 
+describe("preload/tab.ts canvases bridge", () => {
+  it("exposes list, read, save and remove over canvases:list / read / save / delete", async () => {
+    vi.resetModules();
+    invokeMock.mockClear();
+    exposedApi = undefined;
+    (globalThis as unknown as { location: unknown }).location = { pathname: "/app" };
+    await import("../src/preload/tab");
+    expect(Object.keys(exposedApi.canvases).sort()).toEqual(["list", "read", "remove", "save"]);
+    invokeMock.mockResolvedValueOnce({ canvases: [] });
+    await expect(exposedApi.canvases.list()).resolves.toEqual({ canvases: [] });
+    expect(invokeMock).toHaveBeenLastCalledWith("canvases:list");
+    invokeMock.mockResolvedValueOnce({ canvas: null });
+    await expect(exposedApi.canvases.read("cv_1")).resolves.toEqual({ canvas: null });
+    expect(invokeMock).toHaveBeenLastCalledWith("canvases:read", "cv_1");
+    const canvas = { id: "cv_1", title: "t", document: "{}", updatedAt: 1, rev: 1 };
+    invokeMock.mockResolvedValueOnce({ ok: true, rev: 1 });
+    await expect(exposedApi.canvases.save(canvas)).resolves.toEqual({ ok: true, rev: 1 });
+    expect(invokeMock).toHaveBeenLastCalledWith("canvases:save", canvas);
+    invokeMock.mockResolvedValueOnce({ ok: true });
+    await expect(exposedApi.canvases.remove("cv_1")).resolves.toEqual({ ok: true });
+    expect(invokeMock).toHaveBeenLastCalledWith("canvases:delete", "cv_1");
+  });
+});
+
 describe("desktop sign-in bridge (auth) in both preloads", () => {
   const cases: [string, string, string][] = [
     ["editor tab preload", "../src/preload/tab", "penDesktop"],

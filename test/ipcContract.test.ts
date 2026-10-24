@@ -68,6 +68,16 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "docs:save", direction: "renderer->main" },
   { name: "docs:delete", direction: "renderer->main" },
   { name: "docs:export-pdf", direction: "renderer->main" },
+  // Canvas storage (invoke/handle): canvas tabs and the panel save/read/list canvases under userData. See CLAUDE.md "Canvas storage".
+  { name: "canvases:list", direction: "renderer->main" },
+  { name: "canvases:read", direction: "renderer->main" },
+  { name: "canvases:save", direction: "renderer->main" },
+  { name: "canvases:delete", direction: "renderer->main" },
+  // Empty start "Recent" list: only the empty view lists (invoke) and opens a row (send).
+  { name: "empty:recent", direction: "renderer->main" },
+  { name: "empty:open", direction: "renderer->main" },
+  // Main tells every empty view that a doc/canvas was stored or deleted (no payload): the page refetches.
+  { name: "empty:recent-changed", direction: "main->renderer" },
   // Browse-run traces (invoke/handle): save/read stored traces, open a trace tab. See CLAUDE.md "Trace tabs".
   { name: "traces:save", direction: "renderer->main" },
   { name: "traces:read", direction: "renderer->main" },
@@ -281,5 +291,27 @@ describe("requests is passive and wired through the run boundary", () => {
   it("the target drains closed-tab requests, filled on destroy and on debugger detach", () => {
     expect(src).toContain("drainClosedRequests: () => closedRequestsOf(scope).drain()");
     expect(src.match(/closedRequestsOf\(sessionId\)\.add\(requestLog\.takeFinished\(\)\)/g)).toHaveLength(2);
+  });
+});
+
+describe("canvases:* handlers are process-level", () => {
+  // A closing tab flushes its last autosave after its window's handlers would be gone, so the
+  // handlers are registered once per process and must NOT be removed in a window's `closed` handler.
+  const windowSource = stripComments(readFileSync(join(SRC, "main/window.ts"), "utf8"));
+  const closedHandler = windowSource.slice(windowSource.indexOf('win.on("closed"'));
+  it("window close does not remove them (removed on will-quit instead)", () => {
+    for (const c of ["list", "read", "save", "delete"]) {
+      expect(closedHandler).not.toContain(`"canvases:${c}"`);
+      expect(windowSource).toContain(`ipcMain.removeHandler("canvases:${c}")`);
+    }
+    expect(windowSource).toContain('app.once("will-quit"');
+  });
+
+  it("the quit flush runs in before-quit, ahead of will-quit, through the pure quitFlush module", () => {
+    const indexSource = stripComments(readFileSync(join(SRC, "main/index.ts"), "utf8"));
+    expect(indexSource).toContain("createQuitFlush(");
+    expect(indexSource.indexOf('app.on("before-quit"')).toBeGreaterThan(-1);
+    expect(indexSource).not.toContain("canvasSaves");
+    expect(windowSource).not.toContain("pagehide");
   });
 });

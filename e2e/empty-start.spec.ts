@@ -1,6 +1,7 @@
 import { test, expect, _electron as electron, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -21,7 +22,15 @@ test.beforeAll(async () => {
       isAgent
         ? `<!doctype html><title>Stub Agent</title><h1 id="ready">stub-agent</h1>`
         : `<!doctype html><title>Stub Editor</title><h1 id="ready">stub-editor</h1>
-<script>const h = window.penDesktop && window.penDesktop.canvasHost; if (h) h.register();</script>`,
+<script>const h = window.penDesktop && window.penDesktop.canvasHost; if (h) h.register();
+// A canvas tab keeps a pending autosave and defines window.penCanvasFlush like the real editor:
+// it saves and resolves after the canvases:save reply; it never rejects.
+const canvasId = new URLSearchParams(location.search).get("canvas");
+if (canvasId) window.penCanvasFlush = async () => {
+  try {
+    await window.penDesktop.canvases.save({ id: canvasId, title: "Flushed on close", updatedAt: Date.now(), rev: 2, document: "{}" });
+  } catch (e) {}
+};</script>`,
     );
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -158,5 +167,80 @@ test("agent layout opens with the panel only; the placeholder opens and returns 
     await expect.poll(() => app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().length)).toBe(0);
   } finally {
     await app.close();
+  }
+});
+
+test("the empty start lists stored canvases and documents; a click opens or activates a tab for the id", async () => {
+  // Own userData dir. PEN_DESKTOP_URL is set, so the stores use the `-dev` directories.
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), "pen-desktop-recent-"));
+  const now = Date.now();
+  const docDir = path.join(userData, "documents-dev");
+  const canvasDir = path.join(userData, "canvases-dev");
+  fs.mkdirSync(docDir, { recursive: true });
+  fs.mkdirSync(canvasDir, { recursive: true });
+  fs.writeFileSync(path.join(docDir, "doc_e2e.json"), JSON.stringify({ id: "doc_e2e", title: "E2E brief", markdown: "# hi", updatedAt: now - 2 * 3_600_000, rev: 1 }));
+  fs.writeFileSync(path.join(canvasDir, "cv_e2e.meta.json"), JSON.stringify({ id: "cv_e2e", title: "E2E landing", updatedAt: now - 60_000, rev: 1 }));
+  fs.writeFileSync(path.join(canvasDir, "cv_e2e.pen.json"), JSON.stringify({ id: "cv_e2e", rev: 1, document: "{}" }));
+  for (let i = 0; i < 9; i++) {
+    fs.writeFileSync(path.join(docDir, `old_${i}.json`), JSON.stringify({ id: `old_${i}`, title: `Old ${i}`, markdown: "", updatedAt: now - (10 + i) * 86_400_000, rev: 1 }));
+  }
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: `${baseUrl}/app`, PEN_DESKTOP_USER_DATA_DIR: userData },
+  });
+  try {
+    const find = async (pred: (u: string) => boolean): Promise<Page> =>
+      app.windows().find((p) => pred(p.url())) ?? (await app.waitForEvent("window", { predicate: (p) => pred(p.url()) }));
+    const tabbar = await find((u) => u.endsWith("/tabbar/tabbar.html"));
+    const empty = await find((u) => u.endsWith("/tabbar/empty.html"));
+
+    // Newest first: canvas (1 min), doc (2 h), then the old ones. Eight rows, then "Show all (11)".
+    const rows = empty.locator(".recent-row");
+    await expect(rows).toHaveCount(8);
+    await expect(rows.nth(0).locator(".recent-title")).toHaveText("E2E landing");
+    await expect(rows.nth(0).locator(".recent-kind")).toHaveText("Canvas");
+    await expect(rows.nth(0).locator(".recent-time")).toHaveText("1 min ago");
+    await expect(rows.nth(1).locator(".recent-title")).toHaveText("E2E brief");
+    await expect(rows.nth(1).locator(".recent-kind")).toHaveText("Document");
+    await expect(rows.nth(1).locator(".recent-time")).toHaveText("2 h ago");
+    await expect(empty.locator("#recent-more")).toHaveText("Show all (11)");
+
+    const outFile = process.env.EMPTY_START_RECENT_SHOT;
+    if (outFile) {
+      fs.mkdirSync(path.dirname(outFile), { recursive: true });
+      await empty.screenshot({ path: outFile });
+    }
+
+    // ArrowDown moves focus to the next row.
+    await rows.nth(0).focus();
+    await empty.keyboard.press("ArrowDown");
+    await expect(rows.nth(1)).toBeFocused();
+
+    await empty.locator("#recent-more").click();
+    await expect(rows).toHaveCount(11);
+    await expect(empty.locator("#recent-more")).toBeHidden();
+
+    // A click on the canvas row opens a canvas tab whose URL carries canvas=<id>.
+    await rows.nth(0).click();
+    const editor = await find((u) => u.startsWith(`${baseUrl}/app`) && u.includes("canvas=cv_e2e"));
+    expect(new URL(editor.url()).searchParams.get("canvas")).toBe("cv_e2e");
+    await expect(tabbar.locator(".tab")).toHaveCount(1);
+
+    // A click on the doc row opens a doc tab with id=<docId>.
+    await tabbar.locator(".tab .close").evaluate((el) => (el as HTMLElement).click());
+    await expect(tabbar.locator(".tab")).toHaveCount(0);
+    // The closing tab's last save (window.penCanvasFlush) lands and is accepted although the tab is already gone from the strip.
+    await expect
+      .poll(() => JSON.parse(fs.readFileSync(path.join(canvasDir, "cv_e2e.meta.json"), "utf8")).title)
+      .toBe("Flushed on close");
+    // ... and the Recent list refreshes by itself (empty:recent-changed).
+    await expect(rows.nth(0).locator(".recent-title")).toHaveText("Flushed on close");
+    await rows.nth(1).click();
+    const doc = await find((u) => u.startsWith(`${baseUrl}/doc`) && u.includes("id=doc_e2e"));
+    expect(new URL(doc.url()).searchParams.get("id")).toBe("doc_e2e");
+    await expect(tabbar.locator(".tab")).toHaveCount(1);
+  } finally {
+    await app.close();
+    fs.rmSync(userData, { recursive: true, force: true });
   }
 });

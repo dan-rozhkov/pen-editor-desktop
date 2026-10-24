@@ -394,6 +394,124 @@ body {
   color: #ffffff;
 }
 
+/* ---- Recent list (canvases and documents the user or the agent made) ---- */
+
+.recent {
+  flex: none;
+  width: 100%;
+  max-width: 840px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recent[hidden],
+.recent-more[hidden] {
+  display: none;
+}
+
+.recent-heading {
+  margin: 0;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  color: var(--text);
+}
+
+.recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.recent-row {
+  font: inherit;
+  color: var(--text-active);
+  text-align: left;
+  box-sizing: border-box;
+  width: 100%;
+  height: 36px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--btn-radius);
+  cursor: pointer;
+}
+
+.recent-row:hover {
+  background: var(--btn-hover);
+}
+
+.recent-row:focus-visible,
+.recent-more:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.recent-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  color: var(--text);
+}
+
+.recent-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.recent-kind {
+  flex: none;
+  color: var(--text);
+}
+
+.recent-time {
+  flex: none;
+  min-width: 72px;
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.recent-more {
+  font: inherit;
+  align-self: flex-start;
+  margin: 0 0 0 8px;
+  padding: 4px 8px;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-radius: var(--btn-radius);
+  cursor: pointer;
+}
+
+.recent-more:hover {
+  background: var(--btn-hover);
+  color: var(--text-active);
+}
+
+/* A small window with stored items: drop the card previews and keep the three
+   cards on one row, so the Recent list is visible without scrolling. */
+@media (max-width: 760px), (max-height: 760px) {
+  .empty.has-recent .preview {
+    display: none;
+  }
+
+  .empty.has-recent .cards {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+}
+
 /* Motion: only when the user has not asked for reduced motion. Classes only (CSP: no inline styles). */
 @media (prefers-reduced-motion: no-preference) {
   .empty {

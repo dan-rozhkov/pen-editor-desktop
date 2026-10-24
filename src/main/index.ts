@@ -3,7 +3,8 @@ import path from "node:path";
 import { app, BaseWindow, ipcMain, safeStorage, session, shell } from "electron";
 import { KEEP_RENDERING_WHEN_OCCLUDED_SWITCH } from "./agentActivity";
 import { DISPLAY_APP_NAME, STORAGE_IDENTITY_FILE, resolveEditorUrl, resolveStorageIdentity, storageIdentityFileText } from "./config";
-import { createMainWindow } from "./window";
+import { createMainWindow, flushAllCanvasTabs, hasCanvasWork } from "./window";
+import { createQuitFlush } from "./quitFlush";
 import { appRegistry } from "./appTargetsService";
 import { createMcpService } from "./mcp/service";
 import { denyAllPermissions } from "./browser/permissions";
@@ -245,9 +246,14 @@ app.on("window-all-closed", () => {
 // temp-profile apps are SIGKILLed and their profile removed; the user's own apps (restarted
 // with their profile) get a detached helper that quits them and opens them again; nothing
 // of the user's is killed.
-app.on("before-quit", () => {
+// Canvas tabs are flushed through the page handshake (`window.penCanvasFlush`, canvasWriters.ts) before
+// the quit goes on; the decision is the pure quitFlush.ts.
+const quitFlush = createQuitFlush({ hasWork: hasCanvasWork, flushAll: flushAllCanvasTabs, quit: () => app.quit() });
+app.on("before-quit", (event) => {
   quitting = true;
-  appRegistry.killAllSync();
+  const { firstPass } = quitFlush.onBeforeQuit(event);
+  // Once per quit cycle, not on the re-entrant pass after the hold.
+  if (firstPass) appRegistry.killAllSync();
 });
 
 app.on("will-quit", () => {

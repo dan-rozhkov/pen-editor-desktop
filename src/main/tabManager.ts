@@ -1,5 +1,5 @@
 import type { BrowserPageHandle, BrowserTabInfo } from "@sideform/browser-agent/controller";
-import { docIdOfUrl, isDocPageOn, isValidSettingsSection, isValidTraceId, resolveDocTabUrl, resolveSettingsTabUrl, resolveTraceTabUrl, resolveWorkflowTabUrl, traceIdOfUrl, workflowIdOfUrl } from "./config";
+import { canvasIdOfUrl, docIdOfUrl, isValidCanvasId, resolveCanvasTabUrl, isDocPageOn, isValidSettingsSection, isValidTraceId, resolveDocTabUrl, resolveSettingsTabUrl, resolveTraceTabUrl, resolveWorkflowTabUrl, traceIdOfUrl, workflowIdOfUrl } from "./config";
 export type UITheme = "light" | "dark";
 
 /** How a tab becomes the active one. `focus: false` shows it without moving keyboard focus into it. */
@@ -77,6 +77,8 @@ export interface TabViewHandle {
   /** Settings tabs only: tells the open page to switch to a section (no reload). */
   sendSettingsSection(section: string): void;
   focus(): void;
+  /** Editor tabs only: runs the canvas flush handshake in the page (`window.penCanvasFlush`), bounded, never rejects. */
+  flushCanvas?(): Promise<void>;
   /** Editor tabs only — wired by TabManager only for kind "editor". */
   onDocumentTitleChanged(cb: (title: string) => void): void;
   /** Editor tabs only — wired by TabManager only for kind "editor". */
@@ -389,6 +391,8 @@ interface TabEntry {
   theme: UITheme | null;
   /** Doc tabs only: the document id the tab was opened with (`doc:open`). */
   docId?: string;
+  /** The stored canvas an editor tab was opened with (the live URL's `canvas` param wins once known). */
+  canvasId?: string;
   /** Workflow tabs only: the workflow id the tab was opened with (`workflow:open`). */
   workflowId?: string;
   /** Trace tabs only: the trace id the tab was opened with (`traces:open`). */
@@ -470,7 +474,7 @@ export class TabManager {
    * That tab is shown without taking keyboard focus (`ActivationOptions`).
    * `opts.focus: false` makes a normally activated tab visible without taking keyboard focus (`doc:open`).
    */
-  newTab(kind: TabKind = "editor", session?: string, opts: { activate?: boolean; docId?: string; workflowId?: string; traceId?: string; section?: string; focus?: boolean } = {}): number {
+  newTab(kind: TabKind = "editor", session?: string, opts: { activate?: boolean; docId?: string; canvasId?: string; workflowId?: string; traceId?: string; section?: string; focus?: boolean } = {}): number {
     // A trace tab is always opened for one trace (`traces:open`): no id, no tab (and no view is created).
     if (kind === "trace" && !isValidTraceId(opts.traceId)) throw new Error("trace tab needs a valid trace id");
     const id = this.nextId++;
@@ -483,6 +487,7 @@ export class TabManager {
       view,
       theme: null,
       docId: kind === "doc" ? opts.docId : undefined,
+      canvasId: kind === "editor" ? opts.canvasId : undefined,
       workflowId: kind === "workflow" ? opts.workflowId : undefined,
       traceId: kind === "trace" ? opts.traceId : undefined,
       url: kind === "browser" ? "" : undefined,
@@ -521,7 +526,9 @@ export class TabManager {
             ? resolveTraceTabUrl(this.opts.editorUrl, opts.traceId as string)
             : kind === "settings"
               ? resolveSettingsTabUrl(this.opts.editorUrl, opts.section)
-              : this.opts.editorUrl;
+              : kind === "editor" && isValidCanvasId(opts.canvasId)
+                ? resolveCanvasTabUrl(this.opts.editorUrl, opts.canvasId)
+                : this.opts.editorUrl;
       view.loadURL(target).catch((err) => {
         console.error(`TabManager: ${kind} tab failed to load`, err);
       });
@@ -813,6 +820,30 @@ export class TabManager {
       if ((live ? docIdOfUrl(live) : t.docId) === docId) return t.id;
     }
     return null;
+  }
+
+  /** The id of the open canvas (editor) tab showing `canvasId`, or null. The live URL wins, like `findDocTab`
+   * (the frontend adds `canvas=<id>` to a new canvas tab by `history.replaceState`). */
+  findCanvasTab(canvasId: string): number | null {
+    for (const t of this.tabs) {
+      if (t.kind !== "editor") continue;
+      const live = t.view.getURL();
+      // The live URL wins; without a `canvas` param (a new canvas the frontend has not named yet, or a
+      // navigation that dropped it) fall back to the id the tab was opened with.
+      const liveId = live ? canvasIdOfUrl(live) : null;
+      if ((liveId ?? t.canvasId) === canvasId) return t.id;
+    }
+    return null;
+  }
+
+  /** Number of canvas (editor) tabs. */
+  canvasTabCount(): number {
+    return this.tabs.filter((t) => t.kind === "editor").length;
+  }
+
+  /** Runs the flush handshake in every canvas tab, in parallel. Never rejects. */
+  async flushCanvasTabs(): Promise<void> {
+    await Promise.allSettled(this.tabs.filter((t) => t.kind === "editor").map((t) => t.view.flushCanvas?.() ?? Promise.resolve()));
   }
 
   /** The id of the open workflow tab showing `workflowId` (live URL wins, like `findDocTab`), or null. */

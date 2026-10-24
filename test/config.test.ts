@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, isDocPageUrl, isDocPageOn, resolveWorkflowTabUrl, isValidWorkflowId, workflowIdOfUrl, resolveTraceTabUrl, resolveSettingsTabUrl, isValidSettingsSection, SETTINGS_SECTIONS, isValidTraceId, traceIdOfUrl, INITIAL_TABS } from "../src/main/config";
+import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, isValidCanvasId, canvasIdOfUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, isDocPageUrl, isDocPageOn, resolveWorkflowTabUrl, isValidWorkflowId, workflowIdOfUrl, resolveTraceTabUrl, resolveSettingsTabUrl, isValidSettingsSection, SETTINGS_SECTIONS, isValidTraceId, traceIdOfUrl, INITIAL_TABS } from "../src/main/config";
 
 describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
@@ -291,5 +291,27 @@ describe("isValidSettingsSection", () => {
     expect([...SETTINGS_SECTIONS]).toEqual(["account", "appearance", "canvas", "agent", "browser", "integrations", "shortcuts"]);
     for (const id of SETTINGS_SECTIONS) expect(isValidSettingsSection(id)).toBe(true);
     for (const bad of ["", "other", "constructor", 1, undefined, null]) expect(isValidSettingsSection(bad)).toBe(false);
+  });
+});
+
+describe("canvas ids in tab URLs", () => {
+  it("resolveCanvasTabUrl adds canvas=<id> before chat=off and keeps other params", () => {
+    expect(resolveCanvasTabUrl("http://h/app?q=1", "cv_a1")).toBe("http://h/app?q=1&canvas=cv_a1&chat=off");
+    expect(resolveCanvasTabUrl("https://app.sideform.pro/app", "cv_a1")).toBe("https://app.sideform.pro/app?canvas=cv_a1&chat=off");
+  });
+  it("replaces an existing canvas and chat param, never duplicates", () => {
+    expect(resolveCanvasTabUrl("http://h/app?canvas=old&chat=off&q=1", "new")).toBe("http://h/app?q=1&canvas=new&chat=off");
+  });
+  it("is idempotent on an already resolved URL and unchanged without an id", () => {
+    const once = resolveCanvasTabUrl("http://h/app", "x");
+    expect(resolveCanvasTabUrl(once, "x")).toBe(once);
+    expect(resolveCanvasTabUrl("http://h/app?canvas=keep")).toBe("http://h/app?canvas=keep&chat=off");
+  });
+  it("isValidCanvasId and canvasIdOfUrl", () => {
+    expect(isValidCanvasId("cv_Ab-9")).toBe(true);
+    for (const bad of ["", "a/b", "a".repeat(65), 5, null, "a b"]) expect(isValidCanvasId(bad)).toBe(false);
+    expect(canvasIdOfUrl("http://h/app?canvas=cv_1&chat=off")).toBe("cv_1");
+    expect(canvasIdOfUrl("http://h/app")).toBeNull();
+    expect(canvasIdOfUrl("not a url")).toBeNull();
   });
 });

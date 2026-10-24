@@ -2,6 +2,9 @@ import { promises as fsp } from "node:fs";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
 import { isValidDocId } from "./config";
+import { createKeyedChain, isObject, message, sweepStaleTmp } from "./storeUtils";
+
+export { STALE_TMP_MS } from "./storeUtils";
 
 /**
  * Local storage of the user's Markdown documents (the frontend's `/doc` surface):
@@ -109,12 +112,7 @@ export interface DocStoreOptions {
   now?: () => number;
 }
 
-/** Temp files (`<id>.json.<pid>.<random>.tmp`) older than this are swept by `list`. */
-export const STALE_TMP_MS = 60 * 60 * 1000;
-
 const FILE_NAME = /^([A-Za-z0-9_-]{1,64})\.json$/;
-const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
-const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /** The five contract fields of a valid document, or an error. Anything else on the input is dropped. */
 export function parseStoredDoc(raw: unknown): { doc: StoredDoc } | { error: string } {
@@ -138,19 +136,7 @@ export function createDocStore(opts: DocStoreOptions): DocStore {
   // absent or corrupt files are never cached.
   const revs = new Map<string, number>();
   const fileOf = (id: string) => path.join(rootDir, `${id}.json`);
-  // Tail of the pending work per id; the entry is dropped once the chain is idle.
-  const chains = new Map<string, Promise<unknown>>();
-
-  function serialized<T>(id: string, task: () => Promise<T>): Promise<T> {
-    const prev = chains.get(id) ?? Promise.resolve();
-    const run = prev.then(task, task);
-    const tail = run.catch(() => undefined);
-    chains.set(id, tail);
-    void tail.then(() => {
-      if (chains.get(id) === tail) chains.delete(id);
-    });
-    return run;
-  }
+  const serialized = createKeyedChain();
 
   /** The stored document at `id`, or null when absent or unusable (a corrupt file is overwritten by the next save). */
   async function readStored(id: string): Promise<StoredDoc | null> {
@@ -164,22 +150,10 @@ export function createDocStore(opts: DocStoreOptions): DocStore {
     }
   }
 
-  /** Best effort: removes temp files left by an interrupted write. */
-  async function sweepStaleTmp(files: { name: string; mtimeMs: number }[]): Promise<void> {
-    for (const f of files) {
-      if (!f.name.endsWith(".tmp") || now() - f.mtimeMs <= STALE_TMP_MS) continue;
-      try {
-        await io.remove(path.join(rootDir, f.name));
-      } catch (err) {
-        console.error(`docStore: could not sweep ${f.name}: ${message(err)}`);
-      }
-    }
-  }
-
   async function list(): Promise<DocListResult> {
     try {
       const files = await io.listFiles(rootDir);
-      await sweepStaleTmp(files);
+      await sweepStaleTmp(io, rootDir, files, now, "docStore");
       const docs: StoredDoc[] = [];
       for (const { name } of files) {
         const match = FILE_NAME.exec(name);

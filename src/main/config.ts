@@ -136,14 +136,17 @@ export function resolveAgentPanelUrl(editorUrl: string): string {
  * panel, so tabs are canvas tabs, i.e. the editor in chatless mode
  * (`chat=off`). Other query params, the path and the hash are kept; an
  * existing `chat` param (any number of them) is replaced, never duplicated. */
-export function resolveCanvasTabUrl(editorUrl: string): string {
+export function resolveCanvasTabUrl(editorUrl: string, canvasId?: string): string {
   const url = new URL(editorUrl);
   // Edit the RAW query string: URLSearchParams would re-serialize every other
   // param (`%20` -> `+`, `~` -> `%7E`, `flag` -> `flag=`).
+  // With a canvas id the existing `canvas` param is replaced too, and `canvas=<id>` goes before `chat=off`.
+  const dropped = canvasId !== undefined ? ["chat", "canvas"] : ["chat"];
   const kept = url.search
     .replace(/^\?/, "")
     .split("&")
-    .filter((pair) => pair !== "" && decodeURIComponent_safe(pair.split("=")[0]) !== "chat");
+    .filter((pair) => pair !== "" && !dropped.includes(decodeURIComponent_safe(pair.split("=")[0])));
+  if (canvasId !== undefined) kept.push(`canvas=${encodeURIComponent(canvasId)}`);
   kept.push("chat=off");
   url.search = kept.join("&");
   return url.toString();
@@ -238,9 +241,26 @@ export function resolveSettingsTabUrl(editorUrl: string, section?: unknown): str
   });
 }
 
+/** The one id shape of documents and canvases: 1-64 of `A-Za-z0-9_-`. */
+const STORED_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
 /** A document id the agent panel may ask to open: 1-64 of `A-Za-z0-9_-`. */
 export function isValidDocId(docId: unknown): docId is string {
-  return typeof docId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(docId);
+  return typeof docId === "string" && STORED_ID.test(docId);
+}
+
+/** A canvas id (stored under `<userData>/canvases/`): 1-64 of `A-Za-z0-9_-`, like a document id. */
+export function isValidCanvasId(canvasId: unknown): canvasId is string {
+  return typeof canvasId === "string" && STORED_ID.test(canvasId);
+}
+
+/** The `canvas` query param of a canvas tab URL, or null. */
+export function canvasIdOfUrl(rawUrl: string): string | null {
+  try {
+    return new URL(rawUrl).searchParams.get("canvas");
+  } catch {
+    return null;
+  }
 }
 
 /** True when the URL is the frontend's doc page: the last path segment is `doc` (`/doc`, `/prefix/doc`, trailing slash allowed). */

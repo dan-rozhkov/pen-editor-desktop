@@ -242,6 +242,15 @@ const docs = {
   open: (docId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("doc:open", docId),
 };
 
+// Canvas storage (src/main/canvasStore.ts): every tab preload carries it, main answers only editor (canvas) tabs and the
+// agent panel (`{ error }` for the rest). `read` gives `{ canvas: null }` for a missing or incomplete canvas.
+const canvases = {
+  list: (): Promise<{ canvases: unknown[] } | { error: string }> => ipcRenderer.invoke("canvases:list"),
+  read: (id: string): Promise<{ canvas: unknown | null } | { error: string }> => ipcRenderer.invoke("canvases:read", id),
+  save: (canvas: unknown): Promise<{ ok: true; rev: number; stale?: true } | { error: string }> => ipcRenderer.invoke("canvases:save", canvas),
+  remove: (id: string): Promise<{ ok: true } | { error: string }> => ipcRenderer.invoke("canvases:delete", id),
+};
+
 // Saved logins for the doc tabs' `@` mention picker. No password ever comes back: `list` gives id, origin, username,
 // label and icon?, `add` answers with the entry id only. Always present on the tab preload (like `docs.list`): main is
 // the trust boundary. It answers only the top frame of a doc tab still on the doc page (`{ ok: false, error: "Not allowed." }`
@@ -306,6 +315,7 @@ const api = {
   },
   // Only the trace viewer page may open documents (main refuses other senders), so other tabs do not advertise `open`.
   docs: typeof location !== "undefined" && location.pathname.includes("/trace/") ? docs : docStorage,
+  canvases,
 };
 
 contextBridge.exposeInMainWorld("penDesktop", api);

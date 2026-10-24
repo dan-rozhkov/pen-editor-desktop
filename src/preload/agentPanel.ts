@@ -138,6 +138,10 @@ const canvas = {
 };
 
 // Documents (markdown tabs at `/doc`): ask main to open or focus one. Main checks the sender.
+// Canvas storage: the panel may only list (main also answers it read/save/delete, but the API stays small).
+const canvases = {
+  list: (): Promise<{ canvases: unknown[] } | { error: string }> => ipcRenderer.invoke("canvases:list"),
+};
 const docs = {
   open: (docId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("doc:open", docId),
   list: (): Promise<{ docs: unknown[] } | { error: string }> => ipcRenderer.invoke("docs:list"),
@@ -192,7 +196,7 @@ const settings = {
   open: (section?: string): Promise<{ ok: boolean }> => ipcRenderer.invoke("settings:open", section),
 };
 
-contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser, docs, workflows, traces, auth, settings });
+contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser, docs, canvases, workflows, traces, auth, settings });
 
 // Theme report for main (channel `panel:theme`): the page paints the stored editor theme as the
 // class `dark` on <html>. Initial read on DOMContentLoaded, then a MutationObserver on that class.

@@ -64,6 +64,11 @@ import { addLoginCopy } from "./loginsIpc";
 import { handleDocExportPdf } from "./docPdfExport";
 import { handleDocDelete, handleDocList, handleDocSave, type DocIpcDeps } from "./docIpc";
 import { createDocStore, docDirFor, nodeDocFs, type DocStore } from "./docStore";
+import { canvasDirFor, createCanvasStore, type CanvasStore } from "./canvasStore";
+import { handleCanvasDelete, handleCanvasList, handleCanvasRead, handleCanvasSave, type CanvasIpcDeps } from "./canvasIpc";
+import { changedRecentItems, loadRecentItems } from "./recentItems";
+import { notifyRecentChanged, openRecentItem, recentFor } from "./emptyOpen";
+import { canvasSenders, flushPage, flushThenClose, pendingCloseFlushes } from "./canvasWriters";
 import { openTraceTab } from "./traceOpen";
 import { openSettings } from "./settingsOpen";
 import { handleTraceListTabs, handleTraceRead, handleTraceSave, type TraceIpcDeps } from "./traceIpc";
@@ -114,6 +119,69 @@ function getDocStore(): DocStore {
     fs: nodeDocFs,
   });
   return processDocStore;
+}
+
+// One canvas store per PROCESS, for the same reason.
+let processCanvasStore: CanvasStore | null = null;
+function getCanvasStore(): CanvasStore {
+  processCanvasStore ??= createCanvasStore({
+    rootDir: path.join(app.getPath("userData"), canvasDirFor(isEnvValueSet(process.env.PEN_DESKTOP_URL))),
+  });
+  return processCanvasStore;
+}
+
+/** Every window's empty-state view (they all show the same Recent list). */
+const emptyViewContents = new Set<Electron.WebContents>();
+
+/**
+ * `canvases:*` handlers: registered ONCE per process (not per window), because a closing canvas tab
+ * flushes its last autosave after its window's TabManager and handlers may be gone.
+ * Senders come from the process-level registry (canvasWriters.ts). Removed on `will-quit`.
+ */
+/** A stored change refreshes the Recent list of every empty view. */
+function recentChanged<T>(result: T): T {
+  if (changedRecentItems(result)) notifyRecentChanged(emptyViewContents);
+  return result;
+}
+
+/** Every main window's TabManager, for the quit flush (index.ts). */
+const liveTabManagers = new Set<TabManager>();
+
+/** True while a canvas tab exists in any window or a tab close is still flushing. */
+export function hasCanvasWork(): boolean {
+  for (const tm of liveTabManagers) if (tm.canvasTabCount() > 0) return true;
+  return pendingCloseFlushes().length > 0;
+}
+
+/** Flushes every canvas tab of every window and waits for tab closes already flushing. */
+export async function flushAllCanvasTabs(): Promise<void> {
+  await Promise.allSettled([...[...liveTabManagers].map((tm) => tm.flushCanvasTabs()), ...pendingCloseFlushes()]);
+}
+
+/** The flush port of an editor tab's webContents. */
+function canvasPagePort(wc: Electron.WebContents) {
+  return { isDestroyed: () => wc.isDestroyed(), runInPage: (script: string) => wc.executeJavaScript(script, true), close: () => wc.close() };
+}
+
+let canvasIpcRegistered = false;
+function ensureCanvasIpc(): void {
+  if (canvasIpcRegistered) return;
+  canvasIpcRegistered = true;
+  const deps: CanvasIpcDeps = {
+    store: getCanvasStore(),
+    isPanel: (id) => canvasSenders.isPanel(id),
+    isCanvasWriter: (id) => canvasSenders.isWriter(id),
+  };
+  ipcMain.handle("canvases:list", (event) => handleCanvasList(deps, event.sender.id));
+  ipcMain.handle("canvases:read", (event, id: unknown) => handleCanvasRead(deps, event.sender.id, id));
+  ipcMain.handle("canvases:save", async (event, canvas: unknown) => recentChanged(await handleCanvasSave(deps, event.sender.id, canvas)));
+  ipcMain.handle("canvases:delete", async (event, id: unknown) => recentChanged(await handleCanvasDelete(deps, event.sender.id, id)));
+  app.once("will-quit", () => {
+    ipcMain.removeHandler("canvases:list");
+    ipcMain.removeHandler("canvases:read");
+    ipcMain.removeHandler("canvases:save");
+    ipcMain.removeHandler("canvases:delete");
+  });
 }
 
 const partitionPool = new PartitionPool(undefined, Number(process.env.PEN_DESKTOP_SESSION_SLOT_WAIT_MS) || undefined);
@@ -291,6 +359,12 @@ export function createMainWindow(
     webPreferences: secureWebPreferences(path.join(__dirname, "../preload/agentPanel.js"), { additionalArguments: nativeAppsArguments(computerUseAvailable()) }),
   });
   win.contentView.addChildView(agentPanelView);
+  ensureCanvasIpc();
+  {
+    const panelId = agentPanelView.webContents.id;
+    canvasSenders.addPanel(panelId);
+    agentPanelView.webContents.once("destroyed", () => canvasSenders.release(panelId));
+  }
   agentPanelView.setBackgroundColor(backgroundColorForTheme(FALLBACK_THEME));
   agentPanelView.setBorderRadius(ISLAND_RADIUS);
   // Anything but the panel's own page is not for the panel: other editor
@@ -339,6 +413,8 @@ export function createMainWindow(
     webPreferences: secureWebPreferences(path.join(__dirname, "../preload/empty.js")),
   });
   win.contentView.addChildView(emptyView);
+  emptyViewContents.add(emptyView.webContents);
+  emptyView.webContents.once("destroyed", () => emptyViewContents.delete(emptyView.webContents));
   attachLocalOnlyPolicy(emptyView.webContents);
   emptyView.setBackgroundColor(backgroundColorForTheme(FALLBACK_THEME));
   emptyView.setBorderRadius(ISLAND_RADIUS);
@@ -1093,6 +1169,9 @@ export function createMainWindow(
       }
 
       if (kind === "editor") {
+        // A canvas tab may save its canvas, also while it closes (canvasWriters.ts).
+        canvasSenders.addWriter(viewId);
+        view.webContents.once("destroyed", () => canvasSenders.release(viewId));
         // Mocks are owned by main; the editor tab that drives the agent releases
         // them in its renderer `finally`, which never runs on reload/crash/close.
         const releaseOrphanedFixture = () => {
@@ -1341,10 +1420,16 @@ export function createMainWindow(
             }
           }
           win.contentView.removeChildView(view);
-          view.webContents.close();
+          if (kind === "editor") {
+            // The page's own unload handlers never get its last save through: run the flush handshake first (canvasWriters.ts).
+            void flushThenClose(canvasPagePort(view.webContents));
+          } else {
+            view.webContents.close();
+          }
         },
         sendMenuCommand: (id) => view.webContents.send("menu:command", id),
         sendSettingsSection: (section) => view.webContents.send("settings:section", section),
+        flushCanvas: kind === "editor" ? () => flushPage(canvasPagePort(view.webContents)) : undefined,
         focus: () => view.webContents.focus(),
         onDocumentTitleChanged: (cb) => titleCallbacks.set(viewId, cb),
         // Editor tabs only correct their own opaque background here, the
@@ -2373,8 +2458,31 @@ export function createMainWindow(
     isTraceTab: (id) => tabs.isTraceTab(id),
   };
   ipcMain.handle("docs:list", (event) => handleDocList(docIpc, event.sender.id));
-  ipcMain.handle("docs:save", (event, doc: unknown) => handleDocSave(docIpc, event.sender.id, doc));
-  ipcMain.handle("docs:delete", (event, id: unknown) => handleDocDelete(docIpc, event.sender.id, id));
+  ipcMain.handle("docs:save", async (event, doc: unknown) => recentChanged(await handleDocSave(docIpc, event.sender.id, doc)));
+  ipcMain.handle("docs:delete", async (event, id: unknown) => recentChanged(await handleDocDelete(docIpc, event.sender.id, id)));
+  // Empty start "Recent" list: only this window's empty view may ask for it or open a row.
+  ipcMain.handle("empty:recent", (event) =>
+    recentFor(
+      { isEmptyView: (id) => id === emptyView.webContents.id, load: () => loadRecentItems(getDocStore(), getCanvasStore()) },
+      event.sender.id,
+    ),
+  );
+  const onEmptyOpen = (event: Electron.IpcMainEvent, payload: unknown) => {
+    const result = openRecentItem(
+      {
+        isEmptyView: (id) => id === emptyView.webContents.id,
+        findCanvasTab: (id) => tabs.findCanvasTab(id),
+        findDocTab: (id) => tabs.findDocTab(id),
+        activate: (tabId, opts) => tabs.activate(tabId, opts),
+        newCanvasTab: (id, opts) => tabs.newTab("editor", undefined, { canvasId: id, focus: opts.focus }),
+        newDocTab: (id, opts) => tabs.newTab("doc", undefined, { docId: id, focus: opts.focus }),
+      },
+      event.sender.id,
+      payload,
+    );
+    if (!result.ok) console.error(`empty:open refused: ${result.error}`);
+  };
+  ipcMain.on("empty:open", onEmptyOpen);
   // `docs:export-pdf`: the doc page saves itself as a PDF; rules and flow in docPdfExport.ts.
   ipcMain.handle("docs:export-pdf", (event, fileName: unknown) =>
     handleDocExportPdf(
@@ -2659,7 +2767,9 @@ export function createMainWindow(
   // recreates a window on dock "activate" without quitting the app. Without
   // this, every close/reopen cycle leaks the ipcMain listeners above plus
   // every tab's WebContentsView (renderer process stays alive).
+  liveTabManagers.add(tabs);
   win.on("closed", () => {
+    liveTabManagers.delete(tabs);
     stopPanelTimer();
     ipcMain.removeListener("tabbar:new", onTabbarNew);
     ipcMain.removeListener("tabbar:new-browser", onTabbarNewBrowser);
@@ -2695,6 +2805,8 @@ export function createMainWindow(
     ipcMain.removeHandler("docs:save");
     ipcMain.removeHandler("docs:delete");
     ipcMain.removeHandler("docs:export-pdf");
+    ipcMain.removeHandler("empty:recent");
+    ipcMain.removeListener("empty:open", onEmptyOpen);
     ipcMain.removeHandler("settings:open");
     ipcMain.removeHandler("traces:save");
     ipcMain.removeHandler("traces:read");
