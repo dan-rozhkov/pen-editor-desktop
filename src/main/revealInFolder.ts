@@ -16,12 +16,7 @@ export interface RevealDirs {
   traces: string;
 }
 
-/** "Reveal in Finder" on macOS, "Show in Explorer" on Windows, "Show in Folder" elsewhere. */
-export function revealMenuLabel(platform: NodeJS.Platform): string {
-  if (platform === "darwin") return "Reveal in Finder";
-  if (platform === "win32") return "Show in Explorer";
-  return "Show in Folder";
-}
+export { revealMenuLabel } from "./revealMenuLabel";
 
 /**
  * The file to show and the directory to fall back to, or null for an invalid id

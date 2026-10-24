@@ -2,7 +2,7 @@ import { agentPanelMenuLabel } from "./agentPanelSettings";
 import type { MenuItemConstructorOptions } from "electron";
 import type { McpStatus } from "./tabManager";
 import { defaultCursorSettings } from "./cursorSettings";
-import { revealMenuLabel } from "./revealInFolder";
+import { revealMenuLabel } from "./revealMenuLabel";
 
 /** Id of File > Reveal: window.ts toggles its `enabled` in place when the active tab changes (no menu rebuild). */
 export const REVEAL_MENU_ITEM_ID = "reveal-active-tab";
