@@ -384,6 +384,58 @@ describe("TabManager", () => {
     });
   });
 
+  describe("fileTargetOf", () => {
+    const setUrl = (i: number, url: string) => (views[i].getURL as unknown as ReturnType<typeof vi.fn>).mockReturnValue(url);
+
+    it("canvas tab: the live canvas= wins, else the opened id, else null", () => {
+      const a = tm.newTab("editor", undefined, { canvasId: "cv_a" });
+      expect(tm.fileTargetOf(a)).toEqual({ kind: "canvas", id: "cv_a" });
+      setUrl(0, "https://pen-editor.onrender.com/?canvas=cv_live&chat=off");
+      expect(tm.fileTargetOf(a)).toEqual({ kind: "canvas", id: "cv_live" });
+      setUrl(0, "https://pen-editor.onrender.com/?chat=off");
+      expect(tm.fileTargetOf(a)).toEqual({ kind: "canvas", id: "cv_a" });
+      const fresh = tm.newTab("editor");
+      expect(tm.fileTargetOf(fresh)).toBeNull();
+    });
+
+    it("doc tab: the opened id only while the view has no URL; the live URL wins after", () => {
+      const d = tm.newTab("doc", undefined, { docId: "d1" });
+      expect(tm.fileTargetOf(d)).toEqual({ kind: "doc", id: "d1" });
+      setUrl(0, "https://pen-editor.onrender.com/doc?id=live&chat=off");
+      expect(tm.fileTargetOf(d)).toEqual({ kind: "doc", id: "live" });
+      setUrl(0, "https://pen-editor.onrender.com/doc?new=1&chat=off");
+      expect(tm.fileTargetOf(d)).toBeNull();
+      // Offline fallback page: the opened id still names a file on disk.
+      setUrl(0, "file:///app/assets/offline.html");
+      expect(tm.fileTargetOf(d)).toEqual({ kind: "doc", id: "d1" });
+      const fresh = tm.newTab("doc");
+      expect(tm.fileTargetOf(fresh)).toBeNull();
+    });
+
+    it("trace tab: the live URL, else the opened id", () => {
+      const t = tm.newTab("trace", undefined, { traceId: "tr1" });
+      expect(tm.fileTargetOf(t)).toEqual({ kind: "trace", id: "tr1" });
+      setUrl(0, "https://pen-editor.onrender.com/trace/live");
+      expect(tm.fileTargetOf(t)).toEqual({ kind: "trace", id: "live" });
+      setUrl(0, "file:///app/assets/offline.html");
+      expect(tm.fileTargetOf(t)).toEqual({ kind: "trace", id: "tr1" });
+    });
+
+    it("an invalid id from the live URL gives null", () => {
+      const a = tm.newTab("editor");
+      setUrl(0, "https://pen-editor.onrender.com/?canvas=bad%20id&chat=off");
+      expect(tm.fileTargetOf(a)).toBeNull();
+    });
+
+    it("kinds without a file and unknown tabs give null", () => {
+      const w = tm.newTab("workflow", undefined, { workflowId: "w1" });
+      const b = tm.newTab("browser");
+      const s = tm.openSettingsTab();
+      const p = tm.openPasswordsTab();
+      for (const id of [w, b, s, p, 9999]) expect(tm.fileTargetOf(id)).toBeNull();
+    });
+  });
+
   describe("passwords tab", () => {
     it("opens as a local tab: titled Passwords, active, loads no URL", () => {
       const id = tm.openPasswordsTab({ focus: true });

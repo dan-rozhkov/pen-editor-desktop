@@ -27,6 +27,8 @@ const api = {
     return Array.isArray(items) ? (items as RecentItem[]) : [];
   },
   openItem: (kind: "canvas" | "doc", id: string) => ipcRenderer.send("empty:open", { kind, id }),
+  /** Right-click on a Recent row: main pops the native menu (Open, reveal file). */
+  openItemMenu: (kind: "canvas" | "doc", id: string) => ipcRenderer.send("empty:recent-menu", { kind, id }),
   /** Main says a document or canvas was stored or deleted: the Recent list may be out of date. */
   onRecentChanged: (cb: () => void) => {
     ipcRenderer.on("empty:recent-changed", () => cb());

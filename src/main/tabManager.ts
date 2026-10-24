@@ -1,5 +1,5 @@
 import type { BrowserPageHandle, BrowserTabInfo } from "@sideform/browser-agent/controller";
-import { canvasIdOfUrl, docIdOfUrl, isValidCanvasId, resolveCanvasTabUrl, isDocPageOn, isValidSettingsSection, isValidTraceId, resolveDocTabUrl, resolveSettingsTabUrl, resolveTraceTabUrl, resolveWorkflowTabUrl, traceIdOfUrl, workflowIdOfUrl } from "./config";
+import { canvasIdOfUrl, docIdOfUrl, isValidCanvasId, isValidDocId, resolveCanvasTabUrl, isDocPageOn, isValidSettingsSection, isValidTraceId, resolveDocTabUrl, resolveSettingsTabUrl, resolveTraceTabUrl, resolveWorkflowTabUrl, traceIdOfUrl, workflowIdOfUrl } from "./config";
 export type UITheme = "light" | "dark";
 
 /** How a tab becomes the active one. `focus: false` shows it without moving keyboard focus into it. */
@@ -834,6 +834,35 @@ export class TabManager {
       if ((liveId ?? t.canvasId) === canvasId) return t.id;
     }
     return null;
+  }
+
+  /**
+   * The stored file behind a tab, for "Reveal in Finder": a canvas, document or trace id, resolved with the
+   * same rules as `findCanvasTab` / `findDocTab` / `findTraceTab` (live URL first). Null for an unknown tab,
+   * a kind with no file (workflow, browser, settings, passwords) and a tab with no id yet (`new=1` doc,
+   * canvas the frontend has not named). The id is not validated here; `revealTargetFor` does that.
+   */
+  fileTargetOf(tabId: number): { kind: "canvas" | "doc" | "trace"; id: string } | null {
+    const t = this.tabs.find((x) => x.id === tabId);
+    if (!t) return null;
+    const live = t.view.getURL();
+    let id: string | null | undefined;
+    if (t.kind === "editor") id = (live ? canvasIdOfUrl(live) : null) ?? t.canvasId;
+    // The doc page's own URL decides (a `new=1` page has no file yet); anything else (the offline fallback page)
+    // falls back to the opened id, since the file is still on disk.
+    else if (t.kind === "doc") id = live && this.isOnDocPage(live) ? docIdOfUrl(live) : t.docId;
+    else if (t.kind === "trace") id = traceIdOfUrl(live) ?? t.traceId;
+    else return null;
+    const valid = t.kind === "trace" ? isValidTraceId(id) : t.kind === "doc" ? isValidDocId(id) : isValidCanvasId(id);
+    return valid && id ? { kind: t.kind === "editor" ? "canvas" : t.kind, id } : null;
+  }
+
+  private isOnDocPage(url: string): boolean {
+    try {
+      return isDocPageOn(url, new URL(this.opts.editorUrl).origin);
+    } catch {
+      return false;
+    }
   }
 
   /** Number of canvas (editor) tabs. */

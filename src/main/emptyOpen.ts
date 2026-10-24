@@ -35,6 +35,21 @@ export function openRecentItem(deps: EmptyOpenDeps, sender: number, payload: unk
   }
 }
 
+export type RecentMenuTarget = { ok: true; kind: "canvas" | "doc"; id: string } | { ok: false; error: string };
+
+/**
+ * `empty:recent-menu` (send, from the empty view only): a right-click on a Recent row. Checks the sender
+ * and validates kind and id; the caller pops the native menu for the returned target. Never throws.
+ */
+export function parseRecentMenuRequest(deps: Pick<EmptyOpenDeps, "isEmptyView">, sender: number, payload: unknown): RecentMenuTarget {
+  if (!deps.isEmptyView(sender)) return { ok: false, error: "empty:recent-menu is only allowed from the empty view" };
+  const p = typeof payload === "object" && payload !== null ? (payload as { kind?: unknown; id?: unknown }) : {};
+  const { kind, id } = p;
+  if (kind !== "canvas" && kind !== "doc") return { ok: false, error: "invalid kind" };
+  if (kind === "canvas" ? !isValidCanvasId(id) : !isValidDocId(id)) return { ok: false, error: "invalid id" };
+  return { ok: true, kind, id: id as string };
+}
+
 /** What `empty:recent` needs from the window. */
 export interface EmptyRecentDeps<T> {
   isEmptyView(webContentsId: number): boolean;

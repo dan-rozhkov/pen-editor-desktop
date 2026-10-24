@@ -2,7 +2,7 @@ import { shouldForwardMenuCommand } from "./menuTarget";
 import { captureWithRetry } from "./captureRetry";
 import { normalizePageColor, PAGE_BG_FALLBACK, SAMPLE_PAGE_BG_SCRIPT } from "./pageBackground";
 import path from "node:path";
-import { writeFile } from "node:fs/promises";
+import { access, writeFile } from "node:fs/promises";
 import { app, BaseWindow, View, WebContentsView, Menu, Notification, dialog, ipcMain, nativeTheme, session, shell, systemPreferences, webContents } from "electron";
 import {
   TabManager,
@@ -13,7 +13,8 @@ import {
   type TabsSnapshot,
   type UITheme,
 } from "./tabManager";
-import { buildMenuTemplate, buildNewTabMenuTemplate } from "./menu";
+import { buildMenuTemplate, buildNewTabMenuTemplate, buildRecentContextMenuTemplate, buildTabContextMenuTemplate, REVEAL_MENU_ITEM_ID } from "./menu";
+import { parseTabMenuPayload, revealInFolder, revealMenuLabel, type RevealDirs, type RevealTarget } from "./revealInFolder";
 import {
   buildBrowserToolsMenuTemplate,
   planClearCommands,
@@ -67,7 +68,7 @@ import { createDocStore, docDirFor, nodeDocFs, type DocStore } from "./docStore"
 import { canvasDirFor, createCanvasStore, type CanvasStore } from "./canvasStore";
 import { handleCanvasDelete, handleCanvasList, handleCanvasRead, handleCanvasSave, type CanvasIpcDeps } from "./canvasIpc";
 import { changedRecentItems, loadRecentItems } from "./recentItems";
-import { notifyRecentChanged, openRecentItem, recentFor } from "./emptyOpen";
+import { notifyRecentChanged, openRecentItem, parseRecentMenuRequest, recentFor } from "./emptyOpen";
 import { canvasSenders, flushPage, flushThenClose, pendingCloseFlushes } from "./canvasWriters";
 import { openTraceTab } from "./traceOpen";
 import { openSettings } from "./settingsOpen";
@@ -128,6 +129,27 @@ function getCanvasStore(): CanvasStore {
     rootDir: path.join(app.getPath("userData"), canvasDirFor(isEnvValueSet(process.env.PEN_DESKTOP_URL))),
   });
   return processCanvasStore;
+}
+
+/** Where canvases, documents and traces live on disk (same roots as the stores). */
+function revealDirs(): RevealDirs {
+  const userData = app.getPath("userData");
+  const overridden = isEnvValueSet(process.env.PEN_DESKTOP_URL);
+  return {
+    canvases: path.join(userData, canvasDirFor(overridden)),
+    documents: path.join(userData, docDirFor(overridden)),
+    traces: path.join(userData, TRACE_DIR),
+  };
+}
+
+/** "Reveal in Finder" for one stored file; rules in revealInFolder.ts. Never throws. */
+function revealStoredFile(target: RevealTarget): Promise<void> {
+  return revealInFolder(target, revealDirs(), {
+    exists: (p) => access(p).then(() => true, () => false),
+    showItemInFolder: (p) => shell.showItemInFolder(p),
+    openPath: (p) => shell.openPath(p),
+    warn: (msg) => console.warn(msg),
+  });
 }
 
 /** Every window's empty-state view (they all show the same Recent list). */
@@ -555,7 +577,19 @@ export function createMainWindow(
       // Never let a cosmetic colour break a state push.
     }
   };
+  // File > Reveal is enabled while the active tab has a stored file. Toggled in place on the installed menu
+  // (no rebuild), on every state push and on every in-page navigation of a tab (the frontend names a new
+  // canvas or document with history.replaceState, which TabManager does not report).
+  let lastRevealable = false;
+  const refreshRevealMenuItem = () => {
+    if (win.isDestroyed()) return;
+    const activeId = tabs.getSnapshot().activeId;
+    lastRevealable = activeId !== null && tabs.fileTargetOf(activeId) !== null;
+    const item = Menu.getApplicationMenu()?.getMenuItemById(REVEAL_MENU_ITEM_ID);
+    if (item) item.enabled = lastRevealable;
+  };
   const pushState = (s: TabsSnapshot) => {
+    refreshRevealMenuItem();
     // s.mcpActiveWebContentsId is computed by TabManager itself (see
     // TabsSnapshot's doc comment / finding 1) — window.ts just forwards it,
     // rather than tracking "last editor tab" locally, since only TabManager
@@ -1283,6 +1317,8 @@ export function createMainWindow(
       };
       view.webContents.on("did-navigate", reportNavState);
       view.webContents.on("did-navigate-in-page", reportNavState);
+      view.webContents.on("did-navigate", refreshRevealMenuItem);
+      view.webContents.on("did-navigate-in-page", refreshRevealMenuItem);
       if (kind === "browser") {
         // Tail colour under the page's rounded top corners (pageBackground.ts): sample the page background.
         const wc = view.webContents;
@@ -2483,6 +2519,21 @@ export function createMainWindow(
     if (!result.ok) console.error(`empty:open refused: ${result.error}`);
   };
   ipcMain.on("empty:open", onEmptyOpen);
+  // Right-click on a Recent row: native menu with Open and the reveal item.
+  const onEmptyRecentMenu = (event: Electron.IpcMainEvent, payload: unknown) => {
+    const req = parseRecentMenuRequest({ isEmptyView: (id) => id === emptyView.webContents.id }, event.sender.id, payload);
+    if (!req.ok) {
+      console.error(`empty:recent-menu refused: ${req.error}`);
+      return;
+    }
+    Menu.buildFromTemplate(
+      buildRecentContextMenuTemplate(revealMenuLabel(process.platform), {
+        open: () => onEmptyOpen(event, { kind: req.kind, id: req.id }),
+        reveal: () => void revealStoredFile({ kind: req.kind, id: req.id }),
+      }),
+    ).popup({ window: win });
+  };
+  ipcMain.on("empty:recent-menu", onEmptyRecentMenu);
   // `docs:export-pdf`: the doc page saves itself as a PDF; rules and flow in docPdfExport.ts.
   ipcMain.handle("docs:export-pdf", (event, fileName: unknown) =>
     handleDocExportPdf(
@@ -2703,6 +2754,24 @@ export function createMainWindow(
       ),
     ).popup({ window: win, ...at });
   };
+  // Right-click on a tab: native menu with "Reveal in Finder" (disabled without a file) and "Close Tab".
+  const onTabbarTabMenu = (e: Electron.IpcMainEvent, payload: unknown) => {
+    if (!fromOurTabbar(e)) return;
+    const req = parseTabMenuPayload(payload);
+    if (!req || tabs.webContentsIdOf(req.id) === null) return;
+    const target = tabs.fileTargetOf(req.id);
+    Menu.buildFromTemplate(
+      buildTabContextMenuTemplate(
+        { label: revealMenuLabel(process.platform), enabled: target !== null },
+        {
+          reveal: () => {
+            if (target) void revealStoredFile(target);
+          },
+          closeTab: () => closeTabByUser(req.id),
+        },
+      ),
+    ).popup({ window: win, x: req.x, y: req.y });
+  };
   const onTabbarActivate = (e: Electron.IpcMainEvent, id: number) =>
     fromOurTabbar(e) && tabs.activate(id);
   // Agent layout: the panel's preload reports the theme it paints (class `dark` on <html>) on
@@ -2747,6 +2816,7 @@ export function createMainWindow(
   ipcMain.on("tabbar:new-doc", onTabbarNewDoc);
   ipcMain.on("tabbar:new-menu", onTabbarNewMenu);
   ipcMain.on("tabbar:tools-menu", onTabbarToolsMenu);
+  ipcMain.on("tabbar:tab-menu", onTabbarTabMenu);
   ipcMain.on("tabbar:activate", onTabbarActivate);
   ipcMain.on("tabbar:close", onTabbarClose);
   ipcMain.on("tabbar:reorder", onTabbarReorder);
@@ -2777,6 +2847,7 @@ export function createMainWindow(
     ipcMain.removeListener("tabbar:new-doc", onTabbarNewDoc);
     ipcMain.removeListener("tabbar:new-menu", onTabbarNewMenu);
     ipcMain.removeListener("tabbar:tools-menu", onTabbarToolsMenu);
+    ipcMain.removeListener("tabbar:tab-menu", onTabbarTabMenu);
     ipcMain.removeListener("tabbar:activate", onTabbarActivate);
     ipcMain.removeListener("tabbar:close", onTabbarClose);
     ipcMain.removeListener("tabbar:reorder", onTabbarReorder);
@@ -2808,6 +2879,7 @@ export function createMainWindow(
     ipcMain.removeHandler("docs:export-pdf");
     ipcMain.removeHandler("empty:recent");
     ipcMain.removeListener("empty:open", onEmptyOpen);
+    ipcMain.removeListener("empty:recent-menu", onEmptyRecentMenu);
     ipcMain.removeHandler("settings:open");
     ipcMain.removeHandler("traces:save");
     ipcMain.removeHandler("traces:read");
@@ -2862,6 +2934,11 @@ export function createMainWindow(
         },
         useThisAppForMcp: () => void mcpService.forcePublish(),
         toggleAgentPanel: () => setPanelCollapsed(!panelCollapsed),
+        revealActiveTab: () => {
+          const id = tabs.getSnapshot().activeId;
+          const target = id === null ? null : tabs.fileTargetOf(id);
+          if (target) void revealStoredFile(target);
+        },
         setCursorEnabled: (enabled) => {
           updateCursorSettings({ enabled });
           // Unticked: hide the overlay on the current page right away
@@ -2873,7 +2950,7 @@ export function createMainWindow(
           }
         },
         },
-        { isMac: process.platform === "darwin", appName: app.name, agentPanel: { collapsed: panelCollapsed } },
+        { isMac: process.platform === "darwin", appName: app.name, agentPanel: { collapsed: panelCollapsed }, reveal: { label: revealMenuLabel(process.platform), enabled: lastRevealable } },
         mcpService.getStatus(),
         effectiveCursor(),
       ),

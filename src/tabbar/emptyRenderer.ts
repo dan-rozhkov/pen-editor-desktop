@@ -10,6 +10,7 @@
       newDocTab(): void;
       listRecent(): Promise<{ kind: "canvas" | "doc"; id: string; title: string; updatedAt: number }[]>;
       openItem(kind: "canvas" | "doc", id: string): void;
+      openItemMenu(kind: "canvas" | "doc", id: string): void;
       onRecentChanged(cb: () => void): void;
       onState(cb: (state: { theme: "light" | "dark"; sessionTabs: number }) => void): void;
     };
@@ -80,6 +81,10 @@
       row.appendChild(span("recent-kind", item.kind === "canvas" ? "Canvas" : "Document"));
       row.appendChild(span("recent-time", formatRelativeTime(item.updatedAt, now)));
       row.addEventListener("click", () => bridge.openItem(item.kind, item.id));
+      row.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        bridge.openItemMenu(item.kind, item.id);
+      });
       li.appendChild(row);
       recentList.appendChild(li);
     }

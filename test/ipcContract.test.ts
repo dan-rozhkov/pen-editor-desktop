@@ -29,6 +29,8 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "tabbar:new-doc", direction: "renderer->main" },
   { name: "tabbar:new-menu", direction: "renderer->main" },
   { name: "tabbar:tools-menu", direction: "renderer->main" },
+  // Right-click on a tab: native menu (reveal file, close). Payload `{id, x, y}`.
+  { name: "tabbar:tab-menu", direction: "renderer->main" },
   { name: "tabbar:activate", direction: "renderer->main" },
   { name: "tabbar:close", direction: "renderer->main" },
   { name: "tabbar:reorder", direction: "renderer->main" },
@@ -76,6 +78,8 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   // Empty start "Recent" list: only the empty view lists (invoke) and opens a row (send).
   { name: "empty:recent", direction: "renderer->main" },
   { name: "empty:open", direction: "renderer->main" },
+  // Right-click on a Recent row (empty view only): native menu with Open and the reveal item.
+  { name: "empty:recent-menu", direction: "renderer->main" },
   // Main tells every empty view that a doc/canvas was stored or deleted (no payload): the page refetches.
   { name: "empty:recent-changed", direction: "main->renderer" },
   // Browse-run traces (invoke/handle): save/read stored traces, open a trace tab. See CLAUDE.md "Trace tabs".

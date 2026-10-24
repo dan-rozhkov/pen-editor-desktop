@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { buildMenuTemplate, buildNewTabMenuTemplate, type MenuActions } from "../src/main/menu";
+import { buildMenuTemplate, buildNewTabMenuTemplate, buildRecentContextMenuTemplate, buildTabContextMenuTemplate, type MenuActions, REVEAL_MENU_ITEM_ID } from "../src/main/menu";
 import type { MenuItemConstructorOptions } from "electron";
 
 function flatten(items: MenuItemConstructorOptions[]): MenuItemConstructorOptions[] {
@@ -24,6 +24,7 @@ describe("buildMenuTemplate", () => {
       useThisAppForMcp: vi.fn(),
       setCursorEnabled: vi.fn(),
       toggleAgentPanel: vi.fn(),
+      revealActiveTab: vi.fn(),
     };
   });
 
@@ -108,6 +109,32 @@ describe("buildMenuTemplate", () => {
     (i.click as () => void)();
     expect(actions.signIn).toHaveBeenCalledTimes(1);
     expect(actions.forwardToActiveTab).not.toHaveBeenCalled();
+  });
+
+  it("Reveal item sits right after Open…, before the first separator, without an accelerator", () => {
+    const file = buildMenuTemplate(actions, { isMac: true, reveal: { label: "Reveal in Finder", enabled: true } }).find((m) => m.label === "File")!;
+    const sub = file.submenu as MenuItemConstructorOptions[];
+    const at = sub.findIndex((i) => i.label === "Open…");
+    expect(sub[at + 1].label).toBe("Reveal in Finder");
+    // window.ts finds the item by this id to toggle `enabled` in place.
+    expect(sub[at + 1].id).toBe(REVEAL_MENU_ITEM_ID);
+    expect(sub[at + 1].enabled).toBe(true);
+    expect(sub[at + 1].accelerator).toBeUndefined();
+    expect(sub[at + 2].type).toBe("separator");
+  });
+
+  it("Reveal item is local: it calls revealActiveTab, forwards no command, and survives a bare click", () => {
+    const i = item("Reveal in Finder");
+    expect(() => (i.click as () => void)()).not.toThrow();
+    expect(actions.revealActiveTab).toHaveBeenCalledTimes(1);
+    expect(actions.forwardToActiveTab).not.toHaveBeenCalled();
+  });
+
+  it("Reveal item without opts.reveal is disabled; with it, label and state come from the opts", () => {
+    expect(item("Reveal in Finder").enabled).toBe(false);
+    const off = buildMenuTemplate(actions, { isMac: false, reveal: { label: "Show in Explorer", enabled: false } }).find((m) => m.label === "File")!;
+    const e = (off.submenu as MenuItemConstructorOptions[]).find((i) => i.label === "Show in Explorer")!;
+    expect(e.enabled).toBe(false);
   });
 
   it("Close Window triggers closeWindow with CmdOrCtrl+Shift+W", () => {
@@ -283,7 +310,7 @@ describe("buildNewTabMenuTemplate", () => {
 describe("View > Agent Panel", () => {
   const actions = {
     newTab: vi.fn(), newBrowserTab: vi.fn(), newDocTab: vi.fn(), newWorkflowTab: vi.fn(), openSettings: vi.fn(), openPasswords: vi.fn(), signIn: vi.fn(), closeTab: vi.fn(), closeWindow: vi.fn(), nextTab: vi.fn(), prevTab: vi.fn(),
-    forwardToActiveTab: vi.fn(), useThisAppForMcp: vi.fn(), setCursorEnabled: vi.fn(), toggleAgentPanel: vi.fn(),
+    forwardToActiveTab: vi.fn(), useThisAppForMcp: vi.fn(), setCursorEnabled: vi.fn(), toggleAgentPanel: vi.fn(), revealActiveTab: vi.fn(),
   } as MenuActions;
   it("View menu has a Show/Hide Agent Panel item (Cmd/Ctrl+Alt+B) only with the agent layout", () => {
     const labels = (opts: Parameters<typeof buildMenuTemplate>[1]) => {
@@ -298,5 +325,34 @@ describe("View > Agent Panel", () => {
     expect(it.accelerator).toBe("CmdOrCtrl+Alt+B");
     (it.click as () => void)();
     expect(actions.toggleAgentPanel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("buildTabContextMenuTemplate", () => {
+  it("has the reveal item, a separator and Close Tab, wired to the actions", () => {
+    const actions = { reveal: vi.fn(), closeTab: vi.fn() };
+    const t = buildTabContextMenuTemplate({ label: "Reveal in Finder", enabled: true }, actions);
+    expect(t.map((i) => i.label ?? i.type)).toEqual(["Reveal in Finder", "separator", "Close Tab"]);
+    expect(t[0].enabled).toBe(true);
+    (t[0].click as () => void)();
+    (t[2].click as () => void)();
+    expect(actions.reveal).toHaveBeenCalledTimes(1);
+    expect(actions.closeTab).toHaveBeenCalledTimes(1);
+  });
+  it("disables reveal for a tab without a file", () => {
+    const t = buildTabContextMenuTemplate({ label: "Show in Folder", enabled: false }, { reveal: vi.fn(), closeTab: vi.fn() });
+    expect(t[0].enabled).toBe(false);
+  });
+});
+
+describe("buildRecentContextMenuTemplate", () => {
+  it("has Open and the reveal item", () => {
+    const actions = { open: vi.fn(), reveal: vi.fn() };
+    const t = buildRecentContextMenuTemplate("Show in Explorer", actions);
+    expect(t.map((i) => i.label)).toEqual(["Open", "Show in Explorer"]);
+    (t[0].click as () => void)();
+    (t[1].click as () => void)();
+    expect(actions.open).toHaveBeenCalledTimes(1);
+    expect(actions.reveal).toHaveBeenCalledTimes(1);
   });
 });

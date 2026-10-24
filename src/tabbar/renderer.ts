@@ -44,6 +44,7 @@ interface PenTabbarApi {
   togglePanel(): void;
   openNewTabMenu(anchor: { x: number; y: number }): void;
   openToolsMenu(anchor: { x: number; y: number }): void;
+  openTabMenu(id: number, anchor: { x: number; y: number }): void;
   activateTab(id: number): void;
   closeTab(id: number): void;
   reorderTab(id: number, beforeId: number | null): void;
@@ -273,8 +274,17 @@ function finishProgress(v: TabView): void {
 function createTabView(tab: TabRow): TabView {
   const el = document.createElement("div");
   el.className = "tab";
-  el.addEventListener("mousedown", () => window.penTabbar.activateTab(tab.id));
+  // Primary button only: a right-click (or Ctrl+click on macOS) opens the tab menu without switching tabs.
+  el.addEventListener("mousedown", (e) => {
+    if (isSecondaryClick(e)) return;
+    window.penTabbar.activateTab(tab.id);
+  });
   el.addEventListener("pointerdown", (e) => onTabPointerDown(e, tab.id, el));
+  // Native menu (reveal file, close): the strip view is too short for an HTML one. Window coordinates = tabbar CSS px.
+  el.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    window.penTabbar.openTabMenu(tab.id, { x: e.clientX, y: e.clientY });
+  });
 
   const progress = document.createElement("span");
   progress.className = "tab-progress";
@@ -397,8 +407,13 @@ function clearPending(): void {
   window.clearTimeout(pendingTimer);
 }
 
+/** A click that opens the context menu: any non-primary button, or Ctrl+click on macOS. */
+function isSecondaryClick(e: MouseEvent): boolean {
+  return e.button !== 0 || (window.penTabbar.isMac && e.ctrlKey);
+}
+
 function onTabPointerDown(e: PointerEvent, id: number, el: HTMLElement): void {
-  if (e.button !== 0) return;
+  if (isSecondaryClick(e)) return;
   if (e.target instanceof Element && e.target.closest(".close")) return;
   if (!el.classList.contains("tab") || el.classList.contains("entering")) return;
   if (drag) abortDrag(); // a stale gesture (lost pointerup) must not swallow this one

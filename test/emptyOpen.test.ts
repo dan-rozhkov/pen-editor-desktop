@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { notifyRecentChanged, openRecentItem, recentFor, type EmptyOpenDeps } from "../src/main/emptyOpen";
+import { notifyRecentChanged, openRecentItem, parseRecentMenuRequest, recentFor, type EmptyOpenDeps } from "../src/main/emptyOpen";
 
 function deps(over: Partial<EmptyOpenDeps> = {}) {
   return {
@@ -80,5 +80,19 @@ describe("notifyRecentChanged", () => {
     notifyRecentChanged(new Set([broken, dead, live]));
     expect(live.send).toHaveBeenCalledWith("empty:recent-changed");
     expect(dead.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("parseRecentMenuRequest", () => {
+  const d = { isEmptyView: (id: number) => id === 7 };
+  it("accepts a valid canvas or doc row from the empty view", () => {
+    expect(parseRecentMenuRequest(d, 7, { kind: "canvas", id: "cv_1" })).toEqual({ ok: true, kind: "canvas", id: "cv_1" });
+    expect(parseRecentMenuRequest(d, 7, { kind: "doc", id: "abc" })).toEqual({ ok: true, kind: "doc", id: "abc" });
+  });
+  it("refuses another sender, a bad kind and a bad id", () => {
+    expect(parseRecentMenuRequest(d, 8, { kind: "doc", id: "abc" }).ok).toBe(false);
+    expect(parseRecentMenuRequest(d, 7, { kind: "trace", id: "abc" }).ok).toBe(false);
+    expect(parseRecentMenuRequest(d, 7, { kind: "doc", id: "../x" }).ok).toBe(false);
+    expect(parseRecentMenuRequest(d, 7, null).ok).toBe(false);
   });
 });

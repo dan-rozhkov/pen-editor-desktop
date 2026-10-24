@@ -2,6 +2,10 @@ import { agentPanelMenuLabel } from "./agentPanelSettings";
 import type { MenuItemConstructorOptions } from "electron";
 import type { McpStatus } from "./tabManager";
 import { defaultCursorSettings } from "./cursorSettings";
+import { revealMenuLabel } from "./revealInFolder";
+
+/** Id of File > Reveal: window.ts toggles its `enabled` in place when the active tab changes (no menu rebuild). */
+export const REVEAL_MENU_ITEM_ID = "reveal-active-tab";
 
 /** What the View > Show Agent Cursor item shows. `enabledLocked` = an env var
  * decides the value, so the item renders disabled. */
@@ -37,6 +41,14 @@ export interface MenuActions {
   setCursorEnabled(enabled: boolean): void;
   /** Show/hide the agent chat panel (View menu, same as the tab bar's sidebar button). A local action: no `menu:command` id. */
   toggleAgentPanel(): void;
+  /** File > Reveal in Finder: shows the active tab's stored file in the OS file manager. A local action: no `menu:command` id; a no-op with no revealable tab. */
+  revealActiveTab(): void;
+}
+
+/** What the File > Reveal item shows: the platform label, and whether the active tab has a file. */
+export interface RevealMenuState {
+  label: string;
+  enabled: boolean;
 }
 
 // No terminal in a packaged app, so this label plus the tab-strip indicator
@@ -80,6 +92,32 @@ export function buildNewTabMenuTemplate(
 }
 
 /**
+ * Right-click menu of a tab: reveal its file (disabled when the tab has none), then close.
+ * Native, like the "+" popup: the tab bar view is only as tall as the strip.
+ */
+export function buildTabContextMenuTemplate(
+  reveal: RevealMenuState,
+  actions: { reveal(): void; closeTab(): void },
+): MenuItemConstructorOptions[] {
+  return [
+    { label: reveal.label, enabled: reveal.enabled, click: () => actions.reveal() },
+    { type: "separator" },
+    { label: "Close Tab", click: () => actions.closeTab() },
+  ];
+}
+
+/** Right-click menu of a Recent row on the empty start page: open it, or reveal its file. */
+export function buildRecentContextMenuTemplate(
+  revealLabel: string,
+  actions: { open(): void; reveal(): void },
+): MenuItemConstructorOptions[] {
+  return [
+    { label: "Open", click: () => actions.open() },
+    { label: revealLabel, click: () => actions.reveal() },
+  ];
+}
+
+/**
  * Application menu. File actions forward pen-editor command-palette ids over
  * IPC (the cross-repo contract — see CLAUDE.md); Edit/View use native roles
  * so text fields and zoom behave like any mac app. `mcpStatus` is read once
@@ -89,7 +127,7 @@ export function buildNewTabMenuTemplate(
  */
 export function buildMenuTemplate(
   actions: MenuActions,
-  opts: { isMac: boolean; appName?: string; agentPanel?: { collapsed: boolean } },
+  opts: { isMac: boolean; appName?: string; agentPanel?: { collapsed: boolean }; reveal?: RevealMenuState },
   mcpStatus: McpStatus = "off",
   cursor: CursorMenuState = { ...defaultCursorSettings(), enabledLocked: false },
 ): MenuItemConstructorOptions[] {
@@ -113,6 +151,13 @@ export function buildMenuTemplate(
         label: "Open…",
         accelerator: "CmdOrCtrl+O",
         click: () => actions.forwardToActiveTab("file-open"),
+      },
+      // No accelerator. Without `opts.reveal` the item shows the platform label, disabled.
+      {
+        id: REVEAL_MENU_ITEM_ID,
+        label: opts.reveal?.label ?? revealMenuLabel(opts.isMac ? "darwin" : process.platform),
+        enabled: opts.reveal?.enabled ?? false,
+        click: () => actions.revealActiveTab(),
       },
       { type: "separator" },
       {
