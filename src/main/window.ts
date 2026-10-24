@@ -71,7 +71,7 @@ import { notifyRecentChanged, openRecentItem, recentFor } from "./emptyOpen";
 import { canvasSenders, flushPage, flushThenClose, pendingCloseFlushes } from "./canvasWriters";
 import { openTraceTab } from "./traceOpen";
 import { openSettings } from "./settingsOpen";
-import { handleTraceListTabs, handleTraceRead, handleTraceSave, type TraceIpcDeps } from "./traceIpc";
+import { handleTraceList, handleTraceListTabs, handleTraceRead, handleTraceSave, type TraceIpcDeps } from "./traceIpc";
 import { createTraceStore, nodeTraceFs, TRACE_DIR } from "./traceStore";
 import { FetchRouter } from "./fetchRouting";
 import { BLANK_DOCUMENT_URL, createCommitGate } from "./commitGate";
@@ -2526,6 +2526,7 @@ export function createMainWindow(
   };
   ipcMain.handle("traces:save", (event, payload: unknown) => handleTraceSave(traceIpc, event.sender.id, payload));
   ipcMain.handle("traces:read", (event, id: unknown, opts?: unknown) => handleTraceRead(traceIpc, event.sender.id, id, opts));
+  ipcMain.handle("traces:list", (event) => handleTraceList(traceIpc, event.sender.id));
   ipcMain.handle("traces:list-tabs", (event) =>
     handleTraceListTabs({ isPanel: (id) => panelWc()?.id === id, listTraceTabs: () => tabs.listTraceTabs() }, event.sender.id),
   );
@@ -2810,6 +2811,7 @@ export function createMainWindow(
     ipcMain.removeHandler("settings:open");
     ipcMain.removeHandler("traces:save");
     ipcMain.removeHandler("traces:read");
+    ipcMain.removeHandler("traces:list");
     ipcMain.removeHandler("traces:open");
     ipcMain.removeHandler("traces:list-tabs");
     canvasLink.dispose();

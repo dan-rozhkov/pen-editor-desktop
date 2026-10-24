@@ -242,8 +242,8 @@ describe("preload/tab.ts traces bridge", () => {
     await import("../src/preload/tab");
   });
 
-  it("exposes only save and read, over traces:save / traces:read", async () => {
-    expect(Object.keys(exposedApi.traces).sort()).toEqual(["read", "save"]);
+  it("exposes only save, read and list, over traces:save / traces:read / traces:list", async () => {
+    expect(Object.keys(exposedApi.traces).sort()).toEqual(["list", "read", "save"]);
     const payload = { manifest: { id: "t1" }, assets: [] };
     invokeMock.mockResolvedValueOnce({ id: "t1" });
     await expect(exposedApi.traces.save(payload)).resolves.toEqual({ id: "t1" });
@@ -251,6 +251,9 @@ describe("preload/tab.ts traces bridge", () => {
     invokeMock.mockResolvedValueOnce({ error: "trace not found" });
     await expect(exposedApi.traces.read("t1")).resolves.toEqual({ error: "trace not found" });
     expect(invokeMock).toHaveBeenLastCalledWith("traces:read", "t1");
+    invokeMock.mockResolvedValueOnce({ traces: [] });
+    await expect(exposedApi.traces.list()).resolves.toEqual({ traces: [] });
+    expect(invokeMock).toHaveBeenLastCalledWith("traces:list");
   });
 });
 

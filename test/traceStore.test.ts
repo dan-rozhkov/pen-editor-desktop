@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as path from "node:path";
 import {
   createTraceStore,
@@ -322,5 +322,98 @@ describe("traceStore.read", () => {
     const { io, store: s } = store();
     io.read = async () => { throw new Error("EACCES"); };
     expect(await s.read("t1")).toEqual({ error: "could not read trace: EACCES" });
+  });
+});
+
+describe("traceStore.list", () => {
+  const withManifest = (id: string, over: Record<string, unknown>) => ({ ...manifest(id), ...over });
+  const save = (s: ReturnType<typeof store>["store"], m: ReturnType<typeof manifest>) => s.save(payload(m));
+
+  it("returns summaries newest first (ties by id), goal capped, qaOutcome only when a string, no frames/steps", async () => {
+    const { store: s } = store();
+    await save(s, withManifest("a", { startedAt: 10, goal: "x".repeat(300) }) as never);
+    await save(s, withManifest("c", { startedAt: 20 }) as never);
+    await save(s, withManifest("b", { startedAt: 20, qa: { outcome: "passed", verdict: "pass", steps: [] } }) as never);
+    const r = await s.list();
+    if (!("traces" in r)) throw new Error("expected traces");
+    expect(r.traces.map((t) => t.id)).toEqual(["b", "c", "a"]);
+    expect(r.traces[2]!.goal).toHaveLength(200);
+    expect(r.traces[0]!.qaOutcome).toBe("passed");
+    expect(r.traces[1]).not.toHaveProperty("qaOutcome");
+    expect(Object.keys(r.traces[1]!).sort()).toEqual(["goal", "id", "startedAt", "status"]);
+  });
+
+  it("skips invalid manifests and temp dirs", async () => {
+    const { io, store: s } = store();
+    await s.save(payload());
+    io.files.set(`${ROOT}/bad/trace.json`, Buffer.from("{nope"));
+    io.files.set(`${ROOT}/.tmp-t9-abc/trace.json`, Buffer.from(JSON.stringify(manifest("t9"))));
+    io.files.set(`${ROOT}/nofile/frames/0.jpg`, Buffer.from("x"));
+    io.files.set(`${ROOT}/other/trace.json`, Buffer.from(JSON.stringify(manifest("t1")))); // id mismatch
+    const r = await s.list();
+    if (!("traces" in r)) throw new Error("expected traces");
+    expect(r.traces.map((t) => t.id)).toEqual(["t1"]);
+  });
+
+  it("caches summaries: a second call reads no manifest; a deleted dir drops out", async () => {
+    const { io, store: s } = store();
+    await s.save(payload(manifest("t1")));
+    await s.save(payload(manifest("t2")));
+    await s.list();
+    const reads: string[] = [];
+    const orig = io.read;
+    io.read = async (p) => {
+      reads.push(p);
+      return orig(p);
+    };
+    const again = await s.list();
+    expect(reads).toEqual([]);
+    if (!("traces" in again)) throw new Error("expected traces");
+    expect(again.traces).toHaveLength(2);
+    await io.removeDir(`${ROOT}/t1`);
+    const after = await s.list();
+    if (!("traces" in after)) throw new Error("expected traces");
+    expect(after.traces.map((t) => t.id)).toEqual(["t2"]);
+    await s.save(payload(manifest("t3")));
+    reads.length = 0;
+    await s.list();
+    expect(reads).toEqual([`${ROOT}/t3/trace.json`]);
+  });
+
+  it("caches bad dirs too: not re-read (nor re-warned) on the second call; re-read when the mtime changes", async () => {
+    const { io, store: s } = store();
+    await s.save(payload(manifest("t1")));
+    io.files.set(`${ROOT}/bad/trace.json`, Buffer.from("{nope"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await s.list();
+      expect(warn).toHaveBeenCalledTimes(1);
+      const reads: string[] = [];
+      const orig = io.read;
+      io.read = async (p) => {
+        reads.push(p);
+        return orig(p);
+      };
+      await s.list();
+      expect(reads).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      // fix the dir: a write bumps its mtime, so it is read again and now valid
+      await io.write(`${ROOT}/bad/trace.json`, Buffer.from(JSON.stringify(manifest("bad"))));
+      const r = await s.list();
+      expect(reads).toEqual([`${ROOT}/bad/trace.json`]);
+      if (!("traces" in r)) throw new Error("expected traces");
+      expect(r.traces.map((t) => t.id).sort()).toEqual(["bad", "t1"]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("never throws: a failing listDirs gives an error value", async () => {
+    const io = memFs();
+    io.listDirs = async () => {
+      throw new Error("EIO");
+    };
+    const r = await createTraceStore({ rootDir: ROOT, fs: io }).list();
+    expect(r).toEqual({ error: "could not list traces: EIO" });
   });
 });

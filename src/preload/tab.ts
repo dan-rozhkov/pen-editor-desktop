@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import type { TraceListResult } from "../main/traceStore";
 
 type UITheme = "light" | "dark";
 
@@ -226,6 +227,7 @@ const traces = {
   save: (payload: { manifest: unknown; assets: { path: string; dataUrl: string }[] }): Promise<{ id: string } | { error: string }> =>
     ipcRenderer.invoke("traces:save", payload),
   read: (id: string): Promise<{ trace: unknown } | { error: string }> => ipcRenderer.invoke("traces:read", id),
+  list: (): Promise<TraceListResult> => ipcRenderer.invoke("traces:list"),
 };
 
 // Documents (markdown tabs at `/doc`): disk mirror on every tab; `open` (below) only on the trace viewer page. Main checks the sender.

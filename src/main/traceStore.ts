@@ -118,7 +118,22 @@ export interface TraceReadOptions {
   frameIds?: number[];
 }
 
+/** One row of `list`: never frames, steps or asset paths. */
+export interface TraceSummary {
+  id: string;
+  goal: string;
+  startedAt: number;
+  status: string;
+  qaOutcome?: string;
+}
+export type TraceListResult = { traces: TraceSummary[] } | { error: string };
+
+const GOAL_MAX = 200;
+const LIST_CONCURRENCY = 8;
+
 export interface TraceStore {
+  /** Summaries of every stored, valid trace, newest first (ties by id). Cached per id and dir mtime. Never throws. */
+  list(): Promise<TraceListResult>;
   /** Validates and stores a trace. Never throws. */
   save(payload: unknown): Promise<TraceSaveResult>;
   /** The manifest with every frame `src` turned into a data URL (or left as the asset path with `{ frames: false }`). Never throws. */
@@ -279,5 +294,49 @@ export function createTraceStore(opts: TraceStoreOptions): TraceStore {
     }
   }
 
-  return { save, read };
+  // Keyed by id AND dir mtime: an entry is valid only while the mtime matches. null = unreadable/invalid
+  // (cached too, so a bad dir is read and warned about once per mtime).
+  const summaries = new Map<string, { mtimeMs: number; summary: TraceSummary | null }>();
+
+  async function summarize(id: string): Promise<TraceSummary | null> {
+    try {
+      const text = await io.read(path.join(dirOf(id), TRACE_FILE));
+      if (text === null) return null;
+      const parsed = parseBrowseTrace(JSON.parse(text.toString("utf8")));
+      if ("error" in parsed || parsed.trace.id !== id) return null;
+      const t = parsed.trace;
+      const outcome = (t.qa as { outcome?: unknown } | undefined)?.outcome;
+      return {
+        id,
+        goal: t.goal.slice(0, GOAL_MAX),
+        startedAt: t.startedAt,
+        status: t.status,
+        ...(typeof outcome === "string" ? { qaOutcome: outcome } : {}),
+      };
+    } catch (err) {
+      console.warn(`traceStore: skipping unreadable trace ${id}`, err);
+      return null;
+    }
+  }
+
+  async function list(): Promise<TraceListResult> {
+    try {
+      const dirs = (await io.listDirs(rootDir)).filter((d) => !d.name.startsWith(TMP_PREFIX) && BROWSE_TRACE_ID.test(d.name));
+      const present = new Set(dirs.map((d) => d.name));
+      for (const id of summaries.keys()) if (!present.has(id)) summaries.delete(id);
+      const todo = dirs.filter((d) => summaries.get(d.name)?.mtimeMs !== d.mtimeMs);
+      for (let i = 0; i < todo.length; i += LIST_CONCURRENCY) {
+        const batch = todo.slice(i, i + LIST_CONCURRENCY);
+        const got = await Promise.all(batch.map((d) => summarize(d.name)));
+        got.forEach((summary, k) => summaries.set(batch[k]!.name, { mtimeMs: batch[k]!.mtimeMs, summary }));
+      }
+      const traces = dirs.flatMap((d) => summaries.get(d.name)?.summary ?? []);
+      traces.sort((a, b) => b.startedAt - a.startedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      return { traces };
+    } catch (err) {
+      return { error: `could not list traces: ${message(err)}` };
+    }
+  }
+
+  return { save, read, list };
 }

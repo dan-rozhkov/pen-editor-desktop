@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { openTraceTab, type TraceOpenDeps } from "../src/main/traceOpen";
-import { handleTraceListTabs, handleTraceRead, handleTraceSave, type TraceIpcDeps } from "../src/main/traceIpc";
+import { handleTraceList, handleTraceListTabs, handleTraceRead, handleTraceSave, type TraceIpcDeps } from "../src/main/traceIpc";
 
 function deps(over: Partial<TraceOpenDeps> = {}): TraceOpenDeps {
   return {
@@ -50,9 +50,9 @@ describe("traces:open", () => {
 
 describe("traces:save / traces:read sender rules", () => {
   // webContents ids: 1 panel, 2 editor tab, 3 trace tab, 4 browser tab / anything else
-  function ipcDeps(): TraceIpcDeps & { store: { save: ReturnType<typeof vi.fn>; read: ReturnType<typeof vi.fn> } } {
+  function ipcDeps(): TraceIpcDeps & { store: { save: ReturnType<typeof vi.fn>; read: ReturnType<typeof vi.fn>; list: ReturnType<typeof vi.fn> } } {
     return {
-      store: { save: vi.fn(async () => ({ id: "t1" })), read: vi.fn(async () => ({ error: "trace not found" })) },
+      store: { save: vi.fn(async () => ({ id: "t1" })), read: vi.fn(async () => ({ error: "trace not found" })), list: vi.fn(async () => ({ traces: [] })) },
       isPanel: (id) => id === 1,
       isEditorTab: (id) => id === 2,
       isTraceTab: (id) => id === 3,
@@ -98,6 +98,29 @@ describe("traces:save / traces:read sender rules", () => {
     d.store.read.mockImplementation(async () => { throw new Error("disk"); });
     expect(await handleTraceSave(d, 1, {})).toEqual({ error: "disk" });
     expect(await handleTraceRead(d, 1, "t1")).toEqual({ error: "disk" });
+  });
+});
+
+describe("traces:list sender rules", () => {
+  const mk = (list = vi.fn(async () => ({ traces: [] }))): TraceIpcDeps => ({
+    store: { save: vi.fn(), read: vi.fn(), list } as unknown as TraceIpcDeps["store"],
+    isPanel: (id) => id === 1,
+    isEditorTab: (id) => id === 2,
+    isTraceTab: (id) => id === 3,
+  });
+
+  it("same senders as traces:read: panel, editor tab, trace tab", async () => {
+    const list = vi.fn(async () => ({ traces: [] }));
+    const d = mk(list);
+    expect(await handleTraceList(d, 1)).toEqual({ traces: [] });
+    expect(await handleTraceList(d, 2)).toEqual({ traces: [] });
+    expect(await handleTraceList(d, 3)).toEqual({ traces: [] });
+    expect(await handleTraceList(d, 4)).toEqual({ error: "traces:list is not allowed from this sender" });
+    expect(list).toHaveBeenCalledTimes(3);
+  });
+
+  it("a rejecting store comes back as an error value", async () => {
+    expect(await handleTraceList(mk(vi.fn(async () => Promise.reject(new Error("disk")))), 1)).toEqual({ error: "disk" });
   });
 });
 
