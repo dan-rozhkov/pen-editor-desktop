@@ -19,11 +19,13 @@
     <div class="page">
       <header class="head">
         <h1 class="title">History</h1>
-        <label class="search">
-          <svg class="icon" aria-hidden="true"><use href="#i-search" /></svg>
-          <input id="search" type="search" placeholder="Search history" aria-label="Search history" autocomplete="off" spellcheck="false" />
-        </label>
-        <button id="clear-btn" class="btn-ghost" type="button" disabled>Clear history…</button>
+        <div class="toolbar">
+          <label class="search">
+            <svg class="icon" aria-hidden="true"><use href="#i-search" /></svg>
+            <input id="search" type="search" placeholder="Search history" aria-label="Search history" autocomplete="off" spellcheck="false" />
+          </label>
+          <button id="clear-btn" class="btn-outline" type="button" disabled>Clear history…</button>
+        </div>
       </header>
       <main id="scroll" class="scroll">
         <div id="list" class="list" role="list" aria-label="Visited pages"></div>

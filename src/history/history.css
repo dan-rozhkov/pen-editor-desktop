@@ -4,6 +4,10 @@
   --field-bg: light-dark(#f0f0f0, #383838);
   --muted: var(--text);
   --danger: light-dark(oklch(0.58 0.22 27), oklch(0.704 0.191 22.216));
+  /* Outline button: the Passwords tab's --outline-fill / --outline-hover (shadcn --secondary mixes). */
+  --outline-fill: light-dark(transparent, color-mix(in oklab, oklch(0.269 0 0) 30%, transparent));
+  --outline-hover: light-dark(color-mix(in oklab, oklch(0.97 0 0) 50%, transparent), color-mix(in oklab, oklch(0.269 0 0) 50%, transparent));
+  --control-h: 28px; /* Passwords --control-h */
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
@@ -37,30 +41,30 @@ input { user-select: text; }
 }
 
 /* ---------- header ---------- */
-.head {
+/* Same as the Passwords pane title and the Settings h1: text-base font-semibold, pt-5 pb-3.
+   The search row below it matches the Passwords list head (28px controls, 8px gap). */
+.head { flex: none; }
+.title {
+  padding: 20px 24px 12px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+.toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex: none;
-  padding: 28px 24px 16px;
-}
-.title {
-  flex: none;
-  margin-right: 4px;
-  font-size: 20px;
-  font-weight: 600;
-  line-height: 28px;
-  letter-spacing: -0.025em;
+  gap: 8px;
+  padding: 0 24px 8px;
 }
 
 .search { position: relative; display: block; flex: 1; min-width: 0; }
-.search .icon { position: absolute; left: 9px; top: 8px; color: var(--muted); pointer-events: none; }
+.search .icon { position: absolute; left: 8px; top: 6px; color: var(--muted); pointer-events: none; }
 .search input::-webkit-search-cancel-button { display: none; }
 input {
   width: 100%;
   min-width: 0;
-  height: 32px;
-  padding: 0 10px 0 32px;
+  height: var(--control-h);
+  padding: 0 8px 0 28px;
   border: 1px solid transparent;
   border-radius: var(--btn-radius);
   background: var(--field-bg);
@@ -72,24 +76,24 @@ input {
 input::placeholder { color: var(--muted); }
 input:focus-visible { border-color: var(--focus-ring); box-shadow: 0 0 0 1px var(--focus-ring); }
 
-.btn-ghost {
+.btn-outline {
   flex: none;
-  height: 32px;
-  padding: 0 12px;
-  border: 0;
+  height: var(--control-h);
+  padding: 0 10px;
+  border: 1px solid var(--border);
   border-radius: var(--btn-radius);
-  background: transparent;
+  background: var(--outline-fill);
   color: var(--text-active);
   font: 500 12px/1 var(--font);
   white-space: nowrap;
   cursor: default;
   outline: none;
-  transition: background-color 150ms var(--ease), scale 150ms var(--ease);
+  transition: background-color 150ms var(--ease), scale 150ms var(--ease), box-shadow 150ms var(--ease);
 }
-.btn-ghost:hover { background: var(--btn-hover); }
-.btn-ghost:active { scale: 0.96; }
-.btn-ghost:focus-visible { box-shadow: 0 0 0 2px var(--focus-ring); }
-.btn-ghost:disabled { opacity: 0.5; pointer-events: none; }
+.btn-outline:hover { background: var(--outline-hover); }
+.btn-outline:active { scale: 0.96; }
+.btn-outline:focus-visible { border-color: var(--focus-ring); box-shadow: 0 0 0 2px color-mix(in oklab, var(--focus-ring) 30%, transparent); }
+.btn-outline:disabled { opacity: 0.5; pointer-events: none; }
 
 /* ---------- list ---------- */
 .scroll {
@@ -195,5 +199,5 @@ input:focus-visible { border-color: var(--focus-ring); box-shadow: 0 0 0 1px var
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
-  .btn-ghost:active { scale: 1; }
+  .btn-outline:active { scale: 1; }
 }
