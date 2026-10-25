@@ -72,7 +72,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text);
 }
 .trail { flex: none; position: relative; min-width: 56px; height: 24px; display: flex; align-items: center; justify-content: flex-end; }
@@ -94,7 +94,8 @@ body {
 .remove:hover { background: var(--control-hover-bg); color: var(--text-active); }
 .row:hover .time { display: none; }
 .row:hover .remove { display: flex; }
-.divider { flex: none; height: 1px; background: var(--border); margin: 0; }
+/* Edge to edge: cancels the card's 4px padding. */
+.divider { flex: none; height: 1px; background: var(--border); margin: 0 -4px; }
 .footer {
   flex: none;
   height: 36px;
