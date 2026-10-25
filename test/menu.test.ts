@@ -16,6 +16,7 @@ describe("buildMenuTemplate", () => {
       newDocTab: vi.fn(), newWorkflowTab: vi.fn(),
       openSettings: vi.fn(),
       openPasswords: vi.fn(),
+      openHistory: vi.fn(),
       signIn: vi.fn(),
       closeTab: vi.fn(), closeWindow: vi.fn(),
       nextTab: vi.fn(),
@@ -99,6 +100,23 @@ describe("buildMenuTemplate", () => {
     (i.click as () => void)();
     expect(actions.openPasswords).toHaveBeenCalledTimes(1);
     expect(actions.forwardToActiveTab).not.toHaveBeenCalled();
+  });
+
+  it("History… sits right after Passwords…, opens the History tab and forwards no menu command", () => {
+    const labels = (isMac: boolean) =>
+      (buildMenuTemplate(actions, { isMac }).find((m) => m.label === "File")!.submenu as MenuItemConstructorOptions[]).map((i) => i.label);
+    expect(labels(true).indexOf("History…")).toBe(labels(true).indexOf("Passwords…") + 1);
+    const i = item("History…");
+    expect(i.accelerator).toBe("Cmd+Y");
+    (i.click as () => void)();
+    expect(actions.openHistory).toHaveBeenCalledTimes(1);
+    expect(actions.forwardToActiveTab).not.toHaveBeenCalled();
+  });
+
+  it("History… avoids Redo's Ctrl+Y outside macOS", () => {
+    const file = buildMenuTemplate(actions, { isMac: false }).find((m) => m.label === "File")!;
+    const i = (file.submenu as MenuItemConstructorOptions[]).find((x) => x.label === "History…")!;
+    expect(i.accelerator).toBe("Ctrl+H");
   });
 
   it("Sign In… sits in the File menu and starts the browser sign-in without forwarding a menu command", () => {
@@ -309,7 +327,7 @@ describe("buildNewTabMenuTemplate", () => {
 
 describe("View > Agent Panel", () => {
   const actions = {
-    newTab: vi.fn(), newBrowserTab: vi.fn(), newDocTab: vi.fn(), newWorkflowTab: vi.fn(), openSettings: vi.fn(), openPasswords: vi.fn(), signIn: vi.fn(), closeTab: vi.fn(), closeWindow: vi.fn(), nextTab: vi.fn(), prevTab: vi.fn(),
+    newTab: vi.fn(), newBrowserTab: vi.fn(), newDocTab: vi.fn(), newWorkflowTab: vi.fn(), openSettings: vi.fn(), openPasswords: vi.fn(), openHistory: vi.fn(), signIn: vi.fn(), closeTab: vi.fn(), closeWindow: vi.fn(), nextTab: vi.fn(), prevTab: vi.fn(),
     forwardToActiveTab: vi.fn(), useThisAppForMcp: vi.fn(), setCursorEnabled: vi.fn(), toggleAgentPanel: vi.fn(), revealActiveTab: vi.fn(),
   } as MenuActions;
   it("View menu has a Show/Hide Agent Panel item (Cmd/Ctrl+Alt+B) only with the agent layout", () => {

@@ -38,8 +38,8 @@ export function reportCrashes(app: ElectronApplication): void {
 }
 
 /**
- * Waits, WITHOUT running code in the main process, until the shell's own views exist (the tab bar
- * and the empty start, the last view createMainWindow makes) and returns the tab bar page.
+ * Waits, WITHOUT running code in the main process, until the shell's own views exist (the tab bar,
+ * the suggestion popover and the empty start, the last view createMainWindow makes) and returns the tab bar page.
  *
  * Why: Node's inspector runs a main-process `app.evaluate` as a V8 interrupt, in the middle of
  * synchronous main code. One that lands while main is constructing a `WebContentsView` crashes
@@ -50,7 +50,7 @@ export async function waitForShellViews(app: ElectronApplication): Promise<Page>
   const page = async (suffix: string) =>
     app.windows().find((p) => p.url().endsWith(suffix)) ??
     (await app.waitForEvent("window", { predicate: (p) => p.url().endsWith(suffix) }));
-  const [tabbar] = await Promise.all([page("/tabbar/tabbar.html"), page("/tabbar/empty.html")]);
+  const [tabbar] = await Promise.all([page("/tabbar/tabbar.html"), page("/tabbar/empty.html"), page("/omnibox/omnibox.html")]);
   return tabbar;
 }
 

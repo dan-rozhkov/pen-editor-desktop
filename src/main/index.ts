@@ -3,7 +3,7 @@ import path from "node:path";
 import { app, BaseWindow, ipcMain, safeStorage, session, shell } from "electron";
 import { KEEP_RENDERING_WHEN_OCCLUDED_SWITCH } from "./agentActivity";
 import { DISPLAY_APP_NAME, STORAGE_IDENTITY_FILE, resolveEditorUrl, resolveStorageIdentity, storageIdentityFileText } from "./config";
-import { createMainWindow, flushAllCanvasTabs, hasCanvasWork } from "./window";
+import { createMainWindow, flushAllCanvasTabs, hasCanvasWork, isLiveTabbar, type HistoryServices } from "./window";
 import { createQuitFlush } from "./quitFlush";
 import { appRegistry } from "./appTargetsService";
 import { createMcpService } from "./mcp/service";
@@ -12,6 +12,9 @@ import { CREDENTIALS_FILE, createCredentialStore, nodeCredentialFs } from "./bro
 import { FAVICONS_FILE, createFaviconCache, createIconFetcher } from "./browser/faviconCache";
 import { createLoginCapture } from "./browser/loginCapture";
 import { createPasswordsService } from "./passwordsService";
+import { HISTORY_FILE, createHistoryStore, nodeHistoryFs } from "./browser/historyStore";
+import { createHistoryService } from "./historyService";
+import { registerHistorySuggest } from "./historySuggestIpc";
 import { shouldReopenMainWindow } from "./closeTarget";
 import { isCursorOverlayWindow } from "./computerUse/cursorOverlay";
 import { DEEP_LINK_SCHEME, createDesktopAuth, parseDeepLinkArg, resolveProtocolRegistration, shouldRegisterProtocol, systemDeps } from "./desktopAuth";
@@ -91,7 +94,7 @@ const queuedDeepLinks: string[] = [];
 function openMainWindowIfNone(): void {
   if (startup.active) return; // the hidden migration window is not a main window
   // An agent cursor overlay is not a main window.
-  if (shouldReopenMainWindow(BaseWindow.getAllWindows(), isCursorOverlayWindow)) createMainWindow(editorUrl, mcpService, loginServices, desktopAuth);
+  if (shouldReopenMainWindow(BaseWindow.getAllWindows(), isCursorOverlayWindow)) createMainWindow(editorUrl, mcpService, loginServices, historyServices, desktopAuth);
 }
 function dispatchDeepLink(url: string): void {
   // Validate FIRST: only a well-formed sideform://auth link whose state matches the pending attempt may
@@ -186,7 +189,16 @@ const loginServices = {
   passwords: createPasswordsService(credentialStore, faviconCache, { ipcMain }),
 };
 
+// Browsing history of the built-in browser (address-bar suggestions + the History tab): one store and
+// one service for the whole app, like the saved logins. The file loads in the background: the store
+// merges what is recorded meanwhile, so window creation never waits for the disk.
+const historyStore = createHistoryStore({ filePath: path.join(app.getPath("userData"), HISTORY_FILE), fs: nodeHistoryFs });
+const historyServices: HistoryServices = { store: historyStore, service: createHistoryService(historyStore, { ipcMain }) };
+// `ipcMain.handle` is process-global: one handler answers the tab bar of every window.
+const unregisterHistorySuggest = registerHistorySuggest({ ipcMain, store: historyStore, isTabbar: isLiveTabbar });
+
 app.whenReady().then(async () => {
+  void historyStore.load().catch((err) => console.error("[history] load failed", err));
   // The visible product name (app menu labels, About box). Safe now: the
   // userData path and the Keychain item name are already fixed above.
   app.setName(DISPLAY_APP_NAME);
@@ -224,7 +236,7 @@ app.whenReady().then(async () => {
   // The user quit while the migration ran: do not create a window or start MCP behind their back.
   if (quitting) return;
 
-  createMainWindow(editorUrl, mcpService, loginServices, desktopAuth);
+  createMainWindow(editorUrl, mcpService, loginServices, historyServices, desktopAuth);
   markWindowCreated();
   startup.end();
 
@@ -253,12 +265,20 @@ app.on("before-quit", (event) => {
   quitting = true;
   const { firstPass } = quitFlush.onBeforeQuit(event);
   // Once per quit cycle, not on the re-entrant pass after the hold.
-  if (firstPass) appRegistry.killAllSync();
+  if (firstPass) {
+    appRegistry.killAllSync();
+    // Best effort, not awaited: the debounced write may still be pending.
+    void historyStore.flush().catch(() => undefined);
+  }
 });
 
 app.on("will-quit", () => {
   mcpService.teardownAppLevelIpc();
   loginServices.passwords.dispose();
+  // Synchronous, so the last visit is on disk before the process exits (the async flush above may not finish).
+  historyStore.flushSync();
+  historyServices.service.dispose();
+  unregisterHistorySuggest();
   // Synchronous: will-quit does not reliably await a returned promise, so
   // handshake-file removal must complete before this handler returns (see
   // handshake.ts's removeHandshakeFileSync comment). The HTTP server itself

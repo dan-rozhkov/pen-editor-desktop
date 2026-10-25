@@ -26,6 +26,8 @@ export interface MenuActions {
   openSettings(): void;
   /** Opens (or focuses) the Passwords tab. A local action: it forwards no `menu:command` id. */
   openPasswords(): void;
+  /** Opens (or focuses) the History tab. A local action: it forwards no `menu:command` id. */
+  openHistory(): void;
   /** Starts the sign-in in the system browser (desktopAuth.ts). A local action: no `menu:command` id. */
   signIn(): void;
   /** Closes the active tab; does nothing with no tab (never the window). */
@@ -144,6 +146,8 @@ export function buildMenuTemplate(
       { label: "New Document Tab", accelerator: "CmdOrCtrl+Shift+D", click: () => actions.newDocTab() },
       { label: "New Workflow Tab", click: () => actions.newWorkflowTab() },
       { label: "Passwords…", click: () => actions.openPasswords() },
+      // Cmd+Y on macOS; on Windows/Linux Ctrl+Y is the Edit menu's Redo, so History uses Chrome's Ctrl+H there.
+      { label: "History…", accelerator: opts.isMac ? "Cmd+Y" : "Ctrl+H", click: () => actions.openHistory() },
       // On macOS Settings… lives in the app menu (below), as in every mac app.
       ...(opts.isMac ? [] : [settingsItem]),
       { label: "Sign In…", click: () => actions.signIn() },

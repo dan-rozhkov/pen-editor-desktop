@@ -11,6 +11,9 @@ import {
   agentPanelWidthFor,
   ADDRESS_ROW_HEIGHT,
   TAB_ROW_HEIGHT,
+  OMNIBOX_ROW_HEIGHT,
+  OMNIBOX_SHADOW_PAD,
+  omniboxBounds,
 } from "../src/main/layout";
 
 describe("clampAgentPanelWidth", () => {
@@ -108,5 +111,33 @@ describe("islands: address row (tab view under the row) and collapsed panel", ()
     expect(l.tabStripLeft).toBe(8);
     const open = computeWindowLayout({ width: 1200, height: 800, tabbarHeight: 38, panelWidth: agentPanelWidthFor(false), islands });
     expect(open.panelVisible).toBe(true);
+  });
+});
+
+describe("omniboxBounds", () => {
+  const win = { width: 1200, height: 800 };
+  // header 28 + 5 rows + divider 1 + footer 36 + 2 * 4 padding = 273 card, 289 view
+  it("sizes the view from rows, header, footer and the shadow pad", () => {
+    expect(OMNIBOX_ROW_HEIGHT).toBe(40);
+    expect(OMNIBOX_SHADOW_PAD).toBe(8);
+    expect(omniboxBounds({ x: 200, y: 78, width: 600 }, 5, true, win)).toEqual({ x: 192, y: 74, width: 616, height: 273 + 16 });
+    expect(omniboxBounds({ x: 200, y: 78, width: 600 }, 2, false, win).height).toBe(4 + 80 + 1 + 36 + 4 + 16);
+  });
+  it("makes the card at least 420 wide", () => {
+    expect(omniboxBounds({ x: 200, y: 78, width: 300 }, 1, false, win).width).toBe(420 + 16);
+  });
+  it("keeps the card 8px inside the window", () => {
+    const right = omniboxBounds({ x: 1000, y: 78, width: 600 }, 1, false, win);
+    expect(right.x + right.width - 8).toBe(1200 - 8);
+    const left = omniboxBounds({ x: -50, y: 78, width: 600 }, 1, false, win);
+    expect(left.x + 8).toBe(8);
+    const narrow = omniboxBounds({ x: 0, y: 78, width: 600 }, 1, false, { width: 300, height: 800 });
+    expect(narrow.x).toBe(0);
+    expect(narrow.width).toBe(300);
+  });
+  it("clamps the height to 8px above the window bottom", () => {
+    const b = omniboxBounds({ x: 200, y: 78, width: 600 }, 10, true, { width: 1200, height: 300 });
+    expect(b.y + b.height).toBe(300 - 8);
+    expect(omniboxBounds({ x: 200, y: 400, width: 600 }, 3, false, { width: 1200, height: 300 }).height).toBe(0);
   });
 });

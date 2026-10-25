@@ -198,7 +198,7 @@ test("Browser tools button exists right of the URL field and sends tabbar:tools-
     expect(typeof anchor.x).toBe("number");
     await expect.poll(() => env.app.evaluate(() => (globalThis as any).__menus.length as number)).toBe(before + 1);
     const rows = await menuState(env);
-    expect(rows.map((r) => r.label)).toEqual(["Viewport", "Open Developer Tools", "Zoom"]);
+    expect(rows.map((r) => r.label)).toEqual(["Viewport", "Open Developer Tools", "Zoom", "", "Show History"]);
   } finally {
     await env.app.close();
   }

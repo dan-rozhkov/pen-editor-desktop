@@ -44,7 +44,7 @@ export type McpStatus = "listening" | "not-published" | "off" | "error";
  * `lastEditorWebContentsId`. "workflow" is the same kind of tab for the frontend's
  * `/workflow` page (localStorage only; no disk store here).
  */
-export type TabKind = "editor" | "browser" | "doc" | "workflow" | "trace" | "settings" | "passwords";
+export type TabKind = "editor" | "browser" | "doc" | "workflow" | "trace" | "settings" | "passwords" | "history";
 
 /** The navigation state a browser tab reports back into its TabState. */
 export interface BrowserNavState {
@@ -482,7 +482,7 @@ export class TabManager {
     const entry: TabEntry = {
       id,
       session: kind === "browser" ? session : undefined,
-      title: kind === "browser" ? "New Tab" : kind === "doc" ? "Document" : kind === "workflow" ? "Workflow" : kind === "trace" ? "Trace" : kind === "settings" ? "Settings" : kind === "passwords" ? "Passwords" : "Untitled",
+      title: kind === "browser" ? "New Tab" : kind === "doc" ? "Document" : kind === "workflow" ? "Workflow" : kind === "trace" ? "Trace" : kind === "settings" ? "Settings" : kind === "passwords" ? "Passwords" : kind === "history" ? "History" : "Untitled",
       kind,
       view,
       theme: null,
@@ -532,9 +532,9 @@ export class TabManager {
       view.loadURL(target).catch((err) => {
         console.error(`TabManager: ${kind} tab failed to load`, err);
       });
-    } else if (kind === "passwords") {
-      // The Passwords tab is a LOCAL page (src/passwords/, own preload): window.ts loads it when it
-      // creates the view. Fixed title; no title/theme callbacks, so it is not an editor theme source.
+    } else if (kind === "passwords" || kind === "history") {
+      // The Passwords and History tabs are LOCAL pages (src/passwords/, src/history/, own preloads): window.ts loads
+      // them when it creates the view. Fixed title; no title/theme callbacks, so they are not editor theme sources.
     } else if (kind === "browser") {
       // Browser tabs get their own url/title updates (design doc §1) — no
       // document-title/theme IPC callbacks, since there is no preload to
@@ -839,7 +839,7 @@ export class TabManager {
   /**
    * The stored file behind a tab, for "Reveal in Finder": a canvas, document or trace id, resolved with the
    * same rules as `findCanvasTab` / `findDocTab` / `findTraceTab` (live URL first). Null for an unknown tab,
-   * a kind with no file (workflow, browser, settings, passwords) and a tab with no id yet (`new=1` doc,
+   * a kind with no file (workflow, browser, settings, passwords, history) and a tab with no id yet (`new=1` doc,
    * canvas the frontend has not named). The id is not validated here; `revealTargetFor` does that.
    */
   fileTargetOf(tabId: number): { kind: "canvas" | "doc" | "trace"; id: string } | null {
@@ -916,9 +916,22 @@ export class TabManager {
     return existingId;
   }
 
-  /** True when the webContents is an editor, doc, trace or Settings tab: a tab that loads a frontend page with the tab preload. Browser and Passwords tabs are not. */
+  /** The id of the open History tab (a singleton), or null. */
+  findHistoryTab(): number | null {
+    return this.tabs.find((t) => t.kind === "history")?.id ?? null;
+  }
+
+  /** Opens the History tab, or activates the one that exists (it is a singleton). Returns the tab id. */
+  openHistoryTab(opts: { focus?: boolean } = {}): number {
+    const existingId = this.findHistoryTab();
+    if (existingId === null) return this.newTab("history", undefined, { focus: opts.focus });
+    this.activate(existingId, { focus: opts.focus });
+    return existingId;
+  }
+
+  /** True when the webContents is an editor, doc, trace or Settings tab: a tab that loads a frontend page with the tab preload. Browser, Passwords and History tabs are not. */
   isPageTab(webContentsId: number): boolean {
-    return this.tabs.some((t) => t.kind !== "browser" && t.kind !== "passwords" && t.view.getWebContentsId() === webContentsId);
+    return this.tabs.some((t) => t.kind !== "browser" && t.kind !== "passwords" && t.kind !== "history" && t.view.getWebContentsId() === webContentsId);
   }
 
   /** The id of the open trace tab showing `traceId`, or null. The live URL wins, like `findDocTab`. */

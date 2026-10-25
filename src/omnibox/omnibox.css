@@ -1,0 +1,111 @@
+/* Address-bar suggestion popover. Its view is transparent and 8px larger than the card on every
+   side (layout.ts OMNIBOX_SHADOW_PAD), room for the shadow: the shadow must stay inside 8px (a wider blur is cut off in a hard rectangle
+   at the view edge, and a wider view would cover the bottom of the URL field). */
+html, body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+body {
+  color: var(--text-active);
+  font: 13px -apple-system, BlinkMacSystemFont, sans-serif;
+  user-select: none;
+  cursor: default;
+}
+.card {
+  position: absolute;
+  inset: 8px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  overflow: hidden;
+  background: var(--island-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 3px 6px -1px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+:root[data-theme="dark"] .card {
+  box-shadow: 0 3px 6px -1px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .card {
+    box-shadow: 0 3px 6px -1px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+  }
+}
+.header {
+  flex: none;
+  height: 28px;
+  box-sizing: border-box;
+  padding-left: 10px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.rows { flex: 1; min-height: 0; overflow: hidden; }
+.row {
+  height: 40px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: var(--btn-radius);
+}
+.row:hover, .row.selected { background: var(--btn-hover); }
+.glyph { flex: none; width: 16px; height: 16px; color: var(--text); fill: currentColor; }
+.title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-active);
+}
+.title b { font-weight: 600; }
+.url {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text);
+}
+.trail { flex: none; position: relative; min-width: 56px; height: 24px; display: flex; align-items: center; justify-content: flex-end; }
+.time { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
+.remove {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--btn-radius);
+  background: transparent;
+  color: var(--text);
+  font: 16px/1 -apple-system, BlinkMacSystemFont, sans-serif;
+  cursor: default;
+}
+.remove:hover { background: var(--control-hover-bg); color: var(--text-active); }
+.row:hover .time { display: none; }
+.row:hover .remove { display: flex; }
+.divider { flex: none; height: 1px; background: var(--border); margin: 0; }
+.footer {
+  flex: none;
+  height: 36px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: var(--btn-radius);
+  font-size: 13px;
+  color: var(--text-active);
+}
+.footer:hover { background: var(--btn-hover); }
+.hint { font-size: 12px; color: var(--text); }

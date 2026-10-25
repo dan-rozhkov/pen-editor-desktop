@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import type { TabsSnapshot } from "../main/tabManager";
 import type { UITheme } from "../main/tabManager";
 
+type SuggestionItem = { url: string; title: string; lastVisitedAt: number };
+
 const api = {
   isMac: process.platform === "darwin",
   newTab: () => ipcRenderer.send("tabbar:new"),
@@ -19,6 +21,23 @@ const api = {
   reorderTab: (id: number, beforeId: number | null) => ipcRenderer.send("tabbar:reorder", { id, beforeId }),
   navigate: (action: "url" | "back" | "forward" | "reload", url?: string) =>
     ipcRenderer.send("tabbar:navigate", { action, url }),
+  /** Address-bar suggestions for the typed text; `inline` is the completion of the typed text, if any. */
+  suggestHistory: (query: string): Promise<{ items: SuggestionItem[]; inline: string | null }> =>
+    ipcRenderer.invoke("history:suggest", { query }),
+  /** Show/update the suggestion popover (its own view) under the URL field; `rect` is the field's bottom-left and width. */
+  omniboxShow: (payload: { items: SuggestionItem[]; selected: number; query: string; rect: { x: number; y: number; width: number } }) =>
+    ipcRenderer.send("tabbar:omnibox-show", payload),
+  omniboxHide: () => ipcRenderer.send("tabbar:omnibox-hide"),
+  /** Shift+Delete on the selected suggestion: forget that url. */
+  removeSuggestion: (url: string) => ipcRenderer.send("history:remove-suggestion", { url }),
+  /** A suggestion was clicked in the popover: main already navigated, the tab bar shows the url and closes. */
+  onOmniboxPicked: (cb: (url: string) => void) => {
+    ipcRenderer.on("tabbar:omnibox-picked", (_e: IpcRendererEvent, p: { url: string }) => cb(p.url));
+  },
+  /** The history changed under an open popover (a row was removed): query again. */
+  onOmniboxRefresh: (cb: () => void) => {
+    ipcRenderer.on("tabbar:omnibox-refresh", () => cb());
+  },
   onState: (cb: (s: TabsSnapshot) => void) => {
     ipcRenderer.on("tabbar:state", (_e: IpcRendererEvent, s: TabsSnapshot) => cb(s));
   },

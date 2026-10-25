@@ -1,4 +1,4 @@
-type TabKind = "editor" | "browser" | "doc" | "workflow" | "trace" | "settings" | "passwords";
+type TabKind = "editor" | "browser" | "doc" | "workflow" | "trace" | "settings" | "passwords" | "history";
 type TabRow = {
   id: number;
   title: string;
@@ -37,6 +37,7 @@ type TabsSnapshot = {
   tabRowHeight?: number;
 };
 type UITheme = "light" | "dark";
+type SuggestionItem = { url: string; title: string; lastVisitedAt: number };
 
 interface PenTabbarApi {
   isMac: boolean;
@@ -49,6 +50,12 @@ interface PenTabbarApi {
   closeTab(id: number): void;
   reorderTab(id: number, beforeId: number | null): void;
   navigate(action: "url" | "back" | "forward" | "reload", url?: string): void;
+  suggestHistory(query: string): Promise<{ items: SuggestionItem[]; inline: string | null }>;
+  omniboxShow(payload: { items: SuggestionItem[]; selected: number; query: string; rect: { x: number; y: number; width: number } }): void;
+  omniboxHide(): void;
+  removeSuggestion(url: string): void;
+  onOmniboxPicked(cb: (url: string) => void): void;
+  onOmniboxRefresh(cb: () => void): void;
   onState(cb: (s: TabsSnapshot) => void): void;
   onTheme(cb: (theme: UITheme) => void): void;
   onTail(cb: (color: string | null) => void): void;
@@ -93,6 +100,7 @@ navForwardEl.addEventListener("click", () => window.penTabbar.navigate("forward"
 navReloadEl.addEventListener("click", () => window.penTabbar.navigate("reload"));
 urlFormEl.addEventListener("submit", (e) => {
   e.preventDefault();
+  closeSuggestions();
   const normalized = normalizeTypedUrl(urlInputEl.value);
   // Denial visibility (finding 5): main's onTabbarNavigate silently no-ops
   // on a non-http(s) URL (decideBrowserNavigation), which used to leave the
@@ -108,7 +116,7 @@ urlFormEl.addEventListener("submit", (e) => {
   urlInputEl.classList.remove("invalid");
   window.penTabbar.navigate("url", normalized);
 });
-urlInputEl.addEventListener("input", () => {
+urlInputEl.addEventListener("input", (e) => {
   urlInputEl.classList.remove("invalid");
   // A real keystroke — as opposed to the programmatic `.focus()` the new
   // empty-browser-tab fix (window.ts's pushState / shouldFocusAddressBar)
@@ -120,6 +128,9 @@ urlInputEl.addEventListener("input", () => {
   // happens in that flow), leaving the address bar permanently stuck on
   // "" even once the tab actually navigated.
   userEditingUrl = true;
+  suggest.typed = urlInputEl.value;
+  const deletion = (e as InputEvent).inputType?.startsWith("delete") === true;
+  querySuggestions(suggest.typed, !deletion);
 });
 
 window.penTabbar.onTail((color) => {
@@ -138,34 +149,188 @@ window.penTabbar.onTheme((theme) => {
 let urlInputFocused = false;
 let userEditingUrl = false;
 let latestActiveUrl: string | undefined;
+/** Set while the refresh handler re-focuses the field: the focus handler must not re-query "Recent". */
+let restoringFocus = false;
+/** Where the caret was when the field lost focus (restored if the popover's "x" gave the focus back). */
+let blurSelection: { start: number; end: number } | null = null;
 urlInputEl.addEventListener("focus", () => {
   urlInputFocused = true;
+  if (suggest.hideTimer !== null) {
+    clearTimeout(suggest.hideTimer);
+    suggest.hideTimer = null;
+  }
+  if (restoringFocus) return;
+  // Focus shows the Recent list, also while the field still holds the tab's url.
+  suggest.typed = urlInputEl.value;
+  querySuggestions("", false);
 });
 urlInputEl.addEventListener("blur", () => {
   urlInputFocused = false;
   userEditingUrl = false;
+  blurSelection = { start: urlInputEl.selectionStart ?? urlInputEl.value.length, end: urlInputEl.selectionEnd ?? urlInputEl.value.length };
+  // A click in the popover (another view) blurs the field first; the pick IPC lands well inside this delay.
+  suggest.seq++;
+  if (suggest.hideTimer !== null) clearTimeout(suggest.hideTimer);
+  suggest.hideTimer = setTimeout(() => {
+    suggest.hideTimer = null;
+    closeSuggestions();
+    // The field goes back to the tab's url only now that the popover really closed (a click on the
+    // popover's "x" blurs the field and must not lose what was typed).
+    if (!urlInputFocused && latestActiveUrl !== undefined) urlInputEl.value = latestActiveUrl;
+  }, 150);
   // While focused, onState below skips writing into the input so it never
   // clobbers what the user is mid-typing — but nothing resynced it
   // afterwards, so an agent-driven browse_open that lands while the address
   // bar happens to be focused left the input showing a stale URL
-  // indefinitely (finding 9). Catch up on blur to whatever the most
-  // recently received snapshot actually says.
-  if (latestActiveUrl !== undefined) urlInputEl.value = latestActiveUrl;
+  // indefinitely (finding 9). Catch up to whatever the most recently
+  // received snapshot says: in the close timer above (150 ms after the blur).
+});
+
+// --- address-bar suggestions (history popover, its own view: main/layout.ts omniboxBounds) ---
+// The tab bar owns the state and every key; the popover only paints (preload/omnibox.ts) and
+// reports clicks. `selected` -1 = no row: the field shows the text the user typed.
+let suggestTabId: number | null = null;
+const suggest: {
+  open: boolean;
+  items: SuggestionItem[];
+  selected: number;
+  /** Query the shown items answer (highlighting in the popover). */
+  query: string;
+  /** What the user typed, without inline completion or a row's url put in the field by the arrows. */
+  typed: string;
+  /** Sequence number of the latest query: older answers are dropped. */
+  seq: number;
+  hideTimer: ReturnType<typeof setTimeout> | null;
+} = { open: false, items: [], selected: -1, query: "", typed: "", seq: 0, hideTimer: null };
+
+function renderSuggestions(): void {
+  if (suggest.items.length === 0 || chromeRowEl.hasAttribute("hidden")) {
+    closeSuggestions();
+    return;
+  }
+  const rect = urlInputEl.getBoundingClientRect();
+  suggest.open = true;
+  window.penTabbar.omniboxShow({
+    items: suggest.items,
+    selected: suggest.selected,
+    query: suggest.query,
+    rect: { x: rect.left, y: rect.bottom, width: rect.width },
+  });
+}
+
+function closeSuggestions(): void {
+  suggest.seq++; // an answer still in flight must not reopen it
+  suggest.selected = -1;
+  if (!suggest.open) return;
+  suggest.open = false;
+  window.penTabbar.omniboxHide();
+}
+
+function caretAtEnd(): boolean {
+  const { selectionStart, selectionEnd, value } = urlInputEl;
+  return selectionStart === selectionEnd && selectionStart === value.length;
+}
+
+function querySuggestions(query: string, allowInline: boolean): void {
+  const seq = ++suggest.seq;
+  window.penTabbar.suggestHistory(query).then(
+    (answer) => {
+      if (seq !== suggest.seq || !urlInputFocused) return;
+      suggest.items = answer.items;
+      suggest.selected = -1;
+      suggest.query = query;
+      const completion = allowInline && urlInputEl.value === query ? applyInlineCompletion(query, answer.inline, false, caretAtEnd()) : null;
+      if (completion) {
+        urlInputEl.value = completion.value;
+        urlInputEl.setSelectionRange(completion.selectionStart, completion.selectionEnd);
+      }
+      renderSuggestions();
+    },
+    () => {
+      if (seq === suggest.seq) closeSuggestions();
+    },
+  );
+}
+
+urlInputEl.addEventListener("keydown", (e) => {
+  const action = omniboxKeyAction(e.key, e.shiftKey, { open: suggest.open, count: suggest.items.length, selected: suggest.selected });
+  if (action.type === "move") {
+    e.preventDefault();
+    suggest.selected = action.selected;
+    // Like Chrome: the selected row's url replaces the field text, the typed text comes back at -1.
+    urlInputEl.value = action.selected >= 0 ? suggest.items[action.selected].url : suggest.typed;
+    renderSuggestions();
+  } else if (action.type === "pick") {
+    e.preventDefault();
+    const url = suggest.items[suggest.selected].url;
+    closeSuggestions();
+    urlInputEl.classList.remove("invalid");
+    window.penTabbar.navigate("url", url);
+    urlInputEl.blur();
+    urlInputEl.value = url;
+  } else if (action.type === "remove") {
+    e.preventDefault();
+    window.penTabbar.removeSuggestion(suggest.items[suggest.selected].url);
+    // The refresh from main re-queries; until then show the typed text again.
+    urlInputEl.value = suggest.typed;
+    suggest.selected = -1;
+    renderSuggestions();
+  } else if (action.type === "close") {
+    e.preventDefault();
+    urlInputEl.value = suggest.typed;
+    closeSuggestions();
+  } else if (e.key === "Escape") {
+    // Popover already closed: give the field back to the tab's url.
+    e.preventDefault();
+    userEditingUrl = false;
+    urlInputEl.classList.remove("invalid");
+    urlInputEl.blur();
+  }
+});
+
+window.penTabbar.onOmniboxPicked((url) => {
+  closeSuggestions();
+  urlInputEl.classList.remove("invalid");
+  urlInputEl.blur();
+  urlInputEl.value = url;
+});
+window.penTabbar.onOmniboxRefresh(() => {
+  if (!urlInputFocused && suggest.hideTimer === null) return;
+  if (!urlInputFocused) {
+    // The popover's "x" blurred the field and the close timer has not fired: cancel it and give the field back
+    // with the user's typed text and caret.
+    clearTimeout(suggest.hideTimer!);
+    suggest.hideTimer = null;
+    urlInputEl.value = suggest.typed;
+    restoringFocus = true;
+    try {
+      urlInputEl.focus();
+    } finally {
+      restoringFocus = false;
+    }
+    const end = urlInputEl.value.length;
+    const sel = blurSelection;
+    urlInputEl.setSelectionRange(Math.min(sel?.start ?? end, end), Math.min(sel?.end ?? end, end));
+    userEditingUrl = suggest.typed !== latestActiveUrl;
+  }
+  // Re-run the query that produced the shown list ("" for Recent), not what the field shows.
+  querySuggestions(suggest.query, false);
 });
 
 // Leading tab icons, keyed by tab kind: a paintbrush for editor (canvas) tabs, a globe for
 // browser tabs, never a site favicon. The tab bar CSP has no img-src: the tab bar draws no images.
-// Glyph path data: Phosphor Icons "PaintBrush", "Globe", "FileText", "Pulse" and "GearSix" and "Key" (the Passwords tab), all light weight, MIT License, Copyright (c) 2020
+// Glyph path data: Phosphor Icons "PaintBrush", "Globe", "FileText", "Pulse" and "GearSix", "Key" (the Passwords tab) and "ClockCounterClockwise" (the History tab), all light weight, MIT License, Copyright (c) 2020
 // Phosphor Icons (full notice: THIRD_PARTY_NOTICES.md at the repo root, shipped in the packaged app).
 // Monochrome: filled with currentColor, the tab text color.
 const GLYPHS: Record<TabKind, string> = {
   editor: PHOSPHOR_PAINT_BRUSH,
-  browser: "M128,26A102,102,0,1,0,230,128,102.12,102.12,0,0,0,128,26Zm81.57,64H169.19a132.58,132.58,0,0,0-25.73-50.67A90.29,90.29,0,0,1,209.57,90ZM218,128a89.7,89.7,0,0,1-3.83,26H171.81a155.43,155.43,0,0,0,0-52h42.36A89.7,89.7,0,0,1,218,128Zm-90,87.83a110,110,0,0,1-15.19-19.45A124.24,124.24,0,0,1,99.35,166h57.3a124.24,124.24,0,0,1-13.46,30.38A110,110,0,0,1,128,215.83ZM96.45,154a139.18,139.18,0,0,1,0-52h63.1a139.18,139.18,0,0,1,0,52ZM38,128a89.7,89.7,0,0,1,3.83-26H84.19a155.43,155.43,0,0,0,0,52H41.83A89.7,89.7,0,0,1,38,128Zm90-87.83a110,110,0,0,1,15.19,19.45A124.24,124.24,0,0,1,156.65,90H99.35a124.24,124.24,0,0,1,13.46-30.38A110,110,0,0,1,128,40.17Zm-15.46-.84A132.58,132.58,0,0,0,86.81,90H46.43A90.29,90.29,0,0,1,112.54,39.33ZM46.43,166H86.81a132.58,132.58,0,0,0,25.73,50.67A90.29,90.29,0,0,1,46.43,166Zm97,50.67A132.58,132.58,0,0,0,169.19,166h40.38A90.29,90.29,0,0,1,143.46,216.67Z",
+  browser: PHOSPHOR_GLOBE,
   doc: PHOSPHOR_FILE_TEXT,
   // Workflow: three bullet rows (own simple glyph, not from Phosphor).
   workflow: "M48,52a12,12,0,1,1,0,24a12,12,0,1,1,0-24ZM88,58h128v12H88ZM48,116a12,12,0,1,1,0,24a12,12,0,1,1,0-24ZM88,122h128v12H88ZM48,180a12,12,0,1,1,0,24a12,12,0,1,1,0-24ZM88,186h128v12H88Z",
   trace: "M238,128a6,6,0,0,1-6,6H203.71l-38.34,76.68A6,6,0,0,1,160,214h-.3a6,6,0,0,1-5.31-3.85L95.51,55.57,61.46,130.48A6,6,0,0,1,56,134H24a6,6,0,0,1,0-12H52.14l38.4-84.48a6,6,0,0,1,11.07.34L160.74,193.1l33.89-67.78A6,6,0,0,1,200,122h32A6,6,0,0,1,238,128Z",
   settings: "M128,82a46,46,0,1,0,46,46A46.06,46.06,0,0,0,128,82Zm0,80a34,34,0,1,1,34-34A34,34,0,0,1,128,162Zm108-54.4a6,6,0,0,0-2.92-4L202.64,86.22l-.42-.71L202.1,51.2A6,6,0,0,0,200,46.64a110.12,110.12,0,0,0-36.07-20.31,6,6,0,0,0-4.84.45L128.46,43.86h-1L96.91,26.76a6,6,0,0,0-4.86-.44A109.92,109.92,0,0,0,56,46.68a6,6,0,0,0-2.12,4.55l-.16,34.34c-.14.23-.28.47-.41.71L22.91,103.57A6,6,0,0,0,20,107.62a104.81,104.81,0,0,0,0,40.78,6,6,0,0,0,2.92,4l30.42,17.33.42.71.12,34.31A6,6,0,0,0,56,209.36a110.12,110.12,0,0,0,36.07,20.31,6,6,0,0,0,4.84-.45l30.61-17.08h1l30.56,17.1A6.09,6.09,0,0,0,162,230a5.83,5.83,0,0,0,1.93-.32,109.92,109.92,0,0,0,36-20.36,6,6,0,0,0,2.12-4.55l.16-34.34c.14-.23.28-.47.41-.71l30.42-17.29a6,6,0,0,0,2.92-4.05A104.81,104.81,0,0,0,236,107.6Zm-11.25,35.79L195.32,160.1a6.07,6.07,0,0,0-2.28,2.3c-.59,1-1.21,2.11-1.86,3.14a6,6,0,0,0-.91,3.16l-.16,33.21a98.15,98.15,0,0,1-27.52,15.53L133,200.88a6,6,0,0,0-2.93-.77h-.14c-1.24,0-2.5,0-3.74,0a6,6,0,0,0-3.07.76L93.45,217.43a98,98,0,0,1-27.56-15.49l-.12-33.17a6,6,0,0,0-.91-3.16c-.64-1-1.27-2.08-1.86-3.14a6,6,0,0,0-2.27-2.3L31.3,143.4a93,93,0,0,1,0-30.79L60.68,95.9A6.07,6.07,0,0,0,63,93.6c.59-1,1.21-2.11,1.86-3.14a6,6,0,0,0,.91-3.16l.16-33.21A98.15,98.15,0,0,1,93.41,38.56L123,55.12a5.81,5.81,0,0,0,3.07.76c1.24,0,2.5,0,3.74,0a6,6,0,0,0,3.07-.76l29.65-16.56a98,98,0,0,1,27.56,15.49l.12,33.17a6,6,0,0,0,.91,3.16c.64,1,1.27,2.08,1.86,3.14a6,6,0,0,0,2.27,2.3L224.7,112.6A93,93,0,0,1,224.73,143.39Z",
+  history: PHOSPHOR_CLOCK_COUNTER_CLOCKWISE,
   passwords: "M215.15,40.85A78,78,0,0,0,86.2,121.31l-56.1,56.1a13.94,13.94,0,0,0-4.1,9.9V216a14,14,0,0,0,14,14H72a6,6,0,0,0,6-6V206H96a6,6,0,0,0,6-6V182h18a6,6,0,0,0,4.24-1.76l10.45-10.44A77.59,77.59,0,0,0,160,174h.1A78,78,0,0,0,215.15,40.85ZM226,98.16c-1.12,35.16-30.67,63.8-65.88,63.84a65.93,65.93,0,0,1-24.51-4.67,6,6,0,0,0-6.64,1.26L117.51,170H96a6,6,0,0,0-6,6v18H72a6,6,0,0,0-6,6v18H40a2,2,0,0,1-2-2V187.31a2,2,0,0,1,.58-1.41l58.83-58.83a6,6,0,0,0,1.26-6.64A65.61,65.61,0,0,1,94,95.92C94,60.71,122.68,31.16,157.83,30A66,66,0,0,1,226,98.16ZM190,76a10,10,0,1,1-10-10A10,10,0,0,1,190,76Z",
 };
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -641,6 +806,8 @@ window.penTabbar.onState((state) => {
   // Address row: only shown for the active browser tab (design doc §2).
   const isBrowser = state.activeKind === "browser";
   chromeRowEl.toggleAttribute("hidden", !isBrowser);
+  if (!isBrowser || state.activeId !== suggestTabId) closeSuggestions();
+  suggestTabId = state.activeId;
   if (isBrowser) {
     const active = state.tabs.find((t) => t.id === state.activeId);
     navBackEl.disabled = !active?.canGoBack;
@@ -656,7 +823,8 @@ window.penTabbar.onState((state) => {
     // by the user).
     const previousUrl = latestActiveUrl;
     latestActiveUrl = active?.url ?? "";
-    if (!urlInputFocused || !userEditingUrl) urlInputEl.value = latestActiveUrl;
+    // A previewed row (arrow keys) or a pending close timer (the popover's "x" blurred the field) counts as editing.
+    if (!urlInputFocused ? suggest.hideTimer === null : !userEditingUrl && suggest.selected < 0) urlInputEl.value = latestActiveUrl;
     // The tab got its first url (an agent browse_open into a fresh blank tab, which was
     // auto-focused below): drop the focus, so the field is not left grey and focused.
     if (!state.focusAddressBar && shouldBlurAddressBar(previousUrl, latestActiveUrl, userEditingUrl)) {

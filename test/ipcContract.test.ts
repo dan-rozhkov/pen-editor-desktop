@@ -50,6 +50,24 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "passwords:changed", direction: "main->renderer" },
   { name: "passwords:remove", direction: "renderer->main" },
   { name: "passwords:never-remove", direction: "renderer->main" },
+  // History tab (invoke/handle, sender-checked, registered once by createHistoryService) and its pushes. See CLAUDE.md "Browser history".
+  { name: "history:list", direction: "renderer->main" },
+  { name: "history:remove", direction: "renderer->main" },
+  { name: "history:clear", direction: "renderer->main" },
+  { name: "history:open", direction: "renderer->main" },
+  { name: "history:theme", direction: "main->renderer" },
+  { name: "history:changed", direction: "main->renderer" },
+  // Address-bar suggestions: the tab bar asks (invoke, tab bar only) and drives the popover view; the popover reports clicks.
+  { name: "history:suggest", direction: "renderer->main" },
+  { name: "history:remove-suggestion", direction: "renderer->main" },
+  { name: "tabbar:omnibox-show", direction: "renderer->main" },
+  { name: "tabbar:omnibox-hide", direction: "renderer->main" },
+  { name: "tabbar:omnibox-picked", direction: "main->renderer" },
+  { name: "tabbar:omnibox-refresh", direction: "main->renderer" },
+  { name: "omnibox:render", direction: "main->renderer" },
+  { name: "omnibox:pick", direction: "renderer->main" },
+  { name: "omnibox:remove", direction: "renderer->main" },
+  { name: "omnibox:open-history", direction: "renderer->main" },
   // Canvas link : panel <-> canvas tabs, see CLAUDE.md "Canvas link".
   // Panel-only: bring the agent's browser tab to the front.
   { name: "browser:reveal-agent-tab", direction: "renderer->main" },

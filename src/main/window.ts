@@ -51,7 +51,11 @@ import {
 } from "@sideform/browser-agent/controller";
 import { resolveAgentPanelUrl, resolveCanvasTabUrl, INITIAL_TABS, isEnvValueSet } from "./config";
 import { nativeAppsArguments, secureWebPreferences } from "./webPreferences";
-import { ADDRESS_ROW_HEIGHT, ISLAND_GAP, ISLAND_RADIUS, TAB_ROW_HEIGHT, agentPanelWidthFor, computeWindowLayout, type WindowLayout } from "./layout";
+import { ADDRESS_ROW_HEIGHT, ISLAND_GAP, ISLAND_RADIUS, TAB_ROW_HEIGHT, agentPanelWidthFor, computeWindowLayout, omniboxBounds, type WindowLayout } from "./layout";
+import { isShownUrl, parseOmniboxShow, parseUrlPayload } from "./omniboxIpc";
+import type { SuggestItem } from "./browser/historySuggest";
+import { historyKey, type HistoryStore } from "./browser/historyStore";
+import type { HistoryService } from "./historyService";
 import { activeTabChanged, isAuthSignInSender, pickAuthReceiver, type AuthTokenPayload, type DesktopAuth } from "./desktopAuth";
 import { AGENT_PANEL_SETTINGS_FILE, readAgentPanelSettings, writeAgentPanelSettings } from "./agentPanelSettings";
 import { isRecord, parseJournalOrigins, parseToken, rawToken } from "./checkpointArgs";
@@ -226,6 +230,18 @@ export interface LoginServices {
   passwords: PasswordsService;
 }
 
+/** App-scoped browsing history (created once in index.ts, like the saved-logins services). */
+export interface HistoryServices {
+  store: HistoryStore;
+  service: HistoryService;
+}
+
+/** The tab bar views of the live main windows: the only senders `history:suggest` answers. */
+const liveTabbarIds = new Set<number>();
+export function isLiveTabbar(senderId: number): boolean {
+  return liveTabbarIds.has(senderId);
+}
+
 // Real ipcMain wiring for McpService.registerAppLevelIpc — kept here (not in
 // service.ts, which stays Electron-free for testability, see its header
 // comment) with the channel names written as literals so
@@ -292,6 +308,7 @@ export function createMainWindow(
   editorUrl: string,
   mcpService: McpService,
   loginServices: LoginServices,
+  history: HistoryServices,
   desktopAuth: DesktopAuth,
 ): BaseWindow {
   // Idempotent — see registerAppLevelIpc's own doc comment. Safe to call on
@@ -351,6 +368,7 @@ export function createMainWindow(
   if (glassTintView) win.contentView.addChildView(glassTintView);
   win.contentView.addChildView(tabbarView);
   attachLocalOnlyPolicy(tabbarView.webContents);
+  liveTabbarIds.add(tabbarView.webContents.id);
 
   // Tab bar sits directly on the glass.
   tabbarView.setBackgroundColor("#00000000");
@@ -431,6 +449,32 @@ export function createMainWindow(
   // Doc, trace and Settings tabs report the editor theme like canvas tabs do (same preload), so they count here.
   const editorTabCount = (s: TabsSnapshot) => s.tabs.filter((t) => t.kind === "editor" || t.kind === "doc" || t.kind === "workflow" || t.kind === "trace" || t.kind === "settings").length;
   let lastResolvedForTint: UITheme = FALLBACK_THEME;
+  let lastOmniboxActiveId: number | null = null;
+  // The address-bar suggestion popover: its own view, so it is not clipped to the tab bar's height. Created
+  // hidden next to the other shell views (before the empty view, the last one), re-added on top when shown.
+  const omniboxView = new WebContentsView({
+    webPreferences: secureWebPreferences(path.join(__dirname, "../preload/omnibox.js")),
+  });
+  win.contentView.addChildView(omniboxView);
+  attachLocalOnlyPolicy(omniboxView.webContents);
+  omniboxView.setBackgroundColor("#00000000");
+  omniboxView.setVisible(false);
+  void omniboxView.webContents.loadFile(path.join(__dirname, "../omnibox/omnibox.html"));
+  let omniboxItems: SuggestItem[] = [];
+  let omniboxRender: { items: SuggestItem[]; selected: number; query: string } | null = null;
+  let lastOmniboxRenderTheme: string | null = null;
+  const sendOmniboxRender = () => {
+    if (!omniboxRender || omniboxView.webContents.isDestroyed()) return;
+    lastOmniboxRenderTheme = lastResolvedForTint;
+    omniboxView.webContents.send("omnibox:render", { ...omniboxRender, theme: lastResolvedForTint, isMac: process.platform === "darwin" });
+  };
+  const hideOmnibox = () => {
+    omniboxItems = [];
+    omniboxRender = null;
+    if (!omniboxView.webContents.isDestroyed()) omniboxView.setVisible(false);
+  };
+  // A page that finishes loading while the popover is already showing needs the latest render.
+  omniboxView.webContents.on("did-finish-load", sendOmniboxRender);
   const emptyView = new WebContentsView({
     webPreferences: secureWebPreferences(path.join(__dirname, "../preload/empty.js")),
   });
@@ -661,6 +705,13 @@ export function createMainWindow(
       else if (focusTarget === "panel" && !agentPanelView.webContents.isDestroyed()) agentPanelView.webContents.focus();
     }
     loginServices.passwords.setTheme(themeKey, resolvedTheme);
+    history.service.setTheme(themeKey, resolvedTheme);
+    // Only a theme change repaints the popover: a re-render rebuilds its DOM (hover flicker) on every push.
+    if (omniboxRender && omniboxRender.items.length > 0 && lastOmniboxRenderTheme !== lastResolvedForTint) sendOmniboxRender();
+    if (s.activeId !== lastOmniboxActiveId) {
+      lastOmniboxActiveId = s.activeId;
+      hideOmnibox(); // the popover belongs to the address field of the tab that was active
+    }
     if (focusAddressBar) tabbarView.webContents.focus();
     // Keep a visible browser tab's own blank-canvas background matching the
     // theme the bar is now showing (glass tab bar work, 2026-09-25) — most
@@ -796,6 +847,9 @@ export function createMainWindow(
           : kind === "passwords"
             ? // The Passwords tab is a local page with its own preload (never the tab preload, never the frontend).
               { webPreferences: secureWebPreferences(path.join(__dirname, "../preload/passwords.js")) }
+            : kind === "history"
+            ? // The History tab: same shape, its own local page and preload.
+              { webPreferences: secureWebPreferences(path.join(__dirname, "../preload/history.js")) }
             : {
                 webPreferences: secureWebPreferences(path.join(__dirname, "../preload/tab.js"), { additionalArguments: nativeAppsArguments(computerUseAvailable()) }),
               },
@@ -1202,6 +1256,47 @@ export function createMainWindow(
         void contents.loadFile(path.join(__dirname, "../passwords/passwords.html"));
       }
 
+      if (kind === "history") {
+        attachLocalOnlyPolicy(view.webContents);
+        const contents = view.webContents;
+        history.service.attach(
+          {
+            id: contents.id,
+            isDestroyed: () => contents.isDestroyed(),
+            sendTheme: (payload) => contents.send("history:theme", payload),
+            setBackground: (theme) => view.setBackgroundColor(backgroundColorForTheme(theme)),
+            sendChanged: () => contents.send("history:changed"),
+            onLoaded: (cb) => contents.on("did-finish-load", cb),
+            onDestroyed: (cb) => contents.once("destroyed", cb),
+          },
+          themeKey,
+          () => lastResolvedForTint,
+          {
+            confirmClear: async () => {
+              const { response } = await dialog.showMessageBox(win, {
+                type: "warning",
+                message: "Clear browsing history?",
+                detail: "This removes every page from History. It cannot be undone.",
+                buttons: ["Clear History", "Cancel"],
+                defaultId: 1,
+                cancelId: 1,
+              });
+              return response === 0;
+            },
+            openUrl: (url) => {
+              const id = tabs.newTab("browser");
+              tabs.setAgentBrowserTabId(id); // a user-driven open, like newUserBrowserTab
+              const handle = tabs.activeBrowserHandle();
+              if (!handle || tabs.getSnapshot().activeId !== id) return;
+              void handle.loadURL(url).catch(() => {});
+              handle.focus();
+            },
+          },
+        );
+        view.setBackgroundColor(backgroundColorForTheme(lastResolvedForTint));
+        void contents.loadFile(path.join(__dirname, "../history/history.html"));
+      }
+
       if (kind === "editor") {
         // A canvas tab may save its canvas, also while it closes (canvasWriters.ts).
         canvasSenders.addWriter(viewId);
@@ -1319,6 +1414,31 @@ export function createMainWindow(
       view.webContents.on("did-navigate-in-page", reportNavState);
       view.webContents.on("did-navigate", refreshRevealMenuItem);
       view.webContents.on("did-navigate-in-page", refreshRevealMenuItem);
+      if (kind === "browser" && !sessionId) {
+        // Browsing history (browser/historyStore.ts): the user's own tabs only. Isolated session tabs run in
+        // throwaway partitions and never write; the hidden about:blank placeholder and non-http(s) urls are
+        // refused by historyKey.
+        const wc = view.webContents;
+        // Pages the agent opens while it drives the shared browser are not the user's history: skipped while
+        // an agent command is in flight for the shared scope (a navigation the user makes meanwhile is lost too).
+        const agentDriving = () => commandsInFlight.active(undefined);
+        // Last history key seen on this tab: an in-page change that keeps it (a hash-only change) is not a visit.
+        let lastHistoryKey: string | null = null;
+        wc.on("did-navigate", (_e, url) => {
+          lastHistoryKey = historyKey(url);
+          if (!agentDriving()) history.store.recordVisit(url, Date.now());
+        });
+        wc.on("did-navigate-in-page", (_e, url, isMainFrame) => {
+          if (!isMainFrame) return;
+          const key = historyKey(url);
+          if (key === lastHistoryKey) return;
+          lastHistoryKey = key;
+          if (!agentDriving()) history.store.recordVisit(url, Date.now());
+        });
+        wc.on("page-title-updated", (_e, title) => {
+          if (!agentDriving()) history.store.setTitle(wc.getURL(), title);
+        });
+      }
       if (kind === "browser") {
         // Tail colour under the page's rounded top corners (pageBackground.ts): sample the page background.
         const wc = view.webContents;
@@ -2637,6 +2757,8 @@ export function createMainWindow(
     if (l.tabStripLeft !== tabStripLeft) pushState(tabs.getSnapshot());
   };
   win.on("resize", layout);
+  win.on("resize", hideOmnibox);
+  win.on("blur", hideOmnibox);
   layout();
   // A minimized window is always hidden by Chromium: an awake agent tab freezes. Tell the person once.
   const onMinimize = () => {
@@ -2750,6 +2872,7 @@ export function createMainWindow(
           toggleDevTools: () => handle.toggleDevTools?.(),
           setZoomFactor: (f) => handle.setZoomFactor?.(f),
           setZoomLevel: (l) => handle.setZoomLevel?.(l),
+          openHistory: () => void tabs.openHistoryTab({ focus: true }),
         },
       ),
     ).popup({ window: win, ...at });
@@ -2811,6 +2934,65 @@ export function createMainWindow(
       void handle.loadURL(payload.url).catch(() => {});
     }
   };
+  // --- address-bar suggestion popover (omnibox view) ---
+  const omniboxId = omniboxView.webContents.id;
+  const fromOurOmnibox = (event: Electron.IpcMainEvent) => event.sender.id === omniboxId;
+  const onOmniboxShow = (e: Electron.IpcMainEvent, payload: unknown) => {
+    if (!fromOurTabbar(e)) return;
+    const req = parseOmniboxShow(payload);
+    if (!req || req.items.length === 0 || tabs.getSnapshot().activeKind !== "browser") {
+      hideOmnibox();
+      return;
+    }
+    omniboxItems = req.items;
+    omniboxRender = { items: req.items, selected: req.selected, query: req.query };
+    const { width, height } = win.getContentBounds();
+    omniboxView.setBounds(omniboxBounds(req.rect, req.items.length, req.query.trim() === "", { width, height }));
+    win.contentView.addChildView(omniboxView); // re-adding moves it to the top
+    omniboxView.setVisible(true);
+    sendOmniboxRender();
+  };
+  const onOmniboxHide = (e: Electron.IpcMainEvent) => {
+    if (fromOurTabbar(e)) hideOmnibox();
+  };
+  const onOmniboxPick = (e: Electron.IpcMainEvent, payload: unknown) => {
+    if (!fromOurOmnibox(e)) return;
+    const url = parseUrlPayload(payload);
+    if (url === null || !isShownUrl(omniboxItems, url) || decideBrowserNavigation(url) !== "allow") return;
+    const handle = tabs.activeBrowserHandle();
+    hideOmnibox();
+    if (!handle) return;
+    void handle.loadURL(url).catch(() => {});
+    if (!tabbarView.webContents.isDestroyed()) tabbarView.webContents.send("tabbar:omnibox-picked", { url });
+    handle.focus(); // like a real browser after Enter: the page has the keyboard
+  };
+  const removeSuggestion = (payload: unknown) => {
+    const url = parseUrlPayload(payload);
+    if (url === null) return;
+    history.store.remove(url);
+    if (!tabbarView.webContents.isDestroyed()) {
+      // A click in the popover blurred the field: hand the keyboard back before the tab bar re-queries.
+      tabbarView.webContents.focus();
+      tabbarView.webContents.send("tabbar:omnibox-refresh");
+    }
+  };
+  const onOmniboxRemove = (e: Electron.IpcMainEvent, payload: unknown) => {
+    if (fromOurOmnibox(e)) removeSuggestion(payload);
+  };
+  const onHistoryRemoveSuggestion = (e: Electron.IpcMainEvent, payload: unknown) => {
+    if (fromOurTabbar(e)) removeSuggestion(payload);
+  };
+  const onOmniboxOpenHistory = (e: Electron.IpcMainEvent) => {
+    if (!fromOurOmnibox(e)) return;
+    hideOmnibox();
+    tabs.openHistoryTab({ focus: true });
+  };
+  ipcMain.on("tabbar:omnibox-show", onOmniboxShow);
+  ipcMain.on("tabbar:omnibox-hide", onOmniboxHide);
+  ipcMain.on("omnibox:pick", onOmniboxPick);
+  ipcMain.on("omnibox:remove", onOmniboxRemove);
+  ipcMain.on("omnibox:open-history", onOmniboxOpenHistory);
+  ipcMain.on("history:remove-suggestion", onHistoryRemoveSuggestion);
   ipcMain.on("tabbar:new", onTabbarNew);
   ipcMain.on("tabbar:new-browser", onTabbarNewBrowser);
   ipcMain.on("tabbar:new-doc", onTabbarNewDoc);
@@ -2842,6 +3024,13 @@ export function createMainWindow(
   win.on("closed", () => {
     liveTabManagers.delete(tabs);
     stopPanelTimer();
+    liveTabbarIds.delete(tabbarId);
+    ipcMain.removeListener("tabbar:omnibox-show", onOmniboxShow);
+    ipcMain.removeListener("tabbar:omnibox-hide", onOmniboxHide);
+    ipcMain.removeListener("omnibox:pick", onOmniboxPick);
+    ipcMain.removeListener("omnibox:remove", onOmniboxRemove);
+    ipcMain.removeListener("omnibox:open-history", onOmniboxOpenHistory);
+    ipcMain.removeListener("history:remove-suggestion", onHistoryRemoveSuggestion);
     ipcMain.removeListener("tabbar:new", onTabbarNew);
     ipcMain.removeListener("tabbar:new-browser", onTabbarNewBrowser);
     ipcMain.removeListener("tabbar:new-doc", onTabbarNewDoc);
@@ -2895,10 +3084,13 @@ export function createMainWindow(
     agentActivity.dispose();
     agentAwake.dispose();
     win.removeListener("minimize", onMinimize);
+    win.removeListener("resize", hideOmnibox);
+    win.removeListener("blur", hideOmnibox);
     tabs.destroyAll();
     tabbarView.webContents.close();
     agentPanelView.webContents.close();
     emptyView.webContents.close();
+    omniboxView.webContents.close();
   });
 
   // --- menu ---
@@ -2917,6 +3109,7 @@ export function createMainWindow(
         newWorkflowTab: () => void tabs.newTab("workflow"),
         openSettings: () => void tabs.openSettingsTab(undefined, { focus: true }),
         openPasswords: () => void tabs.openPasswordsTab({ focus: true }),
+        openHistory: () => void tabs.openHistoryTab({ focus: true }),
         signIn: () => desktopAuth.beginSignIn(),
         closeTab: () => {
           const target = decideCloseTarget({

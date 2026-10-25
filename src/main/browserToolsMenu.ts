@@ -169,6 +169,8 @@ export interface BrowserToolsActions {
   toggleDevTools(): void;
   setZoomFactor(factor: number): void;
   setZoomLevel(level: number): void;
+  /** Opens (or focuses) the History tab. */
+  openHistory(): void;
 }
 
 export function buildBrowserToolsMenuTemplate(
@@ -215,6 +217,11 @@ export function buildBrowserToolsMenuTemplate(
           click: () => actions.setZoomFactor(z),
         })),
       ],
+    },
+    { type: "separator" },
+    {
+      label: "Show History",
+      click: () => actions.openHistory(),
     },
   ];
 }

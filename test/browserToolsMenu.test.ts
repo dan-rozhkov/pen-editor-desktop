@@ -11,14 +11,20 @@ import {
 } from "../src/main/browserToolsMenu";
 
 const base: BrowserToolsState = { hasDebugger: true, hasDocument: true, viewport: "responsive", devToolsOpen: false, zoomFactor: 1, zoomLevel: 0 };
-const mkActions = (): BrowserToolsActions => ({ setViewport: vi.fn(), toggleDevTools: vi.fn(), setZoomFactor: vi.fn(), setZoomLevel: vi.fn() });
+const mkActions = (): BrowserToolsActions => ({ setViewport: vi.fn(), toggleDevTools: vi.fn(), setZoomFactor: vi.fn(), setZoomLevel: vi.fn(), openHistory: vi.fn() });
 const sub = (items: MenuItemConstructorOptions[], label: string) =>
   items.find((i) => i.label === label)!.submenu as MenuItemConstructorOptions[];
 
 describe("buildBrowserToolsMenuTemplate", () => {
-  it("has Viewport, DevTools and Zoom in order", () => {
+  it("has Viewport, DevTools, Zoom and Show History in order", () => {
     const t = buildBrowserToolsMenuTemplate(base, mkActions());
-    expect(t.map((i) => i.label)).toEqual(["Viewport", "Open Developer Tools", "Zoom"]);
+    expect(t.map((i) => i.label ?? i.type)).toEqual(["Viewport", "Open Developer Tools", "Zoom", "separator", "Show History"]);
+  });
+
+  it("Show History opens the History tab", () => {
+    const a = mkActions();
+    buildBrowserToolsMenuTemplate(base, a).find((i) => i.label === "Show History")!.click!({} as never, undefined, {} as never);
+    expect(a.openHistory).toHaveBeenCalledTimes(1);
   });
 
   it("lists viewport radios with the current choice checked", () => {
@@ -59,8 +65,9 @@ describe("buildBrowserToolsMenuTemplate", () => {
   it("toggles the DevTools label and action", () => {
     const a = mkActions();
     const open = buildBrowserToolsMenuTemplate({ ...base, devToolsOpen: true }, a);
-    expect(open[1].label).toBe("Close Developer Tools");
-    open[1].click!({} as never, undefined, {} as never);
+    const dev = open.find((i) => i.label === "Close Developer Tools")!;
+    expect(dev).toBeDefined();
+    dev.click!({} as never, undefined, {} as never);
     expect(a.toggleDevTools).toHaveBeenCalledOnce();
   });
 

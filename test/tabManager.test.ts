@@ -432,7 +432,8 @@ describe("TabManager", () => {
       const b = tm.newTab("browser");
       const s = tm.openSettingsTab();
       const p = tm.openPasswordsTab();
-      for (const id of [w, b, s, p, 9999]) expect(tm.fileTargetOf(id)).toBeNull();
+      const h = tm.openHistoryTab();
+      for (const id of [w, b, s, p, h, 9999]) expect(tm.fileTargetOf(id)).toBeNull();
     });
   });
 
@@ -476,6 +477,48 @@ describe("TabManager", () => {
       const second = tm.openPasswordsTab();
       expect(second).not.toBe(first);
       expect(views).toHaveLength(2);
+    });
+  });
+
+  describe("history tab", () => {
+    it("opens as a local tab: titled History, active, loads no URL", () => {
+      const id = tm.openHistoryTab({ focus: true });
+      expect(views[0].loadURL).not.toHaveBeenCalled();
+      expect(views[0].focus).toHaveBeenCalled();
+      const snap = tm.getSnapshot();
+      expect(snap).toMatchObject({ activeId: id, activeKind: "history" });
+      expect(snap.tabs[0]).toMatchObject({ kind: "history", title: "History" });
+      expect(tm.findHistoryTab()).toBe(id);
+    });
+
+    it("is a singleton: a second open activates the existing tab", () => {
+      const first = tm.openHistoryTab({ focus: true });
+      const editor = tm.newTab("editor");
+      expect(tm.getSnapshot().activeId).toBe(editor);
+      expect(tm.openHistoryTab({ focus: true })).toBe(first);
+      expect(tm.getSnapshot()).toMatchObject({ activeId: first, activeKind: "history" });
+      expect(views).toHaveLength(2);
+    });
+
+    it("is not a page tab, a canvas tab or an editor theme source, and is not the Passwords tab", () => {
+      tm.newTab("editor");
+      views[0].getWebContentsId.mockReturnValue(10);
+      tm.openHistoryTab();
+      views[1].getWebContentsId.mockReturnValue(11);
+      expect(tm.isPageTab(10)).toBe(true);
+      expect(tm.isPageTab(11)).toBe(false);
+      expect(tm.isEditorTab(11)).toBe(false);
+      expect(tm.editorTabsInfo().tabs).toHaveLength(1);
+      expect(tm.findPasswordsTab()).toBeNull();
+      views[0].emitTheme("dark");
+      expect(tm.getSnapshot()).toMatchObject({ activeKind: "history", activeTheme: "dark" });
+    });
+
+    it("can be reopened after it was closed", () => {
+      const first = tm.openHistoryTab();
+      tm.closeTab(first);
+      expect(tm.findHistoryTab()).toBeNull();
+      expect(tm.openHistoryTab()).not.toBe(first);
     });
   });
 
