@@ -112,14 +112,20 @@ export interface CloseFlushPort {
 export interface CloseFlushOptions {
   /** Longest wait for the page flush. Default 3 s. */
   flushTimeoutMs?: number;
+  /** Script of the flush handshake. Default `FLUSH_SCRIPT` (canvas tabs); the agent panel passes the chat one. */
+  script?: string;
 }
 
 /** Runs the flush handshake in the page, bounded. Never rejects. */
-export async function flushPage(port: Pick<CloseFlushPort, "isDestroyed" | "runInPage">, timeoutMs = FLUSH_TIMEOUT_MS): Promise<void> {
+export async function flushPage(
+  port: Pick<CloseFlushPort, "isDestroyed" | "runInPage">,
+  timeoutMs = FLUSH_TIMEOUT_MS,
+  script = FLUSH_SCRIPT,
+): Promise<void> {
   if (port.isDestroyed()) return;
   let run: Promise<unknown>;
   try {
-    run = port.runInPage(FLUSH_SCRIPT);
+    run = port.runInPage(script);
   } catch {
     return;
   }
@@ -136,7 +142,7 @@ export function pendingCloseFlushes(): Promise<void>[] {
 export function flushThenClose(port: CloseFlushPort, opts: CloseFlushOptions = {}): Promise<void> {
   const flow = (async () => {
     try {
-      await flushPage(port, opts.flushTimeoutMs);
+      await flushPage(port, opts.flushTimeoutMs, opts.script);
     } finally {
       try {
         if (!port.isDestroyed()) port.close();

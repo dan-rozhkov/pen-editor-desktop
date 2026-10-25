@@ -93,6 +93,11 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "canvases:read", direction: "renderer->main" },
   { name: "canvases:save", direction: "renderer->main" },
   { name: "canvases:delete", direction: "renderer->main" },
+  // Chat storage (invoke/handle): only the agent panel's own page saves/reads/lists its chats under userData. See CLAUDE.md "Chat storage".
+  { name: "chats:list", direction: "renderer->main" },
+  { name: "chats:read", direction: "renderer->main" },
+  { name: "chats:save", direction: "renderer->main" },
+  { name: "chats:delete", direction: "renderer->main" },
   // Empty start "Recent" list: only the empty view lists (invoke) and opens a row (send).
   { name: "empty:recent", direction: "renderer->main" },
   { name: "empty:open", direction: "renderer->main" },
@@ -314,6 +319,22 @@ describe("requests is passive and wired through the run boundary", () => {
   it("the target drains closed-tab requests, filled on destroy and on debugger detach", () => {
     expect(src).toContain("drainClosedRequests: () => closedRequestsOf(scope).drain()");
     expect(src.match(/closedRequestsOf\(sessionId\)\.add\(requestLog\.takeFinished\(\)\)/g)).toHaveLength(2);
+  });
+});
+
+describe("chats:* handlers are process-level", () => {
+  const windowSource = stripComments(readFileSync(join(SRC, "main/window.ts"), "utf8"));
+  const closedHandler = windowSource.slice(windowSource.indexOf('win.on("closed"'));
+  it("window close does not remove them (removed on will-quit instead)", () => {
+    for (const c of ["list", "read", "save", "delete"]) {
+      expect(closedHandler).not.toContain(`"chats:${c}"`);
+      expect(windowSource).toContain(`ipcMain.removeHandler("chats:${c}")`);
+    }
+  });
+  it("the quit hold also covers agent panels", () => {
+    const indexSource = stripComments(readFileSync(join(SRC, "main/index.ts"), "utf8"));
+    expect(indexSource).toContain("hasWork: hasQuitFlushWork");
+    expect(indexSource).toContain("flushAll: flushAllForQuit");
   });
 });
 

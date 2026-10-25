@@ -3,7 +3,7 @@ import path from "node:path";
 import { app, BaseWindow, ipcMain, safeStorage, session, shell } from "electron";
 import { KEEP_RENDERING_WHEN_OCCLUDED_SWITCH } from "./agentActivity";
 import { DISPLAY_APP_NAME, STORAGE_IDENTITY_FILE, resolveEditorUrl, resolveStorageIdentity, storageIdentityFileText } from "./config";
-import { createMainWindow, flushAllCanvasTabs, hasCanvasWork, isLiveTabbar, type HistoryServices } from "./window";
+import { createMainWindow, flushAllForQuit, hasQuitFlushWork, isLiveTabbar, type HistoryServices } from "./window";
 import { createQuitFlush } from "./quitFlush";
 import { appRegistry } from "./appTargetsService";
 import { createMcpService } from "./mcp/service";
@@ -258,9 +258,10 @@ app.on("window-all-closed", () => {
 // temp-profile apps are SIGKILLed and their profile removed; the user's own apps (restarted
 // with their profile) get a detached helper that quits them and opens them again; nothing
 // of the user's is killed.
-// Canvas tabs are flushed through the page handshake (`window.penCanvasFlush`, canvasWriters.ts) before
+// Canvas tabs and agent panel chats are flushed through the page handshakes (`window.penCanvasFlush`, canvasWriters.ts;
+// `window.penChatsFlush`, chatFlush.ts) before
 // the quit goes on; the decision is the pure quitFlush.ts.
-const quitFlush = createQuitFlush({ hasWork: hasCanvasWork, flushAll: flushAllCanvasTabs, quit: () => app.quit() });
+const quitFlush = createQuitFlush({ hasWork: hasQuitFlushWork, flushAll: flushAllForQuit, quit: () => app.quit() });
 app.on("before-quit", (event) => {
   quitting = true;
   const { firstPass } = quitFlush.onBeforeQuit(event);

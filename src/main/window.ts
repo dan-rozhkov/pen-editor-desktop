@@ -73,7 +73,10 @@ import { canvasDirFor, createCanvasStore, type CanvasStore } from "./canvasStore
 import { handleCanvasDelete, handleCanvasList, handleCanvasRead, handleCanvasSave, type CanvasIpcDeps } from "./canvasIpc";
 import { changedRecentItems, loadRecentItems } from "./recentItems";
 import { notifyRecentChanged, openRecentItem, parseRecentMenuRequest, recentFor } from "./emptyOpen";
-import { canvasSenders, flushPage, flushThenClose, pendingCloseFlushes } from "./canvasWriters";
+import { CANVAS_WRITER_GRACE_MS, canvasSenders, flushPage, flushThenClose, pendingCloseFlushes } from "./canvasWriters";
+import { chatDirFor, createChatStore, type ChatStore } from "./chatStore";
+import { handleChatDelete, handleChatList, handleChatRead, handleChatSave, type ChatIpcDeps } from "./chatIpc";
+import { CHATS_FLUSH_SCRIPT, flushPanelChats, flushQuitWork, hasQuitWork } from "./chatFlush";
 import { openTraceTab } from "./traceOpen";
 import { openSettings } from "./settingsOpen";
 import { handleTraceList, handleTraceListTabs, handleTraceRead, handleTraceSave, type TraceIpcDeps } from "./traceIpc";
@@ -135,6 +138,15 @@ function getCanvasStore(): CanvasStore {
   return processCanvasStore;
 }
 
+// One chat store per PROCESS (the agent panel's chats, chatStore.ts).
+let processChatStore: ChatStore | null = null;
+function getChatStore(): ChatStore {
+  processChatStore ??= createChatStore({
+    rootDir: path.join(app.getPath("userData"), chatDirFor(isEnvValueSet(process.env.PEN_DESKTOP_URL))),
+  });
+  return processChatStore;
+}
+
 /** Where canvases, documents and traces live on disk (same roots as the stores). */
 function revealDirs(): RevealDirs {
   const userData = app.getPath("userData");
@@ -184,9 +196,28 @@ export async function flushAllCanvasTabs(): Promise<void> {
   await Promise.allSettled([...[...liveTabManagers].map((tm) => tm.flushCanvasTabs()), ...pendingCloseFlushes()]);
 }
 
-/** The flush port of an editor tab's webContents. */
-function canvasPagePort(wc: Electron.WebContents) {
+/** Agent panel webContents of the open windows (their chats are flushed on quit). */
+const livePanels = new Set<Electron.WebContents>();
+
+/** Page URL of each agent panel by webContents id; an entry is honoured only while `canvasSenders` still knows the panel (10 s grace after destroy). */
+const chatPanelUrls = new Map<number, string>();
+
+/** Flush port of a webContents (agent panel or editor tab). */
+function pagePort(wc: Electron.WebContents) {
   return { isDestroyed: () => wc.isDestroyed(), runInPage: (script: string) => wc.executeJavaScript(script, true), close: () => wc.close() };
+}
+
+/** True when the quit has to be held: a canvas tab, a closing tab or an agent panel exists. */
+export function hasQuitFlushWork(): boolean {
+  return hasQuitWork({ hasCanvasWork, panelCount: () => livePanels.size });
+}
+
+/** Flushes canvas tabs and the chats of every agent panel in parallel (bounded per page). */
+export function flushAllForQuit(): Promise<void> {
+  return flushQuitWork({
+    flushCanvasTabs: flushAllCanvasTabs,
+    flushPanels: () => Promise.allSettled([...livePanels].map((wc) => flushPanelChats(pagePort(wc)))),
+  });
 }
 
 let canvasIpcRegistered = false;
@@ -207,6 +238,34 @@ function ensureCanvasIpc(): void {
     ipcMain.removeHandler("canvases:read");
     ipcMain.removeHandler("canvases:save");
     ipcMain.removeHandler("canvases:delete");
+  });
+}
+
+let chatIpcRegistered = false;
+/** `chats:*` handlers: registered ONCE per process, like `ensureCanvasIpc` (a closing panel flushes its last save late). Removed on `will-quit`. */
+function ensureChatIpc(): void {
+  if (chatIpcRegistered) return;
+  chatIpcRegistered = true;
+  const deps: ChatIpcDeps = {
+    store: getChatStore(),
+    panelUrlOf: (id) => {
+      if (!canvasSenders.isPanel(id)) {
+        chatPanelUrls.delete(id);
+        return undefined;
+      }
+      return chatPanelUrls.get(id);
+    },
+  };
+  const from = (event: Electron.IpcMainInvokeEvent) => ({ id: event.sender.id, frameUrl: event.senderFrame?.url ?? null });
+  ipcMain.handle("chats:list", (event) => handleChatList(deps, from(event)));
+  ipcMain.handle("chats:read", (event, id: unknown) => handleChatRead(deps, from(event), id));
+  ipcMain.handle("chats:save", (event, chat: unknown) => handleChatSave(deps, from(event), chat));
+  ipcMain.handle("chats:delete", (event, id: unknown) => handleChatDelete(deps, from(event), id));
+  app.once("will-quit", () => {
+    ipcMain.removeHandler("chats:list");
+    ipcMain.removeHandler("chats:read");
+    ipcMain.removeHandler("chats:save");
+    ipcMain.removeHandler("chats:delete");
   });
 }
 
@@ -400,10 +459,17 @@ export function createMainWindow(
   });
   win.contentView.addChildView(agentPanelView);
   ensureCanvasIpc();
+  ensureChatIpc();
   {
     const panelId = agentPanelView.webContents.id;
     canvasSenders.addPanel(panelId);
-    agentPanelView.webContents.once("destroyed", () => canvasSenders.release(panelId));
+    chatPanelUrls.set(panelId, panelUrl);
+    livePanels.add(agentPanelView.webContents);
+    agentPanelView.webContents.once("destroyed", () => {
+      canvasSenders.release(panelId);
+      // Same grace as the registry (set after its timer, so it fires after the id is forgotten): a last save still finds the URL, then the entry goes.
+      setTimeout(() => chatPanelUrls.delete(panelId), CANVAS_WRITER_GRACE_MS).unref();
+    });
   }
   agentPanelView.setBackgroundColor(backgroundColorForTheme(FALLBACK_THEME));
   agentPanelView.setBorderRadius(ISLAND_RADIUS);
@@ -1578,14 +1644,14 @@ export function createMainWindow(
           win.contentView.removeChildView(view);
           if (kind === "editor") {
             // The page's own unload handlers never get its last save through: run the flush handshake first (canvasWriters.ts).
-            void flushThenClose(canvasPagePort(view.webContents));
+            void flushThenClose(pagePort(view.webContents));
           } else {
             view.webContents.close();
           }
         },
         sendMenuCommand: (id) => view.webContents.send("menu:command", id),
         sendSettingsSection: (section) => view.webContents.send("settings:section", section),
-        flushCanvas: kind === "editor" ? () => flushPage(canvasPagePort(view.webContents)) : undefined,
+        flushCanvas: kind === "editor" ? () => flushPage(pagePort(view.webContents)) : undefined,
         focus: () => view.webContents.focus(),
         onDocumentTitleChanged: (cb) => titleCallbacks.set(viewId, cb),
         // Editor tabs only correct their own opaque background here, the
@@ -3023,6 +3089,7 @@ export function createMainWindow(
   liveTabManagers.add(tabs);
   win.on("closed", () => {
     liveTabManagers.delete(tabs);
+    livePanels.delete(agentPanelView.webContents);
     stopPanelTimer();
     liveTabbarIds.delete(tabbarId);
     ipcMain.removeListener("tabbar:omnibox-show", onOmniboxShow);
@@ -3088,7 +3155,8 @@ export function createMainWindow(
     win.removeListener("blur", hideOmnibox);
     tabs.destroyAll();
     tabbarView.webContents.close();
-    agentPanelView.webContents.close();
+    // The panel's pending chat saves get through first (like a canvas tab); a quit waits for this flow too.
+    void flushThenClose(pagePort(agentPanelView.webContents), { script: CHATS_FLUSH_SCRIPT });
     emptyView.webContents.close();
     omniboxView.webContents.close();
   });

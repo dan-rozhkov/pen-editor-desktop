@@ -67,7 +67,7 @@ describe("agent panel preload", () => {
   });
 
   it("exposes version 2 with canvas, browser, docs, canvases, workflows, traces, auth and settings only", () => {
-    expect(Object.keys(exposed.penAgentPanel).sort()).toEqual(["auth", "browser", "canvas", "canvases", "docs", "settings", "traces", "version", "workflows"]);
+    expect(Object.keys(exposed.penAgentPanel).sort()).toEqual(["auth", "browser", "canvas", "canvases", "chats", "docs", "settings", "traces", "version", "workflows"]);
     expect(exposed.penAgentPanel.version).toBe(2);
   });
 
@@ -109,6 +109,19 @@ describe("agent panel preload", () => {
     expect(Object.keys(exposed.penAgentPanel.canvases)).toEqual(["list"]);
     await exposed.penAgentPanel.canvases.list();
     expect(invoke).toHaveBeenLastCalledWith("canvases:list");
+  });
+
+  it("chats has exactly list, read, save, remove, over chats:*", async () => {
+    expect(Object.keys(exposed.penAgentPanel.chats).sort()).toEqual(["list", "read", "remove", "save"]);
+    await exposed.penAgentPanel.chats.list();
+    expect(invoke).toHaveBeenLastCalledWith("chats:list");
+    await exposed.penAgentPanel.chats.read("tab-1761400000000-3");
+    expect(invoke).toHaveBeenLastCalledWith("chats:read", "tab-1761400000000-3");
+    const chat = { id: "a", title: "t", titleIsAuto: true, model: "m", updatedAt: 1, rev: 1, messages: [] };
+    await exposed.penAgentPanel.chats.save(chat);
+    expect(invoke).toHaveBeenLastCalledWith("chats:save", chat);
+    await exposed.penAgentPanel.chats.remove("a");
+    expect(invoke).toHaveBeenLastCalledWith("chats:delete", "a");
   });
 
   it("docs.open invokes doc:open with the id and returns main's reply", async () => {

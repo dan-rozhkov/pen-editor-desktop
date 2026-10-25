@@ -142,6 +142,13 @@ const canvas = {
 const canvases = {
   list: (): Promise<{ canvases: unknown[] } | { error: string }> => ipcRenderer.invoke("canvases:list"),
 };
+// Chat storage (src/main/chatStore.ts): the panel keeps its chats on disk. Main accepts it only from this panel's own page.
+const chats = {
+  list: (): Promise<{ chats: unknown[] } | { error: string }> => ipcRenderer.invoke("chats:list"),
+  read: (id: string): Promise<{ chat: unknown | null } | { error: string }> => ipcRenderer.invoke("chats:read", id),
+  save: (chat: unknown): Promise<{ ok: true; rev: number; stale?: true } | { error: string }> => ipcRenderer.invoke("chats:save", chat),
+  remove: (id: string): Promise<{ ok: true } | { error: string }> => ipcRenderer.invoke("chats:delete", id),
+};
 const docs = {
   open: (docId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("doc:open", docId),
   list: (): Promise<{ docs: unknown[] } | { error: string }> => ipcRenderer.invoke("docs:list"),
@@ -196,7 +203,7 @@ const settings = {
   open: (section?: string): Promise<{ ok: boolean }> => ipcRenderer.invoke("settings:open", section),
 };
 
-contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser, docs, canvases, workflows, traces, auth, settings });
+contextBridge.exposeInMainWorld("penAgentPanel", { version: 2, canvas, browser, docs, canvases, chats, workflows, traces, auth, settings });
 
 // Theme report for main (channel `panel:theme`): the page paints the stored editor theme as the
 // class `dark` on <html>. Initial read on DOMContentLoaded, then a MutationObserver on that class.
