@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.9.2](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.9.1...v0.9.2) (2026-10-25)
+
+
+### Features
+
+* **browser:** browsing history with address-bar suggestions and a History tab ([e8c822a](https://github.com/dan-rozhkov/pen-editor-desktop/commit/e8c822a34513187b317509864614ee67b20764ac))
+* recent canvases and documents on the empty start ([e93edeb](https://github.com/dan-rozhkov/pen-editor-desktop/commit/e93edebee5aa2801fc3194ec6a5207d22d28bfb9))
+* Reveal in Finder for canvases, documents and traces ([438cccf](https://github.com/dan-rozhkov/pen-editor-desktop/commit/438cccf420871d76d5a7db217f31dad71addda5f))
+* **traces:** list saved traces for the trace viewer ([6a786b3](https://github.com/dan-rozhkov/pen-editor-desktop/commit/6a786b3ff518035afc54afbeddee97dd69cb518c))
+
+
+### Bug Fixes
+
+* **browser:** address-bar popover URL matches the title size, footer divider edge to edge ([b8603cb](https://github.com/dan-rozhkov/pen-editor-desktop/commit/b8603cba6ebf1b618b7cbdc972b2762633ab4bcd))
+* **history:** header matches the Passwords and Settings pages, outline Clear button, 28px search ([e5e0296](https://github.com/dan-rozhkov/pen-editor-desktop/commit/e5e0296945bdd8e19842d0be44630f1c0f5c92a6))
+* **menu:** keep the menu template free of the trace store import chain ([f8d2132](https://github.com/dan-rozhkov/pen-editor-desktop/commit/f8d2132204830f466a806e79fabd559c3b90f843))
+
 ## [0.9.1](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.9.0...v0.9.1) (2026-10-23)
 
 
