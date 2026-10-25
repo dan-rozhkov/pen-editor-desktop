@@ -1,6 +1,7 @@
 import { test, expect, _electron as electron, type Page } from "@playwright/test";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { revealMenuLabel } from "../src/main/revealMenuLabel";
 
 // Reveal in Finder in a real Electron window: the File item follows the active tab (also after the
 // frontend names a new canvas with history.replaceState), the click reveals the stored file, and a
@@ -39,7 +40,8 @@ test("reveal item: disabled without a file tab, enabled after replaceState, clic
         const i = Menu.getApplicationMenu()?.getMenuItemById("reveal-active-tab");
         return i ? { label: i.label, enabled: i.enabled } : null;
       });
-    expect(await itemState()).toEqual({ label: "Reveal in Finder", enabled: false });
+    // The label is per platform: CI runs on Linux ("Show in Folder").
+    expect(await itemState()).toEqual({ label: revealMenuLabel(process.platform), enabled: false });
 
     // Record shell calls instead of opening Finder.
     await app.evaluate(({ shell }) => {
