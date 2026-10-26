@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  ERR_APP_COMMAND_UNSUPPORTED,
   APP_CONFIRM_BUTTONS,
   isBlockedNativeApp,
   APP_RESTART_BUTTONS,
@@ -576,8 +577,17 @@ describe("planAppCommand", () => {
   });
   it("refuses built-in-browser-only commands while bound", () => {
     for (const s of ["running", "gone", "pending"] as const) {
-      for (const c of ["capture", "applyFixture", "fillLogin", "startJournal", "captureCheckpoint"]) expect(planAppCommand(c, {}, s)).toBe("refuse");
+      for (const c of ["applyFixture", "fillLogin", "startJournal", "captureCheckpoint"]) expect(planAppCommand(c, {}, s)).toBe("refuse");
     }
+  });
+  it("routes capture to an Electron app, refuses it for a native handle (no DOM there)", () => {
+    expect(planAppCommand("capture", {}, "running")).toBe("route");
+    expect(planAppCommand("capture", {}, "running", { native: false })).toBe("route");
+    expect(planAppCommand("capture", {}, "running", { native: true })).toBe("refuse");
+    expect(planAppCommand("capture", {}, "gone")).toBe("gone");
+    expect(planAppCommand("capture", {}, "pending")).toBe("pending");
+    expect(planAppCommand("capture", {}, "none")).toBe("passthrough");
+    expect(errorForPlan("refuse", "capture", {})).toEqual({ error: ERR_APP_COMMAND_UNSUPPORTED });
   });
   it("lets cleanup commands through and releaseApp always releases", () => {
     for (const c of ["releaseFixture", "clearActEmulation", "stopJournal"]) expect(planAppCommand(c, {}, "running")).toBe("passthrough");
@@ -607,9 +617,15 @@ describe("routing table and launch result", () => {
   });
   it("unknown or inherited names are an error, not a call", async () => {
     const c = fakeController();
-    expect(await routeAppCommand(c, "capture", {})).toHaveProperty("error");
+    expect(await routeAppCommand(c, "constructor", {})).toHaveProperty("error");
     expect(await routeAppCommand(c, "constructor", {})).toHaveProperty("error");
     expect(await routeAppCommand(c, "toString", {})).toHaveProperty("error");
+  });
+  it("capture reaches a controller that has it; a controller without it (native) answers the stable refusal", async () => {
+    const c = Object.assign(fakeController(), { capture: vi.fn(async () => ({ html: "<p>" })) });
+    expect(await routeAppCommand(c, "capture", { a: 1 })).toEqual({ html: "<p>" });
+    expect(c.capture).toHaveBeenCalledWith({ a: 1 });
+    expect(await routeAppCommand(fakeController(), "capture", {})).toEqual({ error: ERR_APP_COMMAND_UNSUPPORTED });
   });
   it("shapes a tabs listing like an open result", () => {
     expect(shapeLaunchResult({ tabs: [{ url: "a", title: "A" }, { url: "b", title: "B", current: true }], current: 2 }, "Orca")).toMatchObject({

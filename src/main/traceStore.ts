@@ -12,7 +12,7 @@ import {
  * Local storage of browse-run traces (design: browser-agent
  * docs/specs/2026-10-20-browse-run-trace-design.md, Part 3).
  *
- * Layout: `<root>/<id>/trace.json` plus `<root>/<id>/frames/<n>.<ext>`.
+ * Layout: `<root>/<id>/trace.json` plus `<root>/<id>/frames/<n>.<ext>` and `<root>/<id>/dom/<n>.html|txt`.
  * `trace.json` is written LAST, so a directory without it is an unfinished save
  * and is never read. Pure and Electron-free: the file system is a port, so the
  * store is unit-tested under plain Node (same shape as credentialStore.ts).
@@ -26,6 +26,8 @@ export const TRACE_FILE = "trace.json";
 export const MAX_TRACES = 100;
 export const MAX_ASSETS = 160;
 export const MAX_ASSET_BYTES = 3 * 1024 * 1024;
+/** One DOM snapshot (`dom/<n>.html|txt`), decoded. Frames keep MAX_ASSET_BYTES. */
+export const MAX_DOM_BYTES = 2 * 1024 * 1024;
 export const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
 /** Cap on the whole payload (manifest + every data URL), checked before any decoding. */
 export const MAX_PAYLOAD_BYTES = 48 * 1024 * 1024;
@@ -111,7 +113,11 @@ export interface TraceStoreOptions {
 export type TraceSaveResult = { id: string } | { error: string };
 export type TraceReadResult = { trace: BrowseTrace } | { error: string };
 
-/** Options of `read`. `frames: false` skips loading the frame files: `frame.src` stays the stored asset path. */
+/**
+ * Options of `read`. `frames: false` skips loading the frame files: `frame.src` stays the stored asset path.
+ * DOM snapshots are inlined only on a full read (frames on, no `frameIds`); otherwise `doms[].src` stays the
+ * asset path too, so a partial read (the panel's `trace_read`) never carries a big blob.
+ */
 export interface TraceReadOptions {
   frames?: boolean;
   /** With frames on: inline only these frame ids; the rest keep their asset path `src`. */
@@ -140,16 +146,24 @@ export interface TraceStore {
   read(id: unknown, opts?: TraceReadOptions): Promise<TraceReadResult>;
 }
 
-const MIME_BY_EXT: Record<string, string> = { jpg: "image/jpeg", png: "image/png", webp: "image/webp" };
+const MIME_BY_EXT: Record<string, string> = {
+  jpg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  html: "text/html",
+  txt: "text/plain",
+};
 // MIME is case-insensitive (the package's splitTraceAssets matches with /i); it is lowercased before use.
-const DATA_URL = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]*={0,2})$/i;
-/** Longest header a valid asset data URL can have ("data:image/jpeg;base64,"), with slack. */
-const DATA_URL_HEADER_MAX = 40;
+// An optional `charset=utf-8` parameter is allowed (DOM assets are published as `text/...; charset=utf-8`).
+const DATA_URL = /^data:(image\/(?:jpeg|png|webp)|text\/(?:html|plain))(?:;charset=utf-?8)?;base64,([A-Za-z0-9+/]*={0,2})$/i;
+/** Longest header a valid asset data URL can have ("data:text/plain;charset=utf-8;base64,"), with slack. */
+const DATA_URL_HEADER_MAX = 60;
 /** Longest valid data URL for an asset of MAX_ASSET_BYTES. */
 const MAX_DATA_URL_CHARS = Math.ceil((MAX_ASSET_BYTES * 4) / 3) + 4 + DATA_URL_HEADER_MAX;
 
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const extOf = (assetPath: string): string => assetPath.slice(assetPath.lastIndexOf(".") + 1);
+const isDomPath = (assetPath: string): boolean => assetPath.startsWith("dom/");
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /** Decoded size of a base64 payload without decoding it. */
@@ -219,20 +233,25 @@ export function createTraceStore(opts: TraceStoreOptions): TraceStore {
       if (!BROWSE_TRACE_ASSET_PATH.test(raw.path)) return { error: `assets: invalid path ${JSON.stringify(raw.path)}` };
       if (files.has(raw.path)) return { error: `assets: duplicate path ${raw.path}` };
       const match = DATA_URL.exec(raw.dataUrl);
-      if (!match) return { error: `assets: ${raw.path} is not an image data URL` };
+      if (!match) return { error: `assets: ${raw.path} is not an image or text data URL` };
       if (MIME_BY_EXT[extOf(raw.path)] !== match[1]!.toLowerCase()) return { error: `assets: ${raw.path} does not match its type` };
-      if (base64Bytes(match[2]!) > MAX_ASSET_BYTES) return { error: `assets: ${raw.path} is too large` };
+      if (base64Bytes(match[2]!) > (isDomPath(raw.path) ? MAX_DOM_BYTES : MAX_ASSET_BYTES)) return { error: `assets: ${raw.path} is too large` };
       files.set(raw.path, Buffer.from(match[2]!, "base64"));
     }
 
-    // Every frame points at a stored asset, and every asset is used by a frame.
+    // Every frame points at a stored asset, every DOM stored as an asset path has its file, and every asset is used.
     const referenced = new Set<string>();
     for (const frame of trace.frames) {
       if (!files.has(frame.src)) return { error: `frame ${frame.id}: no asset for src` };
       referenced.add(frame.src);
     }
+    for (const dom of trace.doms ?? []) {
+      if (!BROWSE_TRACE_ASSET_PATH.test(dom.src)) continue; // a URL source needs no file
+      if (!files.has(dom.src)) return { error: `dom ${dom.id}: no asset for src` };
+      referenced.add(dom.src);
+    }
     for (const assetPath of files.keys()) {
-      if (!referenced.has(assetPath)) return { error: `assets: ${assetPath} is not referenced by a frame` };
+      if (!referenced.has(assetPath)) return { error: `assets: ${assetPath} is not referenced by a frame or dom` };
     }
 
     const dir = dirOf(trace.id);
@@ -288,7 +307,22 @@ export function createTraceStore(opts: TraceStoreOptions): TraceStore {
         if (bytes === null) return { error: `frame ${frame.id}: file is missing` };
         frames.push({ ...frame, src: `data:${MIME_BY_EXT[extOf(frame.src)]};base64,${bytes.toString("base64")}` });
       }
-      return { trace: { ...parsed.trace, frames } };
+      // DOMs: inlined only on a full read; a partial read keeps the asset path (no file I/O, no blobs).
+      let doms = parsed.trace.doms;
+      if (doms && withFrames && !only) {
+        const out = [];
+        for (const dom of doms) {
+          if (!BROWSE_TRACE_ASSET_PATH.test(dom.src)) {
+            out.push(dom); // a URL source stays as is
+            continue;
+          }
+          const bytes = await io.read(path.join(dir, dom.src));
+          if (bytes === null) return { error: `dom ${dom.id}: file is missing` };
+          out.push({ ...dom, src: `data:${MIME_BY_EXT[extOf(dom.src)]};base64,${bytes.toString("base64")}` });
+        }
+        doms = out;
+      }
+      return { trace: { ...parsed.trace, frames, ...(doms ? { doms } : {}) } };
     } catch (err) {
       return { error: `could not read trace: ${message(err)}` };
     }

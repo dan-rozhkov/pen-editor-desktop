@@ -2306,7 +2306,9 @@ export function createMainWindow(
     const parsedSession = parseSessionId(payload);
     if (!parsedSession.ok) return { error: parsedSession.error };
     const sessionId = parsedSession.id;
-    const appPlan = planAppCommand(payload.command, payload.args, appRegistry.state(appKey(sender, sessionId)));
+    const appPlan = planAppCommand(payload.command, payload.args, appRegistry.state(appKey(sender, sessionId)), {
+      native: appRegistry.get(appKey(sender, sessionId))?.native === true,
+    });
     if (appPlan !== "passthrough") return await runAppCommand(appPlan, payload as Record<string, unknown> & { command: string }, sender, sessionId);
     if (payload.command === "closeSession") {
       if (sessionId === undefined) return { error: ERR_INVALID_SESSION_ID };

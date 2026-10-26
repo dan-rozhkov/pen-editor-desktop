@@ -4,6 +4,7 @@ import {
   createTraceStore,
   MAX_ASSET_BYTES,
   MAX_ASSETS,
+  MAX_DOM_BYTES,
   MAX_MANIFEST_BYTES,
   type TraceFs,
 } from "../src/main/traceStore";
@@ -415,5 +416,90 @@ describe("traceStore.list", () => {
     };
     const r = await createTraceStore({ rootDir: ROOT, fs: io }).list();
     expect(r).toEqual({ error: "could not list traces: EIO" });
+  });
+});
+
+describe("traceStore DOM assets", () => {
+  const b64 = (t: string) => Buffer.from(t, "utf8").toString("base64");
+  const HTML = `data:text/html;base64,${b64("<p>héllo</p>")}`;
+  const TXT = `data:text/plain;charset=utf-8;base64,${b64("button [1] Pay")}`;
+  const withDoms = (id = "t1") => ({
+    ...manifest(id),
+    doms: [
+      { id: 0, at: 1, stepIndex: 0, kind: "html", src: "dom/0.html", bytes: 12 },
+      { id: 1, at: 2, stepIndex: 0, kind: "ax", src: "dom/1.txt", bytes: 14 },
+    ],
+  });
+  const assets = (over: Record<string, string> = {}) => [
+    { path: "frames/0.jpg", dataUrl: JPG },
+    { path: "dom/0.html", dataUrl: over["dom/0.html"] ?? HTML },
+    { path: "dom/1.txt", dataUrl: over["dom/1.txt"] ?? TXT },
+  ];
+
+  it("round-trips html and txt (charset param allowed): files written, read inlines the right MIME", async () => {
+    const { io, store: s } = store();
+    expect(await s.save({ manifest: withDoms(), assets: assets() })).toEqual({ id: "t1" });
+    expect(io.files.get(`${ROOT}/t1/dom/0.html`)!.toString()).toBe("<p>héllo</p>");
+    expect(io.files.get(`${ROOT}/t1/dom/1.txt`)!.toString()).toBe("button [1] Pay");
+    const r = await s.read("t1");
+    if (!("trace" in r)) throw new Error("expected a trace");
+    expect(r.trace.doms!.map((d) => d.src)).toEqual([`data:text/html;base64,${b64("<p>héllo</p>")}`, `data:text/plain;base64,${b64("button [1] Pay")}`]);
+  });
+
+  it("rejects a MIME that does not match the extension, and an image under dom/", async () => {
+    const { store: s } = store();
+    expect(await s.save({ manifest: withDoms(), assets: assets({ "dom/0.html": `data:text/plain;base64,${b64("x")}` }) })).toHaveProperty("error");
+    expect(await s.save({ manifest: withDoms(), assets: assets({ "dom/1.txt": HTML }) })).toHaveProperty("error");
+    expect(await s.save({ manifest: withDoms(), assets: assets({ "dom/0.html": PNG }) })).toHaveProperty("error");
+  });
+
+  it("caps one DOM asset at 2 MB decoded (frames keep 3 MB)", async () => {
+    const { io, store: s } = store();
+    const big = `data:text/html;base64,${Buffer.alloc(MAX_DOM_BYTES + 1, 0x61).toString("base64")}`;
+    expect(await s.save({ manifest: withDoms(), assets: assets({ "dom/0.html": big }) })).toHaveProperty("error");
+    expect(io.files.size).toBe(0);
+    const ok = `data:text/html;base64,${Buffer.alloc(MAX_DOM_BYTES, 0x61).toString("base64")}`;
+    expect(await s.save({ manifest: withDoms(), assets: assets({ "dom/0.html": ok }) })).toEqual({ id: "t1" });
+  });
+
+  it("requires a file for a dom stored as an asset path, and a dom for every dom file", async () => {
+    const { store: s } = store();
+    expect(await s.save({ manifest: withDoms(), assets: assets().slice(0, 2) })).toHaveProperty("error");
+    expect(await s.save({ manifest: manifest(), assets: assets() })).toHaveProperty("error");
+  });
+
+  it("rejects dom paths that escape or have another extension", async () => {
+    const { store: s } = store();
+    for (const p of ["dom/../x.html", "dom/0.js", "dom/a.html", "dom/0.html/../1.html", "doms/0.html"]) {
+      expect(await s.save({ manifest: withDoms(), assets: [...assets(), { path: p, dataUrl: HTML }] }), p).toHaveProperty("error");
+    }
+  });
+
+  it("a partial read keeps dom asset paths and reads no dom file; only a full read inlines them", async () => {
+    const { io, store: s } = store();
+    await s.save({ manifest: withDoms(), assets: assets() });
+    const reads: string[] = [];
+    const orig = io.read;
+    io.read = async (p) => {
+      reads.push(p);
+      return orig(p);
+    };
+    for (const opts of [{ frames: false }, { frames: true, frameIds: [0] }]) {
+      reads.length = 0;
+      const r = await s.read("t1", opts);
+      if (!("trace" in r)) throw new Error("expected a trace");
+      expect(r.trace.doms!.map((d) => d.src)).toEqual(["dom/0.html", "dom/1.txt"]);
+      expect(reads.some((p) => p.includes("/dom/"))).toBe(false);
+    }
+    const full = await s.read("t1");
+    if (!("trace" in full)) throw new Error("expected a trace");
+    expect(full.trace.doms![0]!.src.startsWith("data:text/html;base64,")).toBe(true);
+  });
+
+  it("reports a missing dom file on a full read", async () => {
+    const { io, store: s } = store();
+    await s.save({ manifest: withDoms(), assets: assets() });
+    io.files.delete(`${ROOT}/t1/dom/1.txt`);
+    expect(await s.read("t1")).toHaveProperty("error");
   });
 });

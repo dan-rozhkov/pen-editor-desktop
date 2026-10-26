@@ -741,8 +741,10 @@ export const ownedBySession = (senderId: number, sessionId: string) => (key: str
 
 export type AppCommandPlan = "launch" | "route" | "refuse" | "release" | "passthrough" | "pending" | "gone";
 
-const ROUTED = new Set(["open", "act", "snapshot", "read", "screenshot", "tabs", "findImages", "perform", "assert", "requests"]);
-const REFUSED = new Set(["capture", "applyFixture", "fillLogin", "startJournal", "captureCheckpoint"]);
+const ROUTED = new Set(["open", "act", "snapshot", "read", "screenshot", "tabs", "findImages", "perform", "assert", "requests", "capture"]);
+// `capture` is routed for Electron apps (a real DOM, for the trace recorder) and refused for native handles
+// (see `planAppCommand`'s `opts.native`): a native app has no DOM, the package falls back to `snapshot`.
+const REFUSED = new Set(["applyFixture", "fillLogin", "startJournal", "captureCheckpoint"]);
 
 export const ERR_APP_COMMAND_UNSUPPORTED =
   "This command is only available in the built-in browser, not in a desktop app.";
@@ -756,13 +758,15 @@ export const ERR_APP_PENDING = "The desktop app is still starting (waiting for t
  * session/owner release, so a quit app never silently falls back to the
  * built-in browser.
  */
-export function planAppCommand(command: string, args: unknown, state: AppState): AppCommandPlan {
+export function planAppCommand(command: string, args: unknown, state: AppState, opts: { native?: boolean } = {}): AppCommandPlan {
   if (command === "releaseApp") return "release";
   if (command === "open" && typeof args === "object" && args !== null && Object.hasOwn(args, "app")) {
     const app = (args as { app?: unknown }).app;
     return typeof app === "string" && app.trim() !== "" ? "launch" : "refuse";
   }
   if (state === "none") return "passthrough";
+  // A native (computer use) handle has no DOM: `capture` keeps the old refusal there.
+  if (command === "capture" && opts.native === true && state === "running") return "refuse";
   if (ROUTED.has(command)) return state === "pending" ? "pending" : state === "gone" ? "gone" : "route";
   if (REFUSED.has(command)) return "refuse";
   return "passthrough";
@@ -792,6 +796,8 @@ export interface AppController {
   screenshot(args: unknown): Promise<unknown>;
   tabs(args: unknown): Promise<unknown>;
   requests(): Promise<unknown>;
+  /** Page DOM for the trace recorder. Absent on the native (accessibility) controller: no DOM there. */
+  capture?(args: unknown): Promise<unknown>;
 }
 
 /** The one routing table: command name to controller method. */
@@ -806,6 +812,7 @@ export const APP_ROUTES: Record<string, (c: AppController, args: unknown) => Pro
   screenshot: (c, a) => c.screenshot(a),
   tabs: (c, a) => c.tabs(a),
   requests: (c) => c.requests(),
+  capture: (c, a) => (c.capture ? c.capture(a) : Promise.resolve({ error: ERR_APP_COMMAND_UNSUPPORTED })),
 };
 
 export function routeAppCommand(c: AppController, command: string, args: unknown): Promise<unknown> {
