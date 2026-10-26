@@ -29,6 +29,14 @@
   --agent-cursor-rim: #ffffff;
   --agent-cursor-idle: light-dark(#c4c4c4, #5e5e5e);
   --agent-cursor-idle-rim: light-dark(#ffffff, #2a2a2a);
+  /* Popup (menu-surface) look shared with the frontend; used by the omnibox card. */
+  --menu: light-dark(oklch(0.992 0 0), oklch(0.235 0 0));
+  --menu-border: light-dark(oklch(0 0 0 / 0.08), oklch(1 0 0 / 0.1));
+  --menu-highlight: light-dark(oklch(0.955 0 0), oklch(1 0 0 / 0.08));
+  --menu-muted-foreground: light-dark(oklch(0.52 0 0), oklch(0.7 0 0));
+  --menu-separator: light-dark(oklch(0 0 0 / 0.07), oklch(1 0 0 / 0.08));
+  /* Desktop-only: stronger hover for controls sitting on a highlighted row. */
+  --menu-highlight-strong: light-dark(oklch(0.92 0 0), oklch(1 0 0 / 0.14));
 }
 
 :root[data-theme="light"] {
