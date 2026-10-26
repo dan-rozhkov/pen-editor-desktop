@@ -56,7 +56,9 @@ body {
   border-radius: var(--btn-radius);
 }
 .row:hover, .row.selected { background: var(--btn-hover); }
-.glyph { flex: none; width: 16px; height: 16px; color: var(--text); fill: currentColor; }
+.glyph { flex: none; width: 16px; height: 16px; color: var(--text); }
+/* Pen-set icons keep a constant screen stroke at every size (the frontend's index.css rule; glyphs.ts). */
+[data-pen-icon] * { vector-effect: non-scaling-stroke; }
 .title {
   flex: 0 1 auto;
   min-width: 0;

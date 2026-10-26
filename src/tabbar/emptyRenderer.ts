@@ -37,7 +37,7 @@
 
   // ---- Recent list ----
   // Glyphs: glyphs.ts (plain script loaded before this one).
-  const GLYPHS = { canvas: PHOSPHOR_PAINT_BRUSH, doc: PHOSPHOR_FILE_TEXT };
+  const GLYPHS = { canvas: "PaintBrush", doc: "FileText" };
   const VISIBLE_ROWS = 8;
   const recent = document.getElementById("recent")!;
   const recentList = document.getElementById("recent-list")!;
@@ -45,17 +45,7 @@
   let items: { kind: "canvas" | "doc"; id: string; title: string; updatedAt: number }[] = [];
   let expanded = false;
 
-  const makeIcon = (kind: "canvas" | "doc") => {
-    const ns = "http://www.w3.org/2000/svg";
-    const svgEl = document.createElementNS(ns, "svg");
-    svgEl.setAttribute("class", "recent-icon");
-    svgEl.setAttribute("viewBox", "0 0 256 256");
-    svgEl.setAttribute("aria-hidden", "true");
-    const pathEl = document.createElementNS(ns, "path");
-    pathEl.setAttribute("d", GLYPHS[kind]);
-    svgEl.appendChild(pathEl);
-    return svgEl;
-  };
+  const makeIcon = (kind: "canvas" | "doc") => penIcon(GLYPHS[kind], "recent-icon");
   const span = (cls: string, text: string) => {
     const el = document.createElement("span");
     el.className = cls;

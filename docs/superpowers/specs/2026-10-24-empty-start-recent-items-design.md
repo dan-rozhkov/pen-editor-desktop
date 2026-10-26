@@ -55,7 +55,7 @@ metadata on the right, keyboard reachable.
 
 - Below the three start cards: a section heading "Recent", then up to 8 rows,
   then "Show all (N)" when there are more. No section at all when nothing is stored.
-- Row: 36 px high, Phosphor light icon 16 px (PaintBrush = canvas, FileText = document,
+- Row: 36 px high, pen-set icon 16 px (was Phosphor light) (PaintBrush = canvas, FileText = document,
   the same glyphs as the tab bar), title (one line, ellipsis, "Untitled" fallback),
   a muted kind label, and a right-aligned relative time ("just now", "5 min ago",
   "3 h ago", "yesterday", "12 Oct") in tabular figures. Hover = `--btn-hover`, focus = the

@@ -127,10 +127,9 @@ test("the window has a left /agent panel; tabs still work", async () => {
   // Every tab has a leading icon (paintbrush for editor tabs, drawn as an inline svg, no favicon image).
   await expect(tabbarPage.locator(".tab .tab-icon")).toHaveCount(2);
   await expect(tabbarPage.locator('.tab .tab-icon[data-icon="editor"]')).toHaveCount(2);
-  await expect(tabbarPage.locator(".tab .tab-icon svg.glyph path")).toHaveCount(2);
+  await expect(tabbarPage.locator('.tab .tab-icon svg.glyph[data-pen-icon="PaintBrush"]')).toHaveCount(2);
   await expect(tabbarPage.locator(".tab .tab-icon img")).toHaveCount(0);
-  // A browser tab (the agent is not driving it) renders the globe glyph, a different path, and no image.
-  const brushPath = await tabbarPage.locator('.tab .tab-icon[data-icon="editor"] path').first().getAttribute("d");
+  // A browser tab (the agent is not driving it) renders the globe glyph, a different pen-set icon, and no image.
   await app.evaluate(({ Menu }) => {
     const find = (items: Electron.MenuItem[]): Electron.MenuItem | undefined => {
       for (const it of items) {
@@ -145,8 +144,7 @@ test("the window has a left /agent panel; tabs still work", async () => {
   await expect(tabbarPage.locator(".tab")).toHaveCount(3);
   const globe = tabbarPage.locator('.tab .tab-icon[data-icon="browser"]');
   await expect(globe).toHaveCount(1);
-  await expect(globe.locator("svg.glyph path")).toHaveCount(1);
-  expect(await globe.locator("path").getAttribute("d")).not.toBe(brushPath);
+  await expect(globe.locator('svg.glyph[data-pen-icon="Globe"]')).toHaveCount(1);
   await expect(tabbarPage.locator(".tab .tab-icon img")).toHaveCount(0);
   // The new tab is a canvas tab too.
   await expect

@@ -458,9 +458,11 @@ body {
   flex: none;
   width: 16px;
   height: 16px;
-  fill: currentColor;
   color: var(--text);
 }
+
+/* Pen-set icons keep a constant screen stroke at every size (the frontend's index.css rule; glyphs.ts). */
+[data-pen-icon] * { vector-effect: non-scaling-stroke; }
 
 .recent-title {
   flex: 1 1 auto;

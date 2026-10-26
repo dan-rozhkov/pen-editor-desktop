@@ -210,4 +210,8 @@ body {
 }
 :is(.tab, .tab-ghost).active .tab-icon { color: var(--text-active); }
 .tab-icon .glyph { width: 16px; height: 16px; }
+/* Pen-set icons keep a constant screen stroke at every size (the frontend's index.css rule; glyphs.ts). */
+[data-pen-icon] * { vector-effect: non-scaling-stroke; }
+/* Dot glyphs have no stroke for `bold` to thicken; grow the dots instead (the frontend's index.css rule). */
+[data-pen-icon^="Dots"][data-weight="bold"] circle { r: 1.35px; }
 

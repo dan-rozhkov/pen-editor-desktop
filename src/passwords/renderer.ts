@@ -79,15 +79,11 @@
     return node;
   }
 
-  function icon(id: string): SVGSVGElement {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("class", "icon");
-    svg.setAttribute("aria-hidden", "true");
-    const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
-    use.setAttribute("href", "#" + id);
-    svg.appendChild(use);
-    return svg;
+  // Pen-set icons (glyphs.ts, loaded first). Static ones in passwords.html are data-pen-slot spans.
+  function icon(name: string, weight: "regular" | "fill" = "regular"): SVGSVGElement {
+    return penIcon(name, "icon", weight);
   }
+  penMountSlots();
 
   function button(label: string, cls: string, onClick: () => void, iconId?: string): HTMLButtonElement {
     const b = el("button", cls);
@@ -100,10 +96,10 @@
 
   // Site icon: the cached favicon through <img> (never inlined, even an SVG;
   // accepted only as an allowed image data: URL, which main checks too and the
-  // CSP allows), else the Phosphor globe: "fill" weight on the selected row
+  // CSP allows), else the pen-set globe: "fill" weight on the selected row
   // like SettingsNav's active item, regular otherwise. Used by the list rows and the hero tile.
   function siteIcon(iconUrl?: string, filled = false, imgClass = "row-icon"): Element {
-    const globe = () => icon(filled ? "i-globe-fill" : "i-globe");
+    const globe = () => icon("Globe", filled ? "fill" : "regular");
     if (iconUrl && helpers.isIconDataUrl(iconUrl)) {
       const img = el("img", imgClass);
       img.alt = "";
@@ -167,7 +163,7 @@
       void runAndRefresh(api.removeNever(host), "Could not remove the site.");
     });
     remove.setAttribute("aria-label", "Remove " + host + " from the never list");
-    row.append(icon("i-globe"), el("span", "row-title", host), remove);
+    row.append(icon("Globe"), el("span", "row-title", host), remove);
     return row;
   }
 
@@ -207,7 +203,7 @@
   function renderEmptyDetail(): void {
     const box = el("div", "detail-empty");
     const glyph = el("div", "empty-glyph");
-    glyph.appendChild(icon("i-key"));
+    glyph.appendChild(icon("Key"));
     box.appendChild(glyph);
     if (section === "never") {
       box.append(
@@ -219,7 +215,7 @@
         el("p", "empty-title", "Your logins live here"),
         el("p", "empty-text", "The agent can sign in for you without ever seeing a password."),
       );
-      box.appendChild(button("Add login", "btn btn-accent", startAdd, "i-plus"));
+      box.appendChild(button("Add login", "btn btn-accent", startAdd, "Plus"));
     }
     detailEl.replaceChildren(box);
   }
@@ -239,16 +235,16 @@
         void runAndRefresh(api.remove(entry.id), "Could not delete the login.", () => {
           confirmDelete = false;
         });
-      }, "i-trash");
+      }, "Trash");
       actions.appendChild(del);
       requestAnimationFrame(() => del.focus());
     } else {
       actions.append(
-        button("Edit", "btn btn-outline", () => startEdit(entry), "i-edit"),
+        button("Edit", "btn btn-outline", () => startEdit(entry), "PencilSimple"),
         button("Delete", "btn btn-outline", () => {
           confirmDelete = true;
           renderDetail();
-        }, "i-trash"),
+        }, "Trash"),
       );
     }
 

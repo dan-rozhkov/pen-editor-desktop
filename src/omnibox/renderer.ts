@@ -13,7 +13,6 @@
       openHistory(): void;
     };
   }).penOmnibox;
-  const SVG_NS = "http://www.w3.org/2000/svg";
   const card = document.getElementById("card")!;
 
   /** Host + path without the scheme and a leading "www."; the bare root path is dropped. */
@@ -53,14 +52,7 @@
   }
 
   function globe(): SVGSVGElement {
-    const el = document.createElementNS(SVG_NS, "svg");
-    el.setAttribute("class", "glyph");
-    el.setAttribute("viewBox", "0 0 256 256");
-    el.setAttribute("aria-hidden", "true");
-    const path = document.createElementNS(SVG_NS, "path");
-    path.setAttribute("d", PHOSPHOR_GLOBE);
-    el.appendChild(path);
-    return el;
+    return penIcon("Globe", "glyph");
   }
 
   function div(cls: string, text?: string): HTMLDivElement {

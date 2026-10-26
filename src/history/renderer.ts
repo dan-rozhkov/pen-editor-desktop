@@ -56,15 +56,11 @@
     return node;
   }
 
-  function icon(id: string, cls = ""): SVGSVGElement {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("class", cls ? "icon " + cls : "icon");
-    svg.setAttribute("aria-hidden", "true");
-    const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
-    use.setAttribute("href", "#" + id);
-    svg.appendChild(use);
-    return svg;
+  // Pen-set icons (glyphs.ts, loaded first). Static ones in history.html are data-pen-slot spans.
+  function icon(name: string, cls = ""): SVGSVGElement {
+    return penIcon(name, cls ? "icon " + cls : "icon");
   }
+  penMountSlots();
 
   // ---- formatting ----
 
@@ -120,7 +116,7 @@
     main.type = "button";
     main.dataset.url = entry.url;
     main.appendChild(el("span", "row-time", timeLabel(entry.lastVisitedAt)));
-    main.appendChild(icon("i-globe", "row-glyph"));
+    main.appendChild(icon("Globe", "row-glyph"));
     main.appendChild(el("span", "row-title", entry.title || hostOf(entry.url)));
     main.appendChild(el("span", "row-url", shortUrl(entry.url)));
     main.title = entry.url;
@@ -132,7 +128,7 @@
     remove.tabIndex = -1; // Delete / Backspace on the row does the same from the keyboard
     remove.setAttribute("aria-label", "Remove from history");
     remove.title = "Remove from history";
-    remove.appendChild(icon("i-x"));
+    remove.appendChild(icon("X"));
     remove.addEventListener("click", () => removeEntry(entry.url, main));
     row.appendChild(remove);
     return row;

@@ -43,7 +43,7 @@ Passwords tab).
 - No per-visit log: one entry per URL (`visitCount`, `lastVisitedAt`). The
   History tab groups by `lastVisitedAt`.
 - No favicons in v1 (the favicon cache keeps icons only for origins with a
-  saved login). Rows show a neutral Phosphor Globe glyph.
+  saved login). Rows show a neutral pen-set Globe glyph.
 - No search-engine suggestions.
 
 ## Anti-goals
@@ -125,7 +125,7 @@ header. Footer row: "Show all history" + "⌘Y" hint. No rows -> popup hidden.
 ### History tab
 
 - `TabKind` `"history"`, singleton like Passwords (`openHistoryTab`,
-  `findHistoryTab`), title "History", tab icon Phosphor "ClockCounterClockwise"
+  `findHistoryTab`), title "History", tab icon pen-set "ClockCounterClockwise"
   (light). Not a page tab, not an editor theme source, no file target, no
   address row.
 - Local page `src/history/` (plain-script renderer, CSP `default-src 'none'`,
