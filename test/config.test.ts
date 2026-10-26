@@ -288,7 +288,7 @@ describe("resolveSettingsTabUrl", () => {
 
 describe("isValidSettingsSection", () => {
   it("accepts exactly the six section ids", () => {
-    expect([...SETTINGS_SECTIONS]).toEqual(["account", "appearance", "canvas", "agent", "browser", "integrations", "shortcuts"]);
+    expect([...SETTINGS_SECTIONS]).toEqual(["account", "appearance", "canvas", "agent", "memory", "skills", "browser", "integrations", "privacy", "advanced", "shortcuts"]);
     for (const id of SETTINGS_SECTIONS) expect(isValidSettingsSection(id)).toBe(true);
     for (const bad of ["", "other", "constructor", 1, undefined, null]) expect(isValidSettingsSection(bad)).toBe(false);
   });

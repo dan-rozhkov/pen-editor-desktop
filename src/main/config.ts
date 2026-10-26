@@ -227,7 +227,7 @@ export function workflowIdOfUrl(rawUrl: string): string | null {
 }
 
 /** The section ids of the frontend's `/settings` page (`?section=<id>`). */
-export const SETTINGS_SECTIONS = ["account", "appearance", "canvas", "agent", "browser", "integrations", "shortcuts"] as const;
+export const SETTINGS_SECTIONS = ["account", "appearance", "canvas", "agent", "memory", "skills", "browser", "integrations", "privacy", "advanced", "shortcuts"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 /** True for one of the settings section ids; anything else (also non-strings) is not. */

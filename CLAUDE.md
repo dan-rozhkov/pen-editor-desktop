@@ -250,8 +250,8 @@ pen icon "FileText". Tests: `docOpen.test.ts`, `tabManager.test.ts` ("doc tabs")
 
 **Settings tab (`TabKind` `"settings"`).** A fifth tab kind: the frontend's `/settings` page, a SINGLETON. URL
 `resolveSettingsTabUrl(editorUrl, section?)` (`config.ts`) = `/settings?chat=off[&section=<id>]` (the last `app` segment becomes `settings`;
-other params kept, `chat`/`section` replaced; `section` must be one of `SETTINGS_SECTIONS` = account, appearance, canvas, agent, browser,
-integrations, shortcuts, else it is dropped). Handled like a doc tab: default session (no `partition`, so its localStorage is the
+other params kept, `chat`/`section` replaced; `section` must be one of `SETTINGS_SECTIONS` = account, appearance, canvas, agent, memory,
+skills, browser, integrations, privacy, advanced, shortcuts (mirror of pen-editor `src/lib/openSettings.ts`), else it is dropped). Handled like a doc tab: default session (no `partition`, so its localStorage is the
 editor's and the panel's), `preload/tab.ts`, same origin clamp and offline fallback, title follows `document.title` (fallback "Settings"),
 takes part in theme sync, not a canvas tab. `TabManager.openSettingsTab(section?, {focus})` opens it or activates the existing one (a valid
 `section` is sent to the existing tab over **`settings:section`** (main->renderer, payload = the section id; page side `window.penDesktop.settings.onSection(cb)` returns an unsubscribe) - the tab is never reloaded, so in-page state survives). **`settings:open`** (invoke, `section?` -> `{ok: boolean}`, logic in `src/main/settingsOpen.ts`): from the agent
