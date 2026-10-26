@@ -69,6 +69,8 @@ export function createFailedRequestRecorder(): FailedRequestRecorder {
         const errorText = typeof p.errorText === "string" ? p.errorText : "failed";
         // Cancelled by the page itself (navigation away, aborted fetch): not a failure.
         if (p.canceled === true) return;
+        // Blocked by us (ad and tracker blocking): intended, not a failure of the page.
+        if (errorText === "net::ERR_BLOCKED_BY_CLIENT") return;
         const url = redactUrl(known.url);
         if (url) push(known.method, errorText, url);
         return;

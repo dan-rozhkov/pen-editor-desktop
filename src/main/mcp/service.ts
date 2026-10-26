@@ -39,6 +39,9 @@ import {
 } from "./dispatcher";
 import type { ToolManifestEntry } from "./jsonRpc";
 import { ensureEditorTab, needsOnDemandTab, ON_DEMAND_TAB_TIMEOUT_MS } from "./onDemandTab";
+import type { BrowserBridge } from "@sideform/browser-agent/loop";
+import { BrowserHostRegistry } from "./browserHosts";
+import { BROWSER_OFF_MESSAGE, NO_WINDOW_MESSAGE, isBrowseMcpTool, runBrowseMcpTool } from "./browserTools";
 
 export type { McpStatus };
 
@@ -105,6 +108,11 @@ export interface McpServiceDeps {
   log: WarnLogger;
   /** How long a call waits for an on-demand canvas tab to register (default 20 s). */
   onDemandTabTimeoutMs?: number;
+  /**
+   * The Settings > Browser switch `mcpBrowser`, read on every browse tool call. Absent = closed
+   * (the browser is never driven without an explicit yes).
+   */
+  isBrowserAllowed?: () => boolean;
 }
 
 function defaultLogger(): WarnLogger {
@@ -222,12 +230,26 @@ export class McpService implements TabRegistry {
   private openEditorTab: (() => void) | null = null;
   private onDemandInFlight: Promise<boolean> | null = null;
   private readonly registrationListeners = new Set<() => void>();
+  private readonly browserHosts = new BrowserHostRegistry();
 
   constructor(private readonly deps: McpServiceDeps) {}
 
   /** window.ts (agent layout): the opener for calls that arrive with no editor tab; null removes it. */
   setOnDemandTabOpener(open: (() => void) | null): void {
     this.openEditorTab = open;
+  }
+
+  /**
+   * window.ts: a window offers its built-in browser to the `browse_*` tools. The newest host counts as
+   * active. Returns the unregister function (call it when the window closes).
+   */
+  registerBrowserHost(key: string | number, bridge: BrowserBridge): () => void {
+    return this.browserHosts.register(key, bridge);
+  }
+
+  /** window.ts: the window got focus, so `browse_*` calls go to it from now on. */
+  markBrowserHostActive(key: string | number): void {
+    this.browserHosts.markActive(key);
   }
 
   /**
@@ -353,6 +375,15 @@ export class McpService implements TabRegistry {
    * diverge into two different id spaces by construction.
    */
   private async callTool(tool: string, args: Record<string, unknown>): Promise<ToolCallResult> {
+    // The built-in browser: no editor tab involved, so no on-demand tab either.
+    if (isBrowseMcpTool(tool)) {
+      if (this.deps.isBrowserAllowed?.() !== true) {
+        return { content: [{ type: "text", text: BROWSER_OFF_MESSAGE }], isError: true };
+      }
+      const host = this.browserHosts.current();
+      if (!host) return { content: [{ type: "text", text: NO_WINDOW_MESSAGE }], isError: true };
+      return runBrowseMcpTool(host, tool, args);
+    }
     const { tabId, ...rest } = args;
     const requestedTabId = typeof tabId === "number" ? tabId : undefined;
     // Agent layout: a window with zero tabs opens a canvas tab in the background

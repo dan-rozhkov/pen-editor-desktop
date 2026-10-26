@@ -50,6 +50,13 @@ export function resolveUserDataDir(env: NodeJS.ProcessEnv): string | undefined {
   return isEnvValueSet(raw) ? (raw as string).trim() : undefined;
 }
 
+/** `PEN_DESKTOP_NO_ADBLOCK=1` skips loading the ad-block engine (no network, e2e). Matches 1/true/on/yes. */
+export function isAdBlockDisabledByEnv(env: NodeJS.ProcessEnv): boolean {
+  const raw = env.PEN_DESKTOP_NO_ADBLOCK;
+  if (!isEnvValueSet(raw)) return false;
+  return ["1", "true", "on", "yes"].includes((raw as string).trim().toLowerCase());
+}
+
 /** The product name shown to the user. Applied with `app.setName` AFTER ready. */
 export const DISPLAY_APP_NAME = "Sideform Desktop";
 /** The name the app had before the rename. Its userData directory
@@ -278,6 +285,19 @@ export function isDocPageOn(rawUrl: string | undefined, editorOrigin: string): b
   if (rawUrl === undefined) return false;
   try {
     return new URL(rawUrl).origin === editorOrigin && isDocPageUrl(rawUrl);
+  } catch {
+    return false;
+  }
+}
+
+/** True when the URL is the frontend's settings page ON the editor's origin (last path segment `settings`). */
+export function isSettingsPageOn(rawUrl: string | undefined, editorOrigin: string): boolean {
+  if (rawUrl === undefined) return false;
+  try {
+    const u = new URL(rawUrl);
+    if (u.origin !== editorOrigin) return false;
+    const segments = u.pathname.replace(/\/+$/, "").split("/");
+    return segments[segments.length - 1] === "settings";
   } catch {
     return false;
   }

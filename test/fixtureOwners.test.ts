@@ -74,3 +74,45 @@ describe("FixtureOwners", () => {
     expect(o.takeOwnedBy(1)).toEqual({ token: "c" });
   });
 });
+
+describe("FixtureOwners.isActive", () => {
+  it("is true from apply start until a failure, release or owner takeover", () => {
+    const o = new FixtureOwners();
+    expect(o.isActive()).toBe(false);
+    const t1 = o.beginApply(1);
+    expect(o.isActive()).toBe(true);
+    o.finishApply(t1, 1, { ok: false });
+    expect(o.isActive()).toBe(false);
+    const t2 = o.beginApply(1);
+    o.finishApply(t2, 1, { ok: true, fixtureToken: "a" });
+    expect(o.isActive()).toBe(true);
+    o.released("a");
+    expect(o.isActive()).toBe(false);
+    const t3 = o.beginApply(2);
+    o.finishApply(t3, 2, { ok: true, fixtureToken: "b" });
+    o.takeOwnedBy(2);
+    expect(o.isActive()).toBe(false);
+  });
+});
+
+describe("FixtureOwners.activeSince", () => {
+  it("is the start of the apply, kept when it finishes, null when released", () => {
+    let now = 1000;
+    const o = new FixtureOwners(() => now);
+    expect(o.activeSince()).toBeNull();
+    const t = o.beginApply(1);
+    expect(o.activeSince()).toBe(1000);
+    now = 5000;
+    o.finishApply(t, 1, ok("a"));
+    expect(o.activeSince()).toBe(1000);
+    now = 6000;
+    o.beginApply(2);
+    expect(o.activeSince()).toBe(6000);
+  });
+  it("is null after the owner is taken", () => {
+    const o = new FixtureOwners(() => 7);
+    o.finishApply(o.beginApply(1), 1, ok("a"));
+    o.takeOwnedBy(1);
+    expect(o.activeSince()).toBeNull();
+  });
+});

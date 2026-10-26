@@ -263,6 +263,13 @@ const logins = {
     ipcRenderer.invoke("logins:add", payload),
 };
 
+// Built-in browser switches for the Settings page. Always present (main is the trust boundary): main answers only the
+// top frame of a Settings tab on the settings page, everything else gets `{ error: "Not allowed." }`.
+const browserSettings = {
+  get: (): Promise<unknown> => ipcRenderer.invoke("browser-settings:get"),
+  set: (patch: { adBlock?: boolean; mcpBrowser?: boolean }): Promise<unknown> => ipcRenderer.invoke("browser-settings:set", patch),
+};
+
 // Desktop sign-in (src/main/desktopAuth.ts): `signIn` asks main to open the system browser;
 // the token comes back as `auth:token` once the user finishes there. Main checks the sender.
 let listeners = 0;
@@ -303,6 +310,7 @@ const api = {
   traces,
   auth,
   logins,
+  browserSettings,
   // Opens (or activates) the Settings tab; `section` is validated in main.
   settings: {
     open: (section?: string): Promise<{ ok: boolean }> => ipcRenderer.invoke("settings:open", section),

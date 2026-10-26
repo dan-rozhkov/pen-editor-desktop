@@ -31,6 +31,8 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { BROWSE_AGENT_TOOL_NAMES, createBrowseToolDefinitions } from "@sideform/browser-agent/agent";
+import { zodV3ToJsonSchema, type ZodLike } from "./zodV3Schema";
 
 interface ToolDef {
   name: string;
@@ -70,6 +72,48 @@ const BATCH_GET_PATTERN_TYPES = [
 ];
 
 const GUIDELINE_TOPICS = ["code", "table", "tailwind", "landing-page", "design-system"];
+
+/**
+ * The seven browse tools of @sideform/browser-agent, generated from the package's own zod schemas
+ * and descriptions (neutral text: no `element` targeting, no `app` launch). They drive the built-in
+ * browser of the app and have no `tabId`: that property routes editor tabs. The routing and the
+ * allowlist live in src/main/mcp/browserTools.ts; this is only what `tools/list` shows.
+ */
+const BROWSE_DESKTOP_INTRO = "Drives the built-in browser of the Sideform desktop app (the same browser its own agent uses).";
+const BROWSE_ACT_NOTE =
+  " Target an element by `index` (from a snapshot) or by `target`. Targeting by a natural-language `element` description is not supported: such a call is refused. File upload is not available over MCP: the `upload` action is refused and there is no `files` field.";
+
+/**
+ * Removes everything that uploads a file from a browse_act schema: the `files` property and the `upload` action
+ * (top level and every batch entry). An MCP client must not push files into pages.
+ */
+function stripUpload(node: unknown): void {
+  if (Array.isArray(node)) {
+    for (const item of node) stripUpload(item);
+    return;
+  }
+  if (!node || typeof node !== "object") return;
+  const rec = node as Record<string, unknown>;
+  const props = rec.properties;
+  if (props && typeof props === "object") delete (props as Record<string, unknown>).files;
+  if (Array.isArray(rec.enum)) rec.enum = rec.enum.filter((v) => v !== "upload");
+  for (const value of Object.values(rec)) stripUpload(value);
+}
+
+/** Argument names the executor accepts although the manifest does not advertise them (the executor refuses them). */
+export const UNADVERTISED_ALLOWED_ARGS: Record<string, string[]> = { browse_act: ["element"] };
+function browseTools(): ToolDef[] {
+  const defs = createBrowseToolDefinitions();
+  return BROWSE_AGENT_TOOL_NAMES.map((name) => {
+    const inputSchema = zodV3ToJsonSchema(defs[name].inputSchema as unknown as ZodLike);
+    if (name === "browse_act") stripUpload(inputSchema);
+    return {
+      name,
+      description: `${BROWSE_DESKTOP_INTRO} ${defs[name].description}${name === "browse_act" ? BROWSE_ACT_NOTE : ""}`,
+      inputSchema,
+    };
+  });
+}
 
 // Hand-maintained. Source: descriptions from pen-editor-backend/src/mcp/server.ts
 // (registerTool calls), input shapes from pen-editor-backend/src/ai/tools.ts
@@ -696,6 +740,7 @@ export const TOOLS: ToolDef[] = [
     // answers from main's own tab registry, it never dispatches to a tab.
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
+  ...browseTools(),
 ];
 
 // Hand-maintained mirror of pen-editor-backend/src/mcp/toolAnnotations.ts
@@ -732,9 +777,19 @@ const TOOL_META: Record<string, { title: string; annotations: Record<string, boo
   detach_instance: { title: "Detach component instance", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } },
   delete_component: { title: "Delete component", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } },
   list_editor_tabs: { title: "List editor tabs", annotations: { readOnlyHint: true, openWorldHint: false } },
+  // The built-in browser reaches the open web: openWorldHint on every one of them.
+  browse_open: { title: "Open page in browser", annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } },
+  browse_snapshot: { title: "Snapshot browser page", annotations: { readOnlyHint: true, openWorldHint: true } },
+  browse_screenshot: { title: "Screenshot browser page", annotations: { readOnlyHint: true, openWorldHint: true } },
+  browse_act: { title: "Act on browser page", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
+  browse_tabs: { title: "Manage browser tabs", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
+  browse_find_images: { title: "Find images on browser page", annotations: { readOnlyHint: true, openWorldHint: true } },
+  browse_read: { title: "Read browser page", annotations: { readOnlyHint: true, openWorldHint: true } },
 };
 
 export const OUTPUT_PATH = join(__dirname, "..", "src", "main", "mcp", "toolManifest.json");
+
+export const BROWSE_INPUTS_PATH = join(__dirname, "..", "src", "main", "mcp", "browseToolInputs.ts");
 
 function writeManifest(): void {
   const manifest = {
@@ -747,6 +802,21 @@ function writeManifest(): void {
     }),
   };
   writeFileSync(OUTPUT_PATH, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+  // The allowlist browserTools.ts applies to a browse call's arguments: the properties each
+  // tool's inputSchema declares, plus UNADVERTISED_ALLOWED_ARGS.
+  const inputs: Record<string, string[]> = {};
+  for (const t of TOOLS) {
+    if (!t.name.startsWith("browse_")) continue;
+    inputs[t.name] = [
+      ...Object.keys((t.inputSchema as { properties?: Record<string, unknown> }).properties ?? {}),
+      ...(UNADVERTISED_ALLOWED_ARGS[t.name] ?? []),
+    ];
+  }
+  writeFileSync(
+    BROWSE_INPUTS_PATH,
+    `// GENERATED by scripts/gen-tool-manifest.ts. Do not edit.\n// The property names each browse tool's inputSchema declares (the argument allowlist of browserTools.ts).\nexport const BROWSE_TOOL_INPUT_PROPS: Readonly<Record<string, readonly string[]>> = ${JSON.stringify(inputs, null, 2)};\n`,
+    "utf8",
+  );
   console.log(`Wrote ${TOOLS.length} tools to ${OUTPUT_PATH}`);
 }
 
@@ -771,6 +841,7 @@ function verifyAgainstBackend(): string[] {
 
   for (const t of TOOLS) {
     if (t.name === "list_editor_tabs") continue; // deliberate divergence, never in the backend
+    if (t.name.startsWith("browse_")) continue; // lives in @sideform/browser-agent, never in the backend
     // Tool names/descriptions are registered in server.ts (registerTool calls);
     // the BRIDGED_TOOL_NAMES/STATIC_TOOL_NAMES lists themselves live in
     // toolNames.ts (server.ts just re-exports them) — check both.
@@ -797,7 +868,8 @@ function verifyAgainstBackend(): string[] {
   return problems;
 }
 
-function collectPropertyNames(tools: ToolDef[]): Set<string> {
+function collectPropertyNames(allTools: ToolDef[]): Set<string> {
+  const tools = allTools.filter((t) => !t.name.startsWith("browse_"));
   const names = new Set<string>();
   const walk = (schema: Record<string, unknown>) => {
     const properties = schema.properties as Record<string, unknown> | undefined;

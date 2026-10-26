@@ -56,6 +56,10 @@ import { isShownUrl, parseOmniboxShow, parseUrlPayload } from "./omniboxIpc";
 import type { SuggestItem } from "./browser/historySuggest";
 import { historyKey, type HistoryStore } from "./browser/historyStore";
 import type { HistoryService } from "./historyService";
+import type { BrowserSettingsIpc } from "./browserSettingsIpc";
+import { awaitSettled, type FixtureBypassRegistry } from "./browser/adBlock";
+
+const FIXTURE_RELEASE_DRAIN_MS = 30_000;
 import { activeTabChanged, isAuthSignInSender, pickAuthReceiver, type AuthTokenPayload, type DesktopAuth } from "./desktopAuth";
 import { AGENT_PANEL_SETTINGS_FILE, readAgentPanelSettings, writeAgentPanelSettings } from "./agentPanelSettings";
 import { isRecord, parseJournalOrigins, parseToken, rawToken } from "./checkpointArgs";
@@ -89,6 +93,7 @@ import { hideAllCursorOverlays } from "./computerUse/cursorOverlay";
 import { computerUseAvailable, setNativeCursorEnabled } from "./computerUse/helper";
 import { CURSOR_SETTINGS_FILE, type CursorSettings, readCursorSettings, resolveCursorSettings, writeCursorSettings } from "./cursorSettings";
 import type { McpService, IpcListenerGateway } from "./mcp/service";
+import { MCP_BROWSER_OWNER, createMcpBrowserBridge } from "./mcp/browserBridge";
 import { fillLogin } from "./browser/fillLogin";
 import { releaseAnswer } from "./releaseAnswer";
 import { isLoginBindingCall, promptChoiceFromButton, savePromptCopy, type LoginCapture } from "./browser/loginCapture";
@@ -369,6 +374,8 @@ export function createMainWindow(
   loginServices: LoginServices,
   history: HistoryServices,
   desktopAuth: DesktopAuth,
+  browserSettingsIpc: BrowserSettingsIpc,
+  fixtureBypass: FixtureBypassRegistry,
 ): BaseWindow {
   // Idempotent — see registerAppLevelIpc's own doc comment. Safe to call on
   // every window (re)creation, including the macOS dock "activate" reopen.
@@ -2116,8 +2123,16 @@ export function createMainWindow(
   };
   // releaseFixture is typed Promise<void> in the installed browser-agent; newer
   // versions resolve to { mockHits }. Read it as unknown so this compiles on both.
-  const releaseSharedFixture = (token?: string): Promise<unknown> =>
-    (browserController.releaseFixture(token) as Promise<unknown>)
+  // Ad blocking passes every request while a fixture is applied on the shared browser (see
+  // "Ad and tracker blocking"): from apply start until its release has finished.
+  // A fixture that is never released counts for at most FIXTURE_BYPASS_MAX_MS since its apply started.
+  const sharedReleasesInFlight = new Set<Promise<unknown>>();
+  const unregisterFixtureBypass = fixtureBypass.register(() => ({
+    fixtureSince: fixtureOwners.activeSince(),
+    releasing: sharedReleasesInFlight.size > 0,
+  }));
+  const releaseSharedFixture = (token?: string): Promise<unknown> => {
+    const release: Promise<unknown> = (browserController.releaseFixture(token) as Promise<unknown>)
       .catch((err) => {
         console.error("shared browser: releaseFixture failed", err);
         return undefined;
@@ -2125,7 +2140,13 @@ export function createMainWindow(
       .then((released) => {
         resetViewportRecords(agentEmulation.release(token));
         return released;
+      })
+      .finally(() => {
+        sharedReleasesInFlight.delete(release);
       });
+    sharedReleasesInFlight.add(release);
+    return release;
+  };
 
   // Agent run start (runBoundary.ts): empties every tab's diagnostics buffers in
   // the scope so earlier failures are not reported inside the new run.
@@ -2520,6 +2541,16 @@ export function createMainWindow(
     }
   };
   ipcMain.handle("browser:command", onBrowserCommand);
+  // External MCP clients drive this window's shared browser through the same dispatch, as a pseudo-owner
+  // (no IPC sender, no app/session planning). The bridge itself limits which commands pass.
+  const unregisterMcpBrowser = mcpService.registerBrowserHost(
+    win.id,
+    createMcpBrowserBridge((command, args) =>
+      runBrowserCommand({ command, args }, MCP_BROWSER_OWNER, undefined, browserController, journalOwners),
+    ),
+  );
+  const onFocusMcpBrowser = () => mcpService.markBrowserHostActive(win.id);
+  win.on("focus", onFocusMcpBrowser);
   // Panel only: bring the agent's browser tab to the front (a click on a tool chip).
   // Never creates a session or a tab, so it does not go through `browser:command`.
   ipcMain.handle("browser:reveal-agent-tab", (event, payload: unknown): boolean => {
@@ -2755,6 +2786,9 @@ export function createMainWindow(
       }
     },
   });
+
+  // `browser-settings:*` (Settings page) is registered once per process (index.ts); this window lends its Settings-tab check.
+  const withdrawBrowserSettings = browserSettingsIpc.addWindow({ isSettingsViewer: (id, frameUrl) => tabs.isSettingsViewer(id, frameUrl) });
 
   // Browse-run traces: stored under userData; sender rules in traceIpc.ts, opening in traceOpen.ts.
   const traceIpc: TraceIpcDeps = {
@@ -3114,6 +3148,7 @@ export function createMainWindow(
     ipcMain.removeListener("tabbar:navigate", onTabbarNavigate);
     ipcMain.removeListener("editor:theme", onEditorTheme);
     withdrawDocTabLogins();
+    withdrawBrowserSettings();
     ipcMain.removeListener("editor:document-title", onEditorDocumentTitle);
     ipcMain.removeHandler("browser:command");
     ipcMain.removeHandler("browser:reveal-agent-tab");
@@ -3149,6 +3184,7 @@ export function createMainWindow(
     releasePanelOrphans(true);
     nativeTheme.removeListener("updated", onSystemThemeChanged);
     unsubscribeMcpStatus();
+    unregisterMcpBrowser();
     mcpService.setOnDemandTabOpener(null);
     agentActivity.dispose();
     agentAwake.dispose();
@@ -3161,6 +3197,9 @@ export function createMainWindow(
     void flushThenClose(pagePort(agentPanelView.webContents), { script: CHATS_FLUSH_SCRIPT });
     emptyView.webContents.close();
     omniboxView.webContents.close();
+    // The probe stays until the orphan releases started above have finished (30 s at most): a release in
+    // flight still counts as a fixture on the shared browser.
+    void awaitSettled(() => sharedReleasesInFlight, FIXTURE_RELEASE_DRAIN_MS).then(unregisterFixtureBypass);
   });
 
   // --- menu ---

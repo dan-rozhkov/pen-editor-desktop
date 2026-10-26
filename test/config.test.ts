@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, isValidCanvasId, canvasIdOfUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, isDocPageUrl, isDocPageOn, resolveWorkflowTabUrl, isValidWorkflowId, workflowIdOfUrl, resolveTraceTabUrl, resolveSettingsTabUrl, isValidSettingsSection, SETTINGS_SECTIONS, isValidTraceId, traceIdOfUrl, INITIAL_TABS } from "../src/main/config";
+import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, isValidCanvasId, canvasIdOfUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, isDocPageUrl, isDocPageOn, isSettingsPageOn, resolveWorkflowTabUrl, isValidWorkflowId, workflowIdOfUrl, resolveTraceTabUrl, resolveSettingsTabUrl, isValidSettingsSection, SETTINGS_SECTIONS, isValidTraceId, traceIdOfUrl, INITIAL_TABS, isAdBlockDisabledByEnv } from "../src/main/config";
 
 describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
@@ -313,5 +313,27 @@ describe("canvas ids in tab URLs", () => {
     expect(canvasIdOfUrl("http://h/app?canvas=cv_1&chat=off")).toBe("cv_1");
     expect(canvasIdOfUrl("http://h/app")).toBeNull();
     expect(canvasIdOfUrl("not a url")).toBeNull();
+  });
+});
+
+describe("isSettingsPageOn", () => {
+  it("accepts the settings page on the editor origin only", () => {
+    expect(isSettingsPageOn("https://h/settings?chat=off", "https://h")).toBe(true);
+    expect(isSettingsPageOn("https://h/prefix/settings/", "https://h")).toBe(true);
+    expect(isSettingsPageOn("https://evil/settings", "https://h")).toBe(false);
+    expect(isSettingsPageOn("https://h/app", "https://h")).toBe(false);
+    expect(isSettingsPageOn("https://h/settings/x", "https://h")).toBe(false);
+    expect(isSettingsPageOn(undefined, "https://h")).toBe(false);
+    expect(isSettingsPageOn("nonsense", "https://h")).toBe(false);
+  });
+});
+
+describe("isAdBlockDisabledByEnv", () => {
+  it("is true only for an explicit on value", () => {
+    expect(isAdBlockDisabledByEnv({ PEN_DESKTOP_NO_ADBLOCK: "1" })).toBe(true);
+    expect(isAdBlockDisabledByEnv({ PEN_DESKTOP_NO_ADBLOCK: " TRUE " })).toBe(true);
+    expect(isAdBlockDisabledByEnv({ PEN_DESKTOP_NO_ADBLOCK: "0" })).toBe(false);
+    expect(isAdBlockDisabledByEnv({ PEN_DESKTOP_NO_ADBLOCK: "" })).toBe(false);
+    expect(isAdBlockDisabledByEnv({})).toBe(false);
   });
 });

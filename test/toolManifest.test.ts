@@ -2,6 +2,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import manifest from "../src/main/mcp/toolManifest.json";
+import { BROWSE_AGENT_TOOL_NAMES, createBrowseToolDefinitions } from "@sideform/browser-agent/agent";
+import { BROWSE_MCP_TOOL_NAMES } from "../src/main/mcp/browserTools";
+import { BROWSE_TOOL_INPUT_PROPS } from "../src/main/mcp/browseToolInputs";
 
 interface ToolDef {
   name: string;
@@ -11,7 +14,15 @@ interface ToolDef {
 
 const tools = manifest.tools as ToolDef[];
 
+interface ZodNode {
+  shape?: Record<string, unknown>;
+  _def: { schema?: ZodNode };
+}
+
 const DESKTOP_ONLY_NAME = "list_editor_tabs";
+// The built-in browser's tools: desktop-only too. They live in @sideform/browser-agent, not the backend.
+const BROWSE_NAMES: readonly string[] = BROWSE_MCP_TOOL_NAMES;
+const DESKTOP_ONLY_NAMES = new Set<string>([DESKTOP_ONLY_NAME, ...BROWSE_NAMES]);
 
 describe("tool manifest — shape", () => {
   it("every entry has a name, a non-empty description, and an object-typed schema", () => {
@@ -31,18 +42,19 @@ describe("tool manifest — shape", () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it(`"${DESKTOP_ONLY_NAME}" is the only desktop-only name (not present in the bridged/static backend surface list below)`, () => {
+  it(`"${DESKTOP_ONLY_NAME}" and the seven browse tools are the only desktop-only names (not present in the bridged/static backend surface list below)`, () => {
     // Full cross-check against the sibling backend lives in the
-    // .runIf(backendExists) block; this pinned check runs unconditionally
-    // and encodes the same invariant the design doc states (§3): exactly
-    // one tool name is a deliberate desktop-only divergence.
-    const desktopOnlyCandidates = tools.filter((t) => t.name === DESKTOP_ONLY_NAME);
-    expect(desktopOnlyCandidates).toHaveLength(1);
+    // .runIf(backendExists) block; this pinned check runs unconditionally.
+    // Two groups diverge on purpose: list_editor_tabs (answered by main) and
+    // the browse_* tools (they drive the built-in browser, no editor tab).
+    expect(tools.filter((t) => t.name === DESKTOP_ONLY_NAME)).toHaveLength(1);
+    expect(tools.filter((t) => t.name.startsWith("browse_")).map((t) => t.name)).toEqual([...BROWSE_NAMES]);
+    expect(tools.filter((t) => DESKTOP_ONLY_NAMES.has(t.name))).toHaveLength(1 + BROWSE_NAMES.length);
   });
 
-  it(`every tool except "${DESKTOP_ONLY_NAME}" declares an optional integer "tabId"`, () => {
+  it(`every tool except the desktop-only ones declares an optional integer "tabId"`, () => {
     for (const t of tools) {
-      if (t.name === DESKTOP_ONLY_NAME) continue;
+      if (DESKTOP_ONLY_NAMES.has(t.name)) continue;
       const tabId = t.inputSchema.properties?.tabId as { type?: string } | undefined;
       expect(tabId, `${t.name} is missing a tabId property`).toBeTruthy();
       expect(tabId?.type).toBe("integer");
@@ -54,6 +66,67 @@ describe("tool manifest — shape", () => {
     const listTabs = tools.find((t) => t.name === DESKTOP_ONLY_NAME);
     expect(listTabs).toBeTruthy();
     expect(Object.keys(listTabs!.inputSchema.properties ?? {})).toEqual([]);
+  });
+});
+
+describe("tool manifest — browse tools", () => {
+  const browseTools = tools.filter((t) => t.name.startsWith("browse_")) as Array<
+    ToolDef & { annotations?: Record<string, boolean> }
+  >;
+  const definitions = createBrowseToolDefinitions();
+
+  it("covers the package's seven browse tool names", () => {
+    expect(browseTools.map((t) => t.name)).toEqual([...BROWSE_AGENT_TOOL_NAMES]);
+  });
+
+  it("never offers a login, capture, fixture or session tool", () => {
+    const names = tools.map((t) => t.name);
+    for (const n of ["browse_fill_login", "browse_capture"]) expect(names).not.toContain(n);
+    for (const t of browseTools) {
+      const props = Object.keys(t.inputSchema.properties ?? {});
+      for (const forbidden of ["app", "session", "fixture", "capture", "placeOnCanvas"]) expect(props, t.name).not.toContain(forbidden);
+    }
+  });
+
+  it("has the package's top-level property names for each tool (no tabId added for routing)", () => {
+    for (const t of browseTools) {
+      // browse_act is wrapped twice in ZodEffects: unwrap to the object.
+      let schema = definitions[t.name as keyof typeof definitions].inputSchema as unknown as ZodNode;
+      while (!schema.shape && schema._def.schema) schema = schema._def.schema;
+      // `files` (upload) is not offered over MCP.
+      const expected = Object.keys(schema.shape ?? {}).filter((k) => k !== "files").sort();
+      expect(Object.keys(t.inputSchema.properties ?? {}).sort(), t.name).toEqual(expected);
+    }
+  });
+
+  it("starts each description with the desktop-app line and keeps the package text", () => {
+    for (const t of browseTools) {
+      expect(t.description).toMatch(/^Drives the built-in browser of the Sideform desktop app/);
+      expect(t.description).toContain(definitions[t.name as keyof typeof definitions].description);
+    }
+  });
+
+  it("says that an element-only browse_act call is refused", () => {
+    const act = browseTools.find((t) => t.name === "browse_act");
+    expect(act?.description).toMatch(/natural-language `element` description is not supported/);
+  });
+
+  it("offers no file upload: no `files` property and no `upload` action, top level or in a batch entry", () => {
+    const act = browseTools.find((t) => t.name === "browse_act");
+    const text = JSON.stringify(act?.inputSchema);
+    expect(text).not.toContain('"files"');
+    expect(text).not.toContain('"upload"');
+  });
+
+  it("carries the annotations of the design", () => {
+    const byName = (n: string) => browseTools.find((t) => t.name === n)?.annotations;
+    for (const n of ["browse_snapshot", "browse_screenshot", "browse_read", "browse_find_images"]) {
+      expect(byName(n), n).toMatchObject({ readOnlyHint: true, openWorldHint: true });
+    }
+    for (const n of ["browse_act", "browse_tabs"]) {
+      expect(byName(n), n).toMatchObject({ readOnlyHint: false, destructiveHint: true, openWorldHint: true });
+    }
+    expect(byName("browse_open")).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: true });
   });
 });
 
@@ -246,16 +319,32 @@ describe.runIf(backendExists)("tool manifest — bridged set matches pen-editor-
 
   it("the manifest's bridged-tool names equal BRIDGED_TOOL_NAMES ∪ STATIC_TOOL_NAMES", () => {
     const expected = new Set([...bridged, ...staticNames]);
-    const actual = new Set(tools.filter((t) => t.name !== DESKTOP_ONLY_NAME).map((t) => t.name));
+    const actual = new Set(tools.filter((t) => !DESKTOP_ONLY_NAMES.has(t.name)).map((t) => t.name));
     expect(actual).toEqual(expected);
   });
 
   it(`"${DESKTOP_ONLY_NAME}" does not appear in the backend's tool name lists`, () => {
     expect(bridged).not.toContain(DESKTOP_ONLY_NAME);
     expect(staticNames).not.toContain(DESKTOP_ONLY_NAME);
+    for (const n of BROWSE_NAMES) {
+      expect(bridged).not.toContain(n);
+      expect(staticNames).not.toContain(n);
+    }
   });
 });
 
 describe.runIf(!backendExists)("tool manifest — bridged set matches pen-editor-backend (skipped)", () => {
   it.skip("../pen-editor-backend not found next to pen-editor-desktop", () => {});
+});
+
+describe("browse argument allowlist", () => {
+  it("is exactly the property names of each browse tool in the manifest", () => {
+    for (const name of BROWSE_NAMES) {
+      const t = tools.find((x) => x.name === name);
+      // browse_act also allows `element` (not advertised: the executor refuses it).
+      const extra = name === "browse_act" ? ["element"] : [];
+      expect(BROWSE_TOOL_INPUT_PROPS[name]).toEqual([...Object.keys(t?.inputSchema.properties ?? {}), ...extra]);
+    }
+    expect(Object.keys(BROWSE_TOOL_INPUT_PROPS).sort()).toEqual([...BROWSE_NAMES].sort());
+  });
 });

@@ -11,6 +11,8 @@
 
 interface Current {
   ticket: number;
+  /** When the apply started (ms). Kept across finishApply. */
+  startedAt: number;
   owner: number;
   token: string | undefined;
   pending: boolean;
@@ -26,13 +28,15 @@ export class FixtureOwners {
   private current: Current | null = null;
   private nextTicket = 1;
 
+  constructor(private readonly now: () => number = Date.now) {}
+
   /**
    * An `applyFixture` by `sender` starts. The controller releases the previous
    * fixture first. Returns the ticket to pass to `finishApply`.
    */
   beginApply(sender: number): number {
     const ticket = this.nextTicket++;
-    this.current = { ticket, owner: sender, token: undefined, pending: true, doomed: false };
+    this.current = { ticket, startedAt: this.now(), owner: sender, token: undefined, pending: true, doomed: false };
     return ticket;
   }
 
@@ -55,7 +59,7 @@ export class FixtureOwners {
       this.current = null;
       return { token };
     }
-    this.current = { ticket, owner: sender, token, pending: false, doomed: false };
+    this.current = { ticket, startedAt: cur.startedAt, owner: sender, token, pending: false, doomed: false };
     return null;
   }
 
@@ -80,5 +84,15 @@ export class FixtureOwners {
     }
     this.current = null;
     return { token: cur.token };
+  }
+
+  /** A fixture is applied, being applied, or its apply was marked for release. */
+  isActive(): boolean {
+    return this.current !== null;
+  }
+
+  /** When the current fixture started to apply (ms), or null when none is active. */
+  activeSince(): number | null {
+    return this.current?.startedAt ?? null;
   }
 }

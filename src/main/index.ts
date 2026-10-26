@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { app, BaseWindow, ipcMain, safeStorage, session, shell } from "electron";
+import { app, BaseWindow, ipcMain, net, safeStorage, session, shell } from "electron";
 import { KEEP_RENDERING_WHEN_OCCLUDED_SWITCH } from "./agentActivity";
-import { DISPLAY_APP_NAME, STORAGE_IDENTITY_FILE, resolveEditorUrl, resolveStorageIdentity, storageIdentityFileText } from "./config";
+import { DISPLAY_APP_NAME, STORAGE_IDENTITY_FILE, isAdBlockDisabledByEnv, resolveEditorUrl, resolveStorageIdentity, storageIdentityFileText } from "./config";
 import { createMainWindow, flushAllForQuit, hasQuitFlushWork, isLiveTabbar, type HistoryServices } from "./window";
 import { createQuitFlush } from "./quitFlush";
 import { appRegistry } from "./appTargetsService";
@@ -20,6 +20,20 @@ import { isCursorOverlayWindow } from "./computerUse/cursorOverlay";
 import { DEEP_LINK_SCHEME, createDesktopAuth, parseDeepLinkArg, resolveProtocolRegistration, shouldRegisterProtocol, systemDeps } from "./desktopAuth";
 import { runOriginMigrationOnStartup } from "./originMigrationRunner";
 import { createMigrationGuard } from "./migrationGuard";
+import { BROWSER_SETTINGS_FILE, createBrowserSettingsStore } from "./browserSettings";
+import { createBrowserSettingsIpc } from "./browserSettingsIpc";
+import {
+  AD_BLOCK_CACHE_FILE,
+  AD_BLOCK_PARTITION,
+  createAdBlockController,
+  createEngineManager,
+  createFixtureBypassRegistry,
+  isAdBlockCacheStale,
+  loadAdBlockEngine,
+  requireRestoringEnv,
+  type BlockerPort,
+  type WebRequestPort,
+} from "./browser/adBlock";
 
 const editorUrl = resolveEditorUrl(process.env);
 
@@ -94,7 +108,7 @@ const queuedDeepLinks: string[] = [];
 function openMainWindowIfNone(): void {
   if (startup.active) return; // the hidden migration window is not a main window
   // An agent cursor overlay is not a main window.
-  if (shouldReopenMainWindow(BaseWindow.getAllWindows(), isCursorOverlayWindow)) createMainWindow(editorUrl, mcpService, loginServices, historyServices, desktopAuth);
+  if (shouldReopenMainWindow(BaseWindow.getAllWindows(), isCursorOverlayWindow)) createMainWindow(editorUrl, mcpService, loginServices, historyServices, desktopAuth, browserSettingsIpc, fixtureBypass);
 }
 function dispatchDeepLink(url: string): void {
   // Validate FIRST: only a well-formed sideform://auth link whose state matches the pending attempt may
@@ -151,7 +165,9 @@ app.on("second-instance", (_event, argv) => {
 // here and handed to every createMainWindow call, including the macOS dock
 // "activate" reopen, so the HTTP server/token/handshake ownership survive a
 // window close/reopen cycle instead of dying with the window.
-const mcpService = createMcpService();
+// `browserSettings` (Settings > Browser) gates the `browse_*` tools through `mcpBrowser`.
+const browserSettings = createBrowserSettingsStore(path.join(app.getPath("userData"), BROWSER_SETTINGS_FILE));
+const mcpService = createMcpService({ isBrowserAllowed: () => browserSettings.get().mcpBrowser });
 
 // Set by before-quit; checked after the migration await so a quit during startup creates nothing.
 let quitting = false;
@@ -197,6 +213,12 @@ const historyServices: HistoryServices = { store: historyStore, service: createH
 // `ipcMain.handle` is process-global: one handler answers the tab bar of every window.
 const unregisterHistorySuggest = registerHistorySuggest({ ipcMain, store: historyStore, isTabbar: isLiveTabbar });
 
+// Built-in browser switches (Settings > Browser): one store, and one pair of `browser-settings:*` handlers,
+// for the whole app; each window lends its Settings-tab check.
+// Windows lend probes: ad blocking passes every request while any has a fixture on the shared browser.
+const fixtureBypass = createFixtureBypassRegistry();
+const browserSettingsIpc = createBrowserSettingsIpc({ ipcMain, store: browserSettings });
+
 app.whenReady().then(async () => {
   void historyStore.load().catch((err) => console.error("[history] load failed", err));
   // The visible product name (app menu labels, About box). Safe now: the
@@ -222,6 +244,58 @@ app.whenReady().then(async () => {
   // here rather than inside TabManager's per-tab createView.
   denyAllPermissions(session.fromPartition("persist:penbrowser"));
 
+  // Ad and tracker blocking: network requests of the shared browser partition only (no preload, no cosmetic
+  // filters: browser tabs stay preload-free). The engine loads in the background; nothing is blocked until then.
+  const adBlock = createAdBlockController({
+    partition: AD_BLOCK_PARTITION,
+    webRequest: session.fromPartition(AD_BLOCK_PARTITION).webRequest as unknown as WebRequestPort,
+    shouldBypass: () => fixtureBypass.shouldBypass(),
+  });
+  adBlock.setEnabled(browserSettings.get().adBlock);
+  // PEN_DESKTOP_NO_ADBLOCK=1 (e2e): no engine is ever loaded, so nothing touches the network.
+  if (!isAdBlockDisabledByEnv(process.env)) {
+    const adBlockCachePath = path.join(app.getPath("userData"), AD_BLOCK_CACHE_FILE);
+    const adBlockFs = {
+      readFile: (p: string) => fs.promises.readFile(p),
+      writeFile: (p: string, d: Uint8Array) => fs.promises.writeFile(p, d),
+      mtimeMs: (p: string) => fs.promises.stat(p).then((st) => st.mtimeMs, () => null),
+    };
+    const loadEngine = (report: (message: string, err: unknown) => void, refresh: boolean) =>
+      loadAdBlockEngine<BlockerPort>({
+        cachePath: adBlockCachePath,
+        fs: adBlockFs,
+        log: report,
+        refresh,
+        // Required lazily, after ready: importing the package sets ELECTRON_DISABLE_SECURITY_WARNINGS
+        // for the whole process, which is restored right after the require.
+        create: (caching) => {
+          const { ElectronBlocker } = requireRestoringEnv(
+            process.env,
+            "ELECTRON_DISABLE_SECURITY_WARNINGS",
+            () => require("@ghostery/adblocker-electron") as typeof import("@ghostery/adblocker-electron"),
+          );
+          // Chromium networking: the system proxy / PAC and the OS certificate store apply (Node's fetch has neither).
+          return ElectronBlocker.fromPrebuiltAdsAndTracking(net.fetch as unknown as typeof fetch, caching) as unknown as Promise<BlockerPort>;
+        },
+      });
+    const engines = createEngineManager<BlockerPort>({
+      isEnabled: () => browserSettings.get().adBlock,
+      onEngine: (engine) => adBlock.setEngine(engine),
+      load: (report) => loadEngine(report, false),
+      refresh: (report) => loadEngine(report, true),
+      isStale: () => isAdBlockCacheStale({ fs: adBlockFs, cachePath: adBlockCachePath }),
+    });
+    // Nothing is fetched while blocking is off; turning it on (again) starts or retries the load.
+    if (browserSettings.get().adBlock) engines.ensure();
+    browserSettings.onChange((s) => {
+      adBlock.setEnabled(s.adBlock);
+      if (s.adBlock) engines.ensure();
+    });
+    app.on("will-quit", () => engines.dispose());
+  } else {
+    browserSettings.onChange((s) => adBlock.setEnabled(s.adBlock));
+  }
+
   // Registered BEFORE the migration is awaited. Until the first main window exists it does nothing:
   // opening an editor window earlier would let the new origin mint its own pen.userId before the import.
   app.on("activate", () => {
@@ -236,7 +310,7 @@ app.whenReady().then(async () => {
   // The user quit while the migration ran: do not create a window or start MCP behind their back.
   if (quitting) return;
 
-  createMainWindow(editorUrl, mcpService, loginServices, historyServices, desktopAuth);
+  createMainWindow(editorUrl, mcpService, loginServices, historyServices, desktopAuth, browserSettingsIpc, fixtureBypass);
   markWindowCreated();
   startup.end();
 
@@ -279,6 +353,7 @@ app.on("will-quit", () => {
   // Synchronous, so the last visit is on disk before the process exits (the async flush above may not finish).
   historyStore.flushSync();
   historyServices.service.dispose();
+  browserSettingsIpc.dispose();
   unregisterHistorySuggest();
   // Synchronous: will-quit does not reliably await a returned promise, so
   // handshake-file removal must complete before this handler returns (see

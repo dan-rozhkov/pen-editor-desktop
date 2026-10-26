@@ -438,6 +438,7 @@ CI of its own. `Close Window` is a local action like Passwords (no forwarded id)
 - `auth:token` main→panel or tab (`{token, verifier}`; `auth.onToken(cb)` returns an unsubscribe) — sent to exactly ONE LISTENING view: the agent panel, else the active canvas tab, else another listening canvas tab (`pickAuthReceiver`); with none it is held in main. The page exchanges it with the backend and tells the other views itself
 - `docs:export-pdf` doc page→main, **invoke/handle** (per window, next to `docs:*`; removed on close): `fileName` -> `{ok:true, path}` | `{canceled:true}` | `{error}`. Same sender rule as `logins:*` (TOP frame of a doc tab still on the doc page, `TabManager.isDocViewer`), else `{error:"Not allowed."}`. Flow in `docPdfExport.ts` (pure, `test/docPdfExport.test.ts`): sanitize the name (separators, `\/:*?"<>|` and control chars stripped, 100 chars, fallback `Untitled`, `.pdf` forced), `sender.printToPDF({printBackground, preferCSSPageSize, pageSize:"A4"})`, native save dialog on the window (default dir Downloads), write file; never throws. Exposed as `penDesktop.docs.exportPdf(fileName)` on every tab preload (main is the trust boundary)
 - `passwords:list` / `passwords:add` / `passwords:update` / `passwords:remove` / `passwords:never-remove` Passwords tab→main, **invoke/handle**, registered ONCE per process by `createPasswordsService` (`passwordsService.ts`, created in `index.ts`, removed by `dispose()` on `will-quit`); each answers only webContents attached as a Passwords tab of any main window (`attach`, dropped on `destroyed`), everything else gets `{ok:false}`. No reply ever holds a password — see "Saved logins" below
+- `browser-settings:get` / `browser-settings:set` Settings page→main, **invoke/handle**, registered ONCE per process (`createBrowserSettingsIpc`, `browserSettingsIpc.ts`, created in `index.ts`, removed on `will-quit`; each window lends a port via `addWindow`, withdrawn on close). Answered only for the TOP frame (`senderFrame === sender.mainFrame`) of a Settings tab (`TabKind` `settings`) that still shows the settings page (`TabManager.isSettingsViewer`: the view's URL AND the sender frame's own URL are `/settings` on the editor origin, `isSettingsPageOn`); everything else gets `{error:"Not allowed."}`. `get` (no args) -> `{adBlock, mcpBrowser}`; `set` `{adBlock?, mcpBrowser?}` (plain object, booleans only, `parseBrowserSettingsPatch`) -> the new full settings, or `{error:"Invalid settings."}` / `{error:"Could not save the setting."}` (the file could not be written; nothing changed). Exposed as `window.penDesktop.browserSettings = { get(), set(patch) }` on every tab preload (main is the trust boundary). See "Ad and tracker blocking"
 - `logins:list` / `logins:add` doc page→main, **invoke/handle**, registered ONCE per process next to the `passwords:*` handlers (`passwordsService.ts`; each window lends a `DocWindowPort` via `addDocWindow`: its `isDocViewer` check and its confirm dialog, withdrawn on close); rules in `loginsIpc.ts`. Answered only for the TOP frame (`senderFrame === sender.mainFrame`) of a doc tab that still shows the doc page (`TabManager.isDocViewer(id, frameUrl)`: kind `doc` AND both the view's URL and the sender frame's own `senderFrame.url` are the doc page ON the editor origin, `isDocPageOn`: last path segment `doc`); the owning window port is resolved once per call and re-checked after the dialog (a tab that left `/doc` meanwhile gets Not allowed and nothing is stored); everything else gets `{ok:false, error:"Not allowed."}`. `list` -> `{entries: {id, origin, username, label, icon?}[], encryptionAvailable}` (`api.listSummaries`: no password, no `never`, no `lastUsedAt`, no icon fetch); `add` takes `{site, username, password, label?}` (nothing else is forwarded, `replace` is dropped) -> `{ok:true, id}`. The order in `add`: validation and the existing-login check first (`api.precheckAdd`; an existing site + username answers `{ok:false, exists:true, id}` with NO dialog), then a native `dialog.showMessageBox` on the owning window (`addLoginCopy`: message `Save a login for <host>?` with the host ALONE, the page-controlled username only in `detail`; Save / Cancel, Cancel default; Cancel -> `{ok:false, error:"Cancelled."}`; one open dialog per window, a second add answers `{ok:false, error:"Another save is waiting for confirmation."}`). `precheckAdd` mirrors every store limit (username <= 512, password <= 1024, label <= 512) and refuses control characters in username and label, so no dialog opens for a payload that cannot be saved, then the store write and `passwords:changed` to every Passwords tab. Exposed as `window.penDesktop.logins` on every tab preload (main is the trust boundary)
 - `passwords:theme` main→Passwords tab, payload `{ theme: "light" | "dark" }`: the theme the tab bar of THAT tab's window shows (`lastResolvedForTint`, the same value as `tabbar:theme`). Sent on every page load and whenever that window's resolved theme changes (`pushState` -> `service.setTheme(themeKey, theme)`; an unchanged value is not re-sent); the same step repaints the tab view's own background (`contentBackground(theme)`: #ffffff / #2a2a2a, the page's `--surface-panel`) through the `setBackground` port. There is no vibrancy in a tab, so there is no `vibrancyMatches`
 - `history:list` / `history:remove` / `history:clear` / `history:open` History tab→main, **invoke/handle**, registered ONCE per process by `createHistoryService` (`historyService.ts`, `dispose()` on `will-quit`); answered only for webContents attached as a History tab (`attach`, dropped on `destroyed`), else `{ok:false}`. `list` `{query?}` -> `{entries}` (newest first, max 1000), `remove` / `open` `{url}` (`historyKey`-checked), `clear` runs the owning window's native confirm (Cancel default). `history:theme` / `history:changed` main→History tab (`{theme}` / no payload), like the `passwords:*` pair
@@ -470,16 +471,82 @@ anything window-scoped would die and never come back — the same shape as
 the `Menu.setApplicationMenu` wart noted above. `window.ts` only *reports*
 tab create/destroy/active into the service; it never owns MCP state itself.
 
-`tools/list` serves the static `src/main/mcp/toolManifest.json` (30 tools: the
-26 backend `BRIDGED_TOOL_NAMES`, the 3 static guideline tools, and desktop-only
-`list_editor_tabs`; every tool except `list_editor_tabs` also gets an optional
-`tabId`). Do not edit the JSON: it is written by `npx tsx
-scripts/gen-tool-manifest.ts` from the hand-maintained `TOOLS` array and
-`TOOL_META` table (title + annotations, mirroring the backend's
-`src/mcp/toolAnnotations.ts`; `destructiveHint` must match). The script then
-greps the sibling backend for drift (set `PEN_BACKEND_DIR` to point it at a
-backend worktree). `test/toolManifest.test.ts` pins the names against the
-backend's `toolNames.ts` (same `PEN_BACKEND_DIR` override).
+`tools/list` serves the static `src/main/mcp/toolManifest.json` (37 tools: the
+26 backend `BRIDGED_TOOL_NAMES`, the 3 static guideline tools, desktop-only
+`list_editor_tabs`, and the 7 desktop-only `browse_*` tools below; every tool
+of the first two groups also gets an optional `tabId`, the desktop-only ones do
+not — `browse_tabs.tabId` is a browser tab id). Do not edit the JSON: it is
+written by `npx tsx scripts/gen-tool-manifest.ts` from the hand-maintained
+`TOOLS` array and `TOOL_META` table (title + annotations, mirroring the
+backend's `src/mcp/toolAnnotations.ts`; `destructiveHint` must match). The
+`browse_*` entries are not hand-written: the script builds them from
+`@sideform/browser-agent`'s `createBrowseToolDefinitions()` (zod v3 schemas
+through `scripts/zodV3Schema.ts`, which throws on a node type or check it does not
+know, e.g. `ZodDefault`; exclusive number bounds become `exclusiveMinimum`/`exclusiveMaximum`, optional is seen through `ZodEffects`) with a one-line "drives the built-in browser of the Sideform desktop app"
+prefix. The script then greps the sibling backend for drift (set
+`PEN_BACKEND_DIR` to point it at a backend worktree; `browse_*` names are
+skipped, they live in browser-agent). `test/toolManifest.test.ts` pins the
+names against the backend's `toolNames.ts` (same override) and the browse
+group (names, property names against the package's schemas, annotations).
+
+**Built-in browser over MCP.** The seven browse tools (`browse_open`,
+`browse_snapshot`, `browse_screenshot`, `browse_act`, `browse_tabs`,
+`browse_find_images`, `browse_read`) let Claude Code/Cursor drive the same
+shared browser (`persist:penbrowser`, no isolated session) as the in-app
+agent. `McpService.callTool` answers them itself, without an editor tab:
+1. Gate: `deps.isBrowserAllowed()` (index.ts passes
+   `browserSettings.get().mcpBrowser`, read per call; absent = closed).
+   **`mcpBrowser` defaults to OFF**: any local MCP client could otherwise drive the
+   user's logged-in browser; the user turns it on in Settings > Browser. Off =
+   `isError` "Browser control over MCP is turned off in Settings > Browser."
+   The tools stay in `tools/list` so a client sees why.
+2. Host: `BrowserHostRegistry` (`mcp/browserHosts.ts`). `window.ts` calls
+   `registerBrowserHost(win.id, bridge)` when a window is created (a new window
+   counts as active), `markBrowserHostActive(win.id)` on `focus`, and the
+   returned unregister on `closed`. A call goes to the most recently active
+   registered host; none = "No Sideform window is open.".
+3. Execution: `mcp/browserTools.ts` runs `executeBrowseTool(bridge, tool, args)`
+   from `@sideform/browser-agent/agent/execute`. The arguments are cut to an
+   allowlist: the property names the tool's manifest inputSchema declares plus
+   `element` for `browse_act` only (`BROWSE_TOOL_INPUT_PROPS` in the generated
+   `mcp/browseToolInputs.ts`; `UNADVERTISED_ALLOWED_ARGS` in the generator), so
+   `app`, `repro` etc. never reach the executor; the entries of a `browse_act`
+   batch (`actions`) are cut the same way. `element` is NOT in the manifest
+   schema, but it is forwarded and no `locateElement` is passed, so the
+   executor itself refuses every element-targeted call (`element` alone, with
+   `index: null`, with `target: ""`, also in a batch entry): there is no
+   hand-written check to drift. **No file upload over MCP**: the manifest has
+   no `files` property and no `upload` action (stripped from `browse_act` by
+   the generator, top level and batch entries), `files` is not in the
+   allowlist, and `browse_act` with `action: "upload"` (also in a batch entry)
+   returns `File upload is not available over MCP.` before the bridge. (The
+   package's `files` carry inline content, `text`/`base64`/`sample`, not local
+   paths; the package has no other argument that reads a local path:
+   `browse_open`'s `app` is not in the schema, `browse_screenshot` has no save
+   path.) The tool result is made by
+   converting the JSON string: `{error}` = `isError`; `browse_screenshot` = MCP
+   image item (from `imageData`) + a text item with the other fields
+   (`snapshotId`, `elements`, ...), never the base64; the rest = text.
+4. Bridge: `mcp/browserBridge.ts` `createMcpBrowserBridge(run)` is a
+   `BrowserBridge` whose methods call `window.ts`'s `runBrowserCommand` (the
+   shared-scope body: dialog sweep, in-flight counter, run boundary,
+   agent-activity icon, journal guard, controller call) with the pseudo-owner
+   `MCP_BROWSER_OWNER = -1` — no IPC sender check, no app/session planning.
+   Reachable commands are pinned in `MCP_BROWSER_COMMANDS`: `open`, `act`,
+   `findImages`, `read`, `snapshot`, `perform`, `screenshot`, `tabs`. The bridge
+   has no `launchApp`, `capture`, `assert`, fixture, journal or `requests`
+   method. `-1` is no tab, so MCP owns no fixture or journal; a page-changing
+   MCP command ends a journal an editor tab still runs (`journalOwners`).
+Not exposed, on purpose: `browse_fill_login` (a password must never reach an
+MCP client; saved logins stay in-app), fixtures, journals/checkpoints,
+`capture`, QA assert, isolated sessions, desktop-app launch. Snapshots and
+screenshots use the same controller masking of secret fields as the in-app
+agent. Auth is unchanged (token-protected loopback).
+
+**Known limit:** MCP browse commands share the shared browser's controller,
+current-tab pointer, snapshot ids and run boundary with the in-app agent, so
+running an MCP client and the in-app agent at the same time interferes (a tab
+switch, a snapshot id or a run boundary of one is seen by the other).
 
 Identity on `mcp:register`/`mcp:result` comes from `event.sender.id` checked
 against tabs the service itself created via `registerTab()` — the same
@@ -1174,6 +1241,21 @@ Design: `docs/superpowers/specs/2026-10-25-browser-history-design.md`. The built
 - **Omnibox popup** — a separate hidden `WebContentsView` per main window (`omniboxView` in `window.ts`: `preload/omnibox.js`, page `dist/omnibox/omnibox.html`, `#00000000` background, `attachLocalOnlyPolicy`; the card draws its own radius, so no `setBorderRadius`). A popup inside the tab bar view would be clipped to its height (same reason the menus are native). It is created with the other shell views at window creation, BEFORE the empty view, so `waitForShellViews` (which also waits for `omnibox.html`) guarantees it exists before any `app.evaluate`. The tab bar renderer owns the state (query, items, selection) and all keys (`src/tabbar/omnibox.ts` pure helpers); the popup only paints and reports clicks. `tabbar:omnibox-show` -> main validates, sizes it with `omniboxBounds` (`layout.ts`), re-adds it as the top-most child and sends `omnibox:render`. It hides on `tabbar:omnibox-hide`, window resize/blur, an active tab change (`pushState`), an empty list and a non-browser active tab. A pick navigates the ACTIVE browser tab (`decideBrowserNavigation`), tells the tab bar (`tabbar:omnibox-picked`) and focuses the page. A remove deletes the entry, focuses the tab bar back and sends `tabbar:omnibox-refresh`; the tab bar cancels its 150 ms close timer, restores the typed text and caret and re-runs the query that produced the shown list (empty for Recent). The field is reset to the tab url only when that timer actually closes the popover. Inline completion applies only with the caret at the end of the field; `pushState` re-sends `omnibox:render` only when the theme changed. "Show all history" opens the History tab.
 - **History tab** — `TabKind` `"history"`, a SINGLETON per window like Passwords (`TabManager.openHistoryTab({focus:true})`, `findHistoryTab`). Opened by File ▸ History… (a local action, no `menu:command` id: macOS `Cmd+Y`; Windows/Linux `Ctrl+H`, because `Ctrl+Y` is Redo in the Edit menu), the Browser tools "⋮" menu ("Show History") and the popup footer. Loads the LOCAL page `dist/history/history.html` with `preload/history.js` (`window.penHistory`), not the tab preload; `attachLocalOnlyPolicy`. Title fixed "History", no address row, not a page tab, canvas tab or editor theme source. Page `src/history/` (plain script, CSP `default-src 'none'`, tokens from `../tabbar/tokens.css`): search, rows grouped by day, remove per row, "Clear history…" (native `dialog.showMessageBox` on the owning window, Cancel default). A row click opens the url in a NEW user browser tab (activated, focused). Service `src/main/historyService.ts` (pure, ports injected, like `passwordsService.ts`).
 - **Tests** — `historyStore`, `historySuggest`, `historyService`, `historySuggestIpc`, `omniboxIpc`, `omnibox` (tab bar key helpers) unit tests; `tabManager.test.ts` ("history tab"), `menu.test.ts`, `browserToolsMenu.test.ts`, `ipcContract.test.ts`; `e2e/browser-history.spec.ts`. pen-editor's `desktopMenuContract.test.ts` clicks every menu item with recording actions: its actions need an `openHistory` entry.
+
+## Ad and tracker blocking
+
+The built-in browser filters ads and trackers, ON by default (setting `adBlock`).
+
+- **Library** — `@ghostery/adblocker-electron` (2.x). `ElectronBlocker.fromPrebuiltAdsAndTracking(net.fetch, caching)` builds the engine from the prebuilt EasyList + EasyPrivacy based lists. The list download uses Electron's `net.fetch` (Chromium networking: system proxy/PAC and the OS certificate store), NOT Node's global `fetch`; `index.ts` wires it in, `adBlock.ts` stays Electron-free (`create` is injected). The serialized engine is cached in `adblock-engine.bin` in `userData` (a missing or corrupt cache is ignored and rewritten). A cache file older than 7 days (mtime) is not read: the engine is built from the network, and if that fails the old cache is used (`loadAdBlockEngine`, fs and clock injected). **Each build attempt is cut off after 30 s** (`ENGINE_LOAD_TIMEOUT_MS`, `withTimeout`), so a hung network settles the load (and the manager's `loading` flag) as a failure; a hung refresh of a stale cache falls back to the old cache. The package is `require()`d lazily after `ready` (`requireRestoringEnv`: importing it sets `ELECTRON_DISABLE_SECURITY_WARNINGS`, which is restored right after). The load runs in the background (`createEngineManager`), only while blocking is on; until it is loaded nothing is blocked.
+- **Retry and logging** — a failed load leaves the browser unfiltered and is retried after 10 min, then 30 min, then every 60 min (`ENGINE_RETRY_DELAYS_MS`), on the next time blocking is enabled or from an unref'd timer (only while blocking is on). Only the FIRST failure of a failure streak is logged (one line, `[adblock] ...: reason`); a success ends the streak, the next failure logs again.
+- **Refresh while running** — while blocking is on, every 24 h (unref'd timer, `ENGINE_REFRESH_CHECK_MS`) the manager asks `isAdBlockCacheStale` (the cache file's age: a rebuild rewrites it). Older than 7 days: the engine is rebuilt from the network in the background (`loadAdBlockEngine({refresh: true})`: no cache read, no fallback) and swapped in with `setEngine` on success; on failure the old engine stays (the failure is logged under the same once-per-streak rule) and the next check is 24 h later.
+- **Network only** — only `session.webRequest.onBeforeRequest` is registered. `enableBlockingInSession` is NEVER called: it registers a preload script and IPC handlers into pages, and browser tabs must stay preload-free (the security boundary, see "Built-in browser tab"). So there are no cosmetic filters. A main-frame document request (`resourceType` `mainFrame`) is never blocked, only subresources.
+- **Shared partition only** — `persist:penbrowser`. NOT the isolated QA partitions `qa-*` (a QA run must see the page as the site serves it) and NOT the default (editor) session. Electron keeps one `onBeforeRequest` listener per session; the Fetch routing for fixtures uses CDP `Fetch`, not `webRequest`, so they do not collide.
+- **Setting** — `browser-settings.json` in `userData` (`browserSettings.ts`, `{adBlock: true, mcpBrowser: false}`; a missing/corrupt file or a wrong type falls back to the default per field; `mcpBrowser` gates the MCP `browse_*` tools and is OFF by default, see "Desktop MCP bridge"). `store.set` writes the file FIRST: if the write fails it returns `null`, the in-memory value is unchanged and nobody is notified; the IPC answers `{error:"Could not save the setting."}` (the Settings page reverts the switch on `{error}`). ONE store per process, created in `index.ts`; `onChange` registers (`adBlock` on) or unregisters (`onBeforeRequest(null)`) the listener at once. Decisions in `src/main/browser/adBlock.ts` (`createAdBlockController`, Electron session injected). Changed from the Settings page over `browser-settings:*`.
+- **Fixtures** — while a PageFixture is applied on the SHARED browser (any window), the request listener passes EVERY request (`shouldBypass`): a fixture may mock a URL a filter list would cancel before CDP Fetch sees it. Each window lends a probe `{fixtureSince, releasing}` to the app-level `FixtureBypassRegistry` (`createFixtureBypassRegistry`, created in `index.ts`, passed to `createMainWindow`): `fixtureSince` is when `FixtureOwners` saw the `applyFixture` start (`activeSince()`), `releasing` is true while any shared release (explicit or orphan, `releaseSharedFixture`) is in flight. **A fixture counts for at most 15 minutes since its apply started** (`FIXTURE_BYPASS_MAX_MS`, injected clock): a shared fixture that is never released must not switch blocking off for the rest of the session; a release in flight always counts. The probe is removed when the window has closed AND the releases that the close started have finished (`awaitSettled`, 30 s at most), so an in-flight orphan release is still covered. So QA asserts on the shared browser see the page filtered when no fixture is applied, and unfiltered during one; isolated `qa-*` sessions are never filtered.
+- **`PEN_DESKTOP_NO_ADBLOCK=1`** — skips engine loading entirely (nothing fetched, nothing cached; `isAdBlockDisabledByEnv`, `config.ts`; `1`/`true`/`on`/`yes`). `e2e/userDataIsolation.ts` sets it for every Playwright launch (all three configs), so e2e never hits the network for filter lists.
+- **QA diagnostics** — a blocked request arrives as `Network.loadingFailed` with `net::ERR_BLOCKED_BY_CLIENT`; `failedRequests.ts` skips it (like `canceled`), so a blocked tracker is not a page failure.
+- **Tests** — `adBlock`, `browserSettings`, `browserSettingsIpc`, `failedRequests`, `config` ("isSettingsPageOn"), `preloadTab`, `ipcContract`.
 
 ## Checkpoint journal (`startJournal` / `stopJournal` / `captureCheckpoint`)
 

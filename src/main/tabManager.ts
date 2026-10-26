@@ -1,5 +1,5 @@
 import type { BrowserPageHandle, BrowserTabInfo } from "@sideform/browser-agent/controller";
-import { canvasIdOfUrl, docIdOfUrl, isValidCanvasId, isValidDocId, resolveCanvasTabUrl, isDocPageOn, isValidSettingsSection, isValidTraceId, resolveDocTabUrl, resolveSettingsTabUrl, resolveTraceTabUrl, resolveWorkflowTabUrl, traceIdOfUrl, workflowIdOfUrl } from "./config";
+import { canvasIdOfUrl, docIdOfUrl, isValidCanvasId, isValidDocId, resolveCanvasTabUrl, isDocPageOn, isSettingsPageOn, isValidSettingsSection, isValidTraceId, resolveDocTabUrl, resolveSettingsTabUrl, resolveTraceTabUrl, resolveWorkflowTabUrl, traceIdOfUrl, workflowIdOfUrl } from "./config";
 export type UITheme = "light" | "dark";
 
 /** How a tab becomes the active one. `focus: false` shows it without moving keyboard focus into it. */
@@ -981,6 +981,23 @@ export class TabManager {
     return (
       isDocPageOn(frameUrl, origin) &&
       this.tabs.some((t) => t.kind === "doc" && t.view.getWebContentsId() === webContentsId && isDocPageOn(t.view.getURL(), origin))
+    );
+  }
+
+  /**
+   * True when the webContents is a Settings tab that still shows the settings page (`/settings` on the editor origin),
+   * judged on BOTH the view's URL and `frameUrl` (the sender frame's own document URL).
+   */
+  isSettingsViewer(webContentsId: number, frameUrl: string | undefined): boolean {
+    let origin: string;
+    try {
+      origin = new URL(this.opts.editorUrl).origin;
+    } catch {
+      return false;
+    }
+    return (
+      isSettingsPageOn(frameUrl, origin) &&
+      this.tabs.some((t) => t.kind === "settings" && t.view.getWebContentsId() === webContentsId && isSettingsPageOn(t.view.getURL(), origin))
     );
   }
 

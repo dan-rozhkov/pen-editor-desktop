@@ -17,7 +17,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 
 let server: http.Server;
 let baseUrl: string;
@@ -46,6 +46,11 @@ test.beforeAll(async () => {
     // call at all — stands in for a real cross-document navigation away
     // from the editor (which drops the bridge registration), as opposed to
     // pushState/replaceState (same-document, must NOT drop it).
+    // A plain page for the browse_* tools to open in the built-in browser.
+    if (req.url && req.url.startsWith("/browse-target")) {
+      res.end(`<!doctype html><title>Browse Target</title><h1>browse-target-heading</h1><button id="go">Go on</button>`);
+      return;
+    }
     if (req.url && req.url.startsWith("/bare")) {
       res.end(`<!doctype html><title>Bare</title><h1 id="ready">stub-bare</h1>`);
       return;
@@ -199,6 +204,98 @@ test("desktop MCP bridge: install-the-.app-and-the-plugin claim, end to end", as
     // --- shutdown: handshake file removed ---
     await app.close();
     expect(existsSync(handshakePath)).toBe(false);
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+// mcpBrowser is OFF by default (any local MCP client could otherwise drive the user's logged-in browser).
+// A spec that needs it writes the setting into the userData dir it launches with.
+function userDataWith(testInfo: { outputPath: (n: string) => string }, name: string, settings?: Record<string, boolean>): string {
+  const dir = testInfo.outputPath(name);
+  mkdirSync(dir, { recursive: true });
+  if (settings) writeFileSync(path.join(dir, "browser-settings.json"), JSON.stringify(settings));
+  return dir;
+}
+
+test("desktop MCP bridge: browse_* tools are turned off by default", async ({}, testInfo) => {
+  const home = testInfo.outputPath("home-browse-off");
+  const app = await launchShell({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: baseUrl, HOME: home, USERPROFILE: home, PEN_DESKTOP_USER_DATA_DIR: userDataWith(testInfo, "userdata-browse-off") },
+  });
+  try {
+    await expect(app.canvasPage.locator("#ready")).toHaveText("stub-editor");
+    const handshakePath = path.join(home, ".pen-editor", "mcp.json");
+    await expect.poll(() => existsSync(handshakePath), { timeout: 10_000 }).toBe(true);
+    const entry = JSON.parse(readFileSync(handshakePath, "utf8")) as { url: string; token: string };
+    const res = (await fetch(entry.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${entry.token}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "browse_open", arguments: { url: `${baseUrl}/browse-target` } } }),
+    }).then((r) => r.json())) as { result?: { content?: { text?: string }[]; isError?: boolean } };
+    expect(res.result?.isError).toBe(true);
+    expect(res.result?.content?.[0]?.text).toContain("turned off");
+  } finally {
+    await app.close().catch(() => {});
+  }
+});
+
+test("desktop MCP bridge: browse_* tools drive the built-in browser", async ({}, testInfo) => {
+  const home = testInfo.outputPath("home-browse");
+  const app = await launchShell({
+    args: ["."],
+    env: {
+      ...process.env,
+      PEN_DESKTOP_URL: baseUrl,
+      HOME: home,
+      USERPROFILE: home,
+      PEN_DESKTOP_USER_DATA_DIR: userDataWith(testInfo, "userdata-browse-on", { mcpBrowser: true }),
+    },
+  });
+
+  try {
+    await expect(app.canvasPage.locator("#ready")).toHaveText("stub-editor");
+    const handshakePath = path.join(home, ".pen-editor", "mcp.json");
+    await expect.poll(() => existsSync(handshakePath), { timeout: 10_000 }).toBe(true);
+    const entry = JSON.parse(readFileSync(handshakePath, "utf8")) as { url: string; token: string };
+
+    type Content = { type: string; text?: string; data?: string; mimeType?: string };
+    type Response = { result?: { content?: Content[]; isError?: boolean; tools?: { name: string }[] } };
+    let nextId = 1;
+    const post = (method: string, params?: unknown): Promise<Response> =>
+      fetch(entry.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${entry.token}` },
+        body: JSON.stringify({ jsonrpc: "2.0", id: nextId++, method, params }),
+      }).then((r) => r.json() as Promise<Response>);
+
+    const list = await post("tools/list");
+    const names = list.result?.tools?.map((t) => t.name) ?? [];
+    for (const n of ["browse_open", "browse_snapshot", "browse_screenshot", "browse_act", "browse_tabs", "browse_find_images", "browse_read"]) {
+      expect(names).toContain(n);
+    }
+    expect(names).not.toContain("browse_fill_login");
+
+    const opened = await post("tools/call", { name: "browse_open", arguments: { url: `${baseUrl}/browse-target` } });
+    expect(opened.result?.isError).toBeFalsy();
+    const openedBody = JSON.parse(opened.result?.content?.[0]?.text ?? "{}") as {
+      title?: string;
+      snapshot?: { snapshotId?: string; elements?: unknown[] };
+    };
+    expect(openedBody.title).toBe("Browse Target");
+    expect(openedBody.snapshot?.snapshotId).toBeTruthy();
+    expect(openedBody.snapshot?.elements?.length).toBeGreaterThan(0);
+
+    const shot = await post("tools/call", { name: "browse_screenshot", arguments: {} });
+    expect(shot.result?.isError).toBeFalsy();
+    const image = shot.result?.content?.find((c) => c.type === "image");
+    expect(image?.mimeType).toMatch(/^image\//);
+    expect((image?.data ?? "").length).toBeGreaterThan(100);
+    // The base64 never sits in a text item.
+    for (const c of shot.result?.content ?? []) if (c.type === "text") expect(c.text).not.toContain(image?.data ?? "never");
+
+    await app.close();
   } finally {
     await app.close().catch(() => {});
   }

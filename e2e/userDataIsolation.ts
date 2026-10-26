@@ -14,6 +14,8 @@ export const OWNED_USER_DATA_ENV = "PEN_E2E_OWNED_USER_DATA_DIR";
  * the developer set explicitly is left alone. Deleted by globalTeardown.ts.
  */
 export function isolateUserData(): void {
+  // No e2e launch may fetch the ad-block filter lists (hermetic, no network): see "Ad and tracker blocking".
+  process.env.PEN_DESKTOP_NO_ADBLOCK = "1";
   if (process.env.PEN_DESKTOP_USER_DATA_DIR) return;
   const dir = mkdtempSync(path.join(tmpdir(), "pen-desktop-e2e-"));
   process.env.PEN_DESKTOP_USER_DATA_DIR = dir;

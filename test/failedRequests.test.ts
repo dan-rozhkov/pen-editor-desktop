@@ -77,4 +77,13 @@ describe("failed request recorder", () => {
     r.onEvent("Page.loadEventFired", {});
     expect(r.drain()).toEqual([]);
   });
+
+  it("skips requests blocked by our ad blocker", () => {
+    const r = createFailedRequestRecorder();
+    r.onEvent("Network.requestWillBeSent", sent("1", "https://ads.test/a.js"));
+    r.onEvent("Network.loadingFailed", { requestId: "1", errorText: "net::ERR_BLOCKED_BY_CLIENT" });
+    r.onEvent("Network.requestWillBeSent", sent("2", "https://a.test/x"));
+    r.onEvent("Network.loadingFailed", { requestId: "2", errorText: "net::ERR_CONNECTION_REFUSED" });
+    expect(r.drain()).toEqual(["GET net::ERR_CONNECTION_REFUSED https://a.test/x"]);
+  });
 });
