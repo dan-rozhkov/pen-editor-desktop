@@ -104,9 +104,9 @@ body {
 }
 :is(.tab, .tab-ghost) .close::before { transform: rotate(45deg); }
 :is(.tab, .tab-ghost) .close::after { transform: rotate(-45deg); }
-/* "+" sits on the glass like the tabs, so it keeps the tab radius and the glass hover. */
+/* "+" sits on the glass like the tabs: same 28px height and glass hover, control radius (tabs keep 8px). */
 #new-tab {
-  flex: 0 0 28px; width: 28px; height: 28px; border-radius: 8px; padding: 0;
+  flex: 0 0 28px; width: 28px; height: 28px; border-radius: var(--radius-control); padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
   border: 0; background: none; color: var(--glass-text); cursor: pointer;
   app-region: no-drag;
@@ -147,7 +147,7 @@ body {
   flex: 0 0 28px; width: 28px; height: 28px;
   display: inline-flex; align-items: center; justify-content: center;
   border: 0; background: none; color: var(--text-active); cursor: pointer;
-  border-radius: var(--btn-radius); padding: 0;
+  border-radius: var(--radius-control); padding: 0;
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
@@ -171,7 +171,7 @@ body {
   /* Same box as the .nav-btn buttons beside it: 28px high, their radius and hover fill. */
   height: 28px;
   border: 0;
-  border-radius: var(--btn-radius);
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--text-active);
   /* The chat header title size (text-sm), in regular weight. */
@@ -199,7 +199,7 @@ body {
 .sidebar-toggle {
   display: inline-flex; align-items: center; justify-content: center;
   position: absolute; left: var(--toggle-left); top: 5px; width: 28px; height: 28px;
-  border: 0; border-radius: 8px; padding: 0; background: none; color: var(--glass-text); cursor: pointer;
+  border: 0; border-radius: var(--radius-control); padding: 0; background: none; color: var(--glass-text); cursor: pointer;
   app-region: no-drag; -webkit-app-region: no-drag;
 }
 .sidebar-toggle:hover { background: var(--glass-tab-hover); color: var(--text-active); }

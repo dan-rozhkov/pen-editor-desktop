@@ -379,7 +379,7 @@ body {
   height: 28px;
   padding: 0 10px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   color: var(--text-active);
   transition:
     background-color 150ms ease-out,
@@ -440,7 +440,7 @@ body {
   gap: 10px;
   background: transparent;
   border: 0;
-  border-radius: var(--btn-radius);
+  border-radius: var(--radius-control-xl);
   cursor: pointer;
 }
 
@@ -493,7 +493,7 @@ body {
   color: var(--text);
   background: transparent;
   border: 0;
-  border-radius: var(--btn-radius);
+  border-radius: var(--radius-control-sm);
   cursor: pointer;
 }
 

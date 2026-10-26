@@ -66,7 +66,7 @@ input {
   height: var(--control-h);
   padding: 0 8px 0 28px;
   border: 1px solid transparent;
-  border-radius: var(--btn-radius);
+  border-radius: var(--radius-control);
   background: var(--field-bg);
   color: var(--text-active);
   font: inherit;
@@ -81,7 +81,7 @@ input:focus-visible { border-color: var(--focus-ring); box-shadow: 0 0 0 1px var
   height: var(--control-h);
   padding: 0 10px;
   border: 1px solid var(--border);
-  border-radius: var(--btn-radius);
+  border-radius: var(--radius-control);
   background: var(--outline-fill);
   color: var(--text-active);
   font: 500 12px/1 var(--font);
@@ -121,7 +121,7 @@ input:focus-visible { border-color: var(--focus-ring); box-shadow: 0 0 0 1px var
   display: flex;
   align-items: center;
   height: 40px;
-  border-radius: var(--btn-radius);
+  border-radius: var(--radius-control-xl);
 }
 .row:hover, .row:focus-within { background: var(--btn-hover); }
 
@@ -134,7 +134,7 @@ input:focus-visible { border-color: var(--focus-ring); box-shadow: 0 0 0 1px var
   height: 100%;
   padding: 0 40px 0 8px;
   border: 0;
-  border-radius: var(--btn-radius);
+  border-radius: var(--radius-control-xl);
   background: transparent;
   color: inherit;
   font: inherit;
@@ -180,7 +180,7 @@ input:focus-visible { border-color: var(--focus-ring); box-shadow: 0 0 0 1px var
   width: 24px;
   height: 24px;
   border: 0;
-  border-radius: var(--btn-radius);
+  border-radius: var(--radius-control-sm);
   background: transparent;
   color: var(--muted);
   opacity: 0;

@@ -17,9 +17,14 @@
   --glass-tab-hover: light-dark(rgba(0, 0, 0, 0.04), rgba(255, 255, 255, 0.06));
   --glass-text: light-dark(rgba(0, 0, 0, 0.62), rgba(255, 255, 255, 0.62));
   /* Ghost icon button of the frontend (IconButton): hover fill = its --secondary (light) and
-     --color-surface-hover (dark); radius = its rounded-md (--radius 0.45rem - 2px). */
+     --color-surface-hover (dark). */
   --btn-hover: light-dark(oklch(0.97 0 0), #4a4a4a);
-  --btn-radius: calc(0.45rem - 2px);
+  /* Control radius scale (~0.32 x height), same names and values as the frontend's rounded-control*. */
+  --radius-control-xs: 6px; /* 20px tall */
+  --radius-control-sm: 8px; /* 24px */
+  --radius-control: 9px; /* 28px */
+  --radius-control-lg: 10px; /* 32px */
+  --radius-control-xl: 12px; /* 36-40px */
   /* Focus ring of the frontend Button: 2px solid --ring, which is the accent colour in both themes. */
   --focus-ring: #0d99ff;
   /* Page-loading fill inside the tab pill, over the pill's own background. */
