@@ -233,5 +233,7 @@ describe("errors", () => {
   it("names the unsupported action", () => {
     expect(ERR_NATIVE_UNSUPPORTED("reload")).toContain("reload");
     expect(NATIVE_MODE_NOTE).toContain("without a restart");
+    expect(NATIVE_MODE_NOTE).toContain("placeholder of an empty field");
+    expect(NATIVE_MODE_NOTE).toContain("A tooltip is in the window text only as the name of a control");
   });
 });

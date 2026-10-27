@@ -309,13 +309,17 @@ private final class ReadWalker {
         case "AXHeading":
             add(axValueText(el) ?? axString(el, "AXTitle") ?? axString(el, "AXDescription"))
         case "AXTextField", "AXTextArea", "AXSearchField", "AXComboBox":
-            add(axValueText(el))
+            // An empty field shows its placeholder on screen; a filled one (even with spaces only) shows its value.
+            let value = axValueText(el) ?? ""
+            add(value.isEmpty ? axString(el, "AXPlaceholderValue") : value)
             return
         case "AXCheckBox", "AXRadioButton", "AXButton", "AXLink", "AXMenuItem":
             // The label is the visible text of a control; its children repeat it.
             add(axString(el, "AXTitle") ?? axString(el, "AXDescription") ?? labelFor(el, role: role))
             if role != "AXLink" { return }
         case "AXSecureTextField":
+            // Never add the value. Only test it for emptiness (like the snapshot's hasValue): the placeholder shows only then.
+            if (axValueText(el) ?? "").isEmpty { add(axString(el, "AXPlaceholderValue")) }
             return
         default:
             break
