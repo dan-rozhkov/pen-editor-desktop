@@ -189,7 +189,7 @@ input:focus-visible { border-color: var(--focus-ring); box-shadow: 0 0 0 1px var
   transition: opacity 120ms var(--ease), background-color 150ms var(--ease);
 }
 .row:hover .row-remove, .row:focus-within .row-remove, .row-remove:focus-visible { opacity: 1; }
-.row-remove:hover { background: var(--glass-tab-active); color: var(--text-active); }
+.row-remove:hover { background: var(--glass-tab-active); color: var(--icon); }
 .row-remove:focus-visible { box-shadow: 0 0 0 2px var(--focus-ring); }
 
 /* ---------- empty ---------- */

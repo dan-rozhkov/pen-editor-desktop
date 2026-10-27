@@ -46,6 +46,13 @@ describe("window colours", () => {
     const css = readFileSync(path.join(__dirname, "../src/tabbar/tokens.css"), "utf8");
     expect(css).toContain(`--island-bg: light-dark(${ISLAND_BG.light}, ${ISLAND_BG.dark});`);
   });
+  it("passwords.css (no tokens.css) copies the light --icon of tokens.css", () => {
+    const tokens = readFileSync(path.join(__dirname, "../src/tabbar/tokens.css"), "utf8");
+    const passwords = readFileSync(path.join(__dirname, "../src/passwords/passwords.css"), "utf8");
+    const light = /--icon: light-dark\(([^,]+),/.exec(tokens)?.[1];
+    expect(light).toBeTruthy();
+    expect(passwords).toContain(`--icon: ${light};`);
+  });
 });
 
 describe("isPanelDocument", () => {
