@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.9.3](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.9.2...v0.9.3) (2026-10-27)
+
+
+### Features
+
+* **browser:** ad and tracker blocking, browser control over MCP ([d464e33](https://github.com/dan-rozhkov/pen-editor-desktop/commit/d464e33818f82c42e74797b82d71e231574ab9fa))
+* **chats:** keep agent panel chats on disk ([802011d](https://github.com/dan-rozhkov/pen-editor-desktop/commit/802011d12efbbe6d1d325a34b822fade5bb3f18c))
+* **computer-use:** assert names the checked element and the window ([8d068b0](https://github.com/dan-rozhkov/pen-editor-desktop/commit/8d068b090cbbcc395d9794737dbb5e01d996c711))
+* **settings:** accept the new Settings sections ([9fdebc5](https://github.com/dan-rozhkov/pen-editor-desktop/commit/9fdebc5b529bec4fffb78259fd8b85d99e2f5b67))
+* **traces:** DOM snapshots in local traces, capture for Electron apps ([7ef1500](https://github.com/dan-rozhkov/pen-editor-desktop/commit/7ef150019d6550378145f2ef5032f76c44a68cc5))
+
+
+### Bug Fixes
+
+* **computer-use:** name a missing app instead of "must be a .app bundle" ([fc45497](https://github.com/dan-rozhkov/pen-editor-desktop/commit/fc454976da316d84bb90ede5943f6cf0e8fe826d))
+* **computer-use:** window text includes placeholders of empty fields ([4d17a30](https://github.com/dan-rozhkov/pen-editor-desktop/commit/4d17a30eb77f294c54221ff31da8265b2e48c799))
+* **empty:** size Recent "Show all" to its label ([4dea194](https://github.com/dan-rozhkov/pen-editor-desktop/commit/4dea194a1e28a647798dac5bd9bde394f282bd72))
+* **empty:** style Recent "Show all" like the chat files popover ([7e1adad](https://github.com/dan-rozhkov/pen-editor-desktop/commit/7e1adad923c5c96188ff037be1e27b6a85e84b1d))
+* gray pen icons on the History and Passwords pages in light theme ([9643452](https://github.com/dan-rozhkov/pen-editor-desktop/commit/9643452f1f0af5fe02838dffaea5f7c71d7643e1))
+* **icons:** draw the shell's icons from the pen icon set ([f4b305f](https://github.com/dan-rozhkov/pen-editor-desktop/commit/f4b305fc64c3b90719805a1b2cd6f06f417f2949))
+* **icons:** re-copy the pen set's longer arrow heads ([cbd3164](https://github.com/dan-rozhkov/pen-editor-desktop/commit/cbd31648c602e25d9315793e08fd4d1032ce40fc))
+* **icons:** re-copy the pen set's Trash glyph ([3964abd](https://github.com/dan-rozhkov/pen-editor-desktop/commit/3964abda6947a10b3fc1014257c1df032ab74e42))
+* **passwords:** match the Settings nav on hover, selection and icons ([ead104c](https://github.com/dan-rozhkov/pen-editor-desktop/commit/ead104c7515bdf69bd196ba9b04f4cebc01e21e3))
+
 ## [0.9.2](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.9.1...v0.9.2) (2026-10-25)
 
 
