@@ -1,0 +1,26 @@
+{
+  "name": "browse-task-bench",
+  "private": true,
+  "type": "module",
+  "description": "Local-only benchmark of the desktop agent's browse_task (Jev loop): success, speed, cascade/LLM-assist rate.",
+  "scripts": {
+    "bench": "tsx src/cli.ts",
+    "report": "tsx src/report.ts",
+    "judge": "tsx src/judgeCli.ts",
+    "check": "tsc --noEmit && tsx src/fixtures/selfcheck.ts",
+    "compare": "tsx src/compare.ts",
+    "om2w:prepare": "tsx src/om2wPrepare.ts",
+    "om2w:report": "tsx src/om2wReport.ts",
+    "wv:prepare": "tsx src/webvoyagerPrepare.ts",
+    "wv:report": "tsx src/webvoyagerReport.ts",
+    "wtb:prepare": "tsx src/wtbPrepare.ts",
+    "wtb:report": "tsx src/wtbReport.ts",
+    "cost": "tsx src/cost.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "playwright": "^1.55.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

@@ -42,5 +42,9 @@
       ],
       "automerge": true
     }
+  ],
+  "ignorePaths": [
+    "**/node_modules/**",
+    "bench/**"
   ]
 }

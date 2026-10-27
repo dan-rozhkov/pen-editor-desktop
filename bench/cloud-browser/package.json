@@ -1,0 +1,1 @@
+{"name":"cloud-browser-spike","private":true,"type":"module","scripts":{"bundle":"esbuild src/worker.ts --bundle --platform=node --format=esm --external:playwright --outfile=dist/worker.mjs --banner:js=\"import {createRequire} from 'module';const require=createRequire(import.meta.url);\""}}

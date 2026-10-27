@@ -1,0 +1,12 @@
+# Raw run outputs: per-run Electron homes, logs, traces, screenshots, run JSON.
+**/results/
+# Downloaded datasets (recreated by browse-task/scripts/setup-data.sh).
+**/data/
+# Scheduled-agent logs.
+nightly/logs/
+# Secrets: only the *.example files are tracked.
+.env*
+!.env*.example
+node_modules/
+*.log
+.DS_Store
