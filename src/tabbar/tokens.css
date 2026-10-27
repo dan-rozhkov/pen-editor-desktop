@@ -16,6 +16,14 @@
   --glass-tab-active: light-dark(rgba(0, 0, 0, 0.07), rgba(255, 255, 255, 0.1));
   --glass-tab-hover: light-dark(rgba(0, 0, 0, 0.04), rgba(255, 255, 255, 0.06));
   --glass-text: light-dark(rgba(0, 0, 0, 0.62), rgba(255, 255, 255, 0.62));
+  /* Icon colors: the --text-active / --glass-text pair for glyphs. Light: what the frontend's
+     icon rule (index.css, [data-pen-icon]) makes of those two text colors: --text-active becomes
+     the menu icon gray (--menu-muted-foreground; pinned by pen-editor's desktopTokensContract),
+     --glass-text the same gray at alpha 0.8 (the frontend lifts 0.62 to 0.71; 0.8 keeps idle icons
+     at about 3:1 on the darker glass), so icons stop reading as heavy ink and active/hover/pressed
+     still darken. Dark: the same two values as before. */
+  --icon: light-dark(oklch(0.52 0 0), rgba(255, 255, 255, 0.87));
+  --icon-subtle: light-dark(oklch(0.52 0 0 / 0.8), rgba(255, 255, 255, 0.62));
   /* Ghost icon button of the frontend (IconButton): hover fill = its --secondary (light) and
      --color-surface-hover (dark). */
   --btn-hover: light-dark(oklch(0.97 0 0), #4a4a4a);

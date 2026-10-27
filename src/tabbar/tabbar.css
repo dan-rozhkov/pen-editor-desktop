@@ -87,17 +87,18 @@ body {
 :is(.tab, .tab-ghost) .close {
   position: absolute; right: var(--close-inset); top: calc(50% - var(--close-size) / 2);
   width: var(--close-size); height: var(--close-size);
-  border: 0; background: none; color: inherit;
+  border: 0; background: none; color: var(--icon-subtle);
   cursor: pointer; padding: 0; border-radius: 4px; visibility: hidden;
 }
-.tab:hover .close, :is(.tab, .tab-ghost).active .close { visibility: visible; }
+.tab:hover .close, :is(.tab, .tab-ghost).active .close { visibility: visible; color: var(--icon); }
 .tab:hover .title, :is(.tab, .tab-ghost).active .title {
   /* Fully transparent under the whole button (its hover fill too), then an 8px fade. */
   --close-cover: calc(var(--close-inset) + var(--close-size) - var(--tab-pad-end));
   mask-image: linear-gradient(to left, transparent var(--close-cover), #000 calc(var(--close-cover) + 8px));
 }
-/* Translucent so it still reads on a hovered (already grey) inactive pill. */
-:is(.tab, .tab-ghost) .close:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
+/* Translucent so it still reads on a hovered (already grey) inactive pill. Mixed from the tab's
+   text color, not the lighter icon gray, so the fill stays as visible as the title. */
+:is(.tab, .tab-ghost) .close:hover { background: color-mix(in srgb, var(--text-active) 12%, transparent); }
 :is(.tab, .tab-ghost) .close::before, :is(.tab, .tab-ghost) .close::after {
   content: ""; position: absolute; left: 5px; top: 9.5px;
   width: 10px; height: 1px; border-radius: 1px; background: currentColor;
@@ -108,11 +109,11 @@ body {
 #new-tab {
   flex: 0 0 28px; width: 28px; height: 28px; border-radius: var(--radius-control); padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
-  border: 0; background: none; color: var(--glass-text); cursor: pointer;
+  border: 0; background: none; color: var(--icon-subtle); cursor: pointer;
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
-#new-tab:hover { color: var(--text-active); background: var(--glass-tab-hover); }
+#new-tab:hover { color: var(--icon); background: var(--glass-tab-hover); }
 #new-tab svg { width: 16px; height: 16px; }
 /* One focus ring everywhere: the frontend Button's 2px ring in --ring (the accent colour). */
 :is(.tab, .tab-ghost):focus-visible, .tab .close:focus-visible, #new-tab:focus-visible,
@@ -146,7 +147,7 @@ body {
 .nav-btn {
   flex: 0 0 28px; width: 28px; height: 28px;
   display: inline-flex; align-items: center; justify-content: center;
-  border: 0; background: none; color: var(--text-active); cursor: pointer;
+  border: 0; background: none; color: var(--icon); cursor: pointer;
   border-radius: var(--radius-control); padding: 0;
   app-region: no-drag;
   -webkit-app-region: no-drag;
@@ -199,16 +200,16 @@ body {
 .sidebar-toggle {
   display: inline-flex; align-items: center; justify-content: center;
   position: absolute; left: var(--toggle-left); top: 5px; width: 28px; height: 28px;
-  border: 0; border-radius: var(--radius-control); padding: 0; background: none; color: var(--glass-text); cursor: pointer;
+  border: 0; border-radius: var(--radius-control); padding: 0; background: none; color: var(--icon-subtle); cursor: pointer;
   app-region: no-drag; -webkit-app-region: no-drag;
 }
-.sidebar-toggle:hover { background: var(--glass-tab-hover); color: var(--text-active); }
-.sidebar-toggle[aria-pressed="true"] { color: var(--text-active); }
+.sidebar-toggle:hover { background: var(--glass-tab-hover); color: var(--icon); }
+.sidebar-toggle[aria-pressed="true"] { color: var(--icon); }
 .tab-icon {
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 18px; width: 18px; height: 18px;
-  color: var(--glass-text);
+  color: var(--icon-subtle);
 }
-:is(.tab, .tab-ghost).active .tab-icon { color: var(--text-active); }
+:is(.tab, .tab-ghost).active .tab-icon { color: var(--icon); }
 .tab-icon .glyph { width: 16px; height: 16px; }
 /* Pen-set icons keep a constant screen stroke at every size (the frontend's index.css rule; glyphs.ts). */
 [data-pen-icon] * { vector-effect: non-scaling-stroke; }
