@@ -16,6 +16,8 @@ import {
   isBlockedNativeApp,
   nativeRiskOf,
   errAppNotRunning,
+  errAppNameNotFound,
+  ERR_APP_NOT_BUNDLE,
   openApp,
   type AppPathResult,
   type ComputerUseDeps,
@@ -198,6 +200,24 @@ describe("openApp: native attach", () => {
     expect(await t.run("/Applications/Missing.app")).toEqual({ error: errAppNotRunning(ERR_APP_NOT_ELECTRON, ["Finder", "Notes"]) });
     expect(t.validate).toHaveBeenCalledWith("/Applications/Missing.app");
     expect(t.cu.confirmAttach).not.toHaveBeenCalled();
+  });
+  it("a name nothing matched: its own error with the running apps, not the bundle error", async () => {
+    const t = setup({ apps: [notes, mk({ pid: 1, name: "Electron", bundleId: "com.github.Electron" })], validate: async () => ({ ok: false, error: ERR_APP_NOT_BUNDLE }) });
+    const r = (await t.run("Qure Dev")) as { error: string };
+    expect(r.error).toBe(errAppNameNotFound("Qure Dev", ["Electron", "Notes"]));
+    expect(r.error).toBe(
+      'No running app or window has the name "Qure Dev". Give the name of a running app, or the absolute path of a .app bundle. Running apps: Electron, Notes. Unpackaged Electron dev builds show as "Electron".',
+    );
+    expect(r.error).not.toContain("must be a .app bundle");
+  });
+  it("an absolute path that is not a bundle keeps the bundle error", async () => {
+    const t = setup({ apps: [notes], validate: async () => ({ ok: false, error: ERR_APP_NOT_BUNDLE }) });
+    expect(await t.run("/Applications")).toEqual({ error: errAppNotRunning(ERR_APP_NOT_BUNDLE, ["Notes"]) });
+  });
+  it("the echoed name drops control characters and is capped", () => {
+    const e = errAppNameNotFound(`a\nb${"x".repeat(200)}`);
+    expect(e).not.toContain("\n");
+    expect(e).toContain('"a b' + "x".repeat(77) + '..."');
   });
   it("the running-apps hint lists neither blocked nor high-risk apps", async () => {
     const t = setup({

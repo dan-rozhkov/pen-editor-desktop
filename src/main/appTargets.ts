@@ -845,6 +845,15 @@ export interface ComputerUseDeps {
 export const errAppNotRunning = (base: string, names: readonly string[]): string =>
   `${base} To control an app without a restart, it must be running. Running apps: ${names.length > 0 ? names.join(", ") : "none"}.`;
 
+/** The input was a name (not an absolute path) and no running app or window matched it. */
+export const errAppNameNotFound = (name: string, names?: readonly string[]): string => {
+  // eslint-disable-next-line no-control-regex
+  const clean = name.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  const shown = clean.length > 80 ? `${clean.slice(0, 80)}...` : clean;
+  const base = `No running app or window has the name "${shown}". Give the name of a running app, or the absolute path of a .app bundle.`;
+  return names === undefined ? base : `${base} Running apps: ${names.length > 0 ? names.join(", ") : "none"}. Unpackaged Electron dev builds show as "Electron".`;
+};
+
 const NOT_RUNNING_HINT_ERRORS: ReadonlySet<string> = new Set([ERR_APP_NOT_ELECTRON, ERR_APP_BAD_ROOT, ERR_APP_NOT_FOUND, ERR_APP_NOT_BUNDLE]);
 
 /** The whole app open: reserve, validate, confirm, launch. Never throws. */
@@ -915,6 +924,9 @@ export async function openApp<H extends AppHandle & { controller: Pick<AppContro
       }
     }
     const valid = await deps.validate(requested);
+    if (!valid.ok && valid.error === ERR_APP_NOT_BUNDLE && typeof requested === "string" && requested.trim() !== "" && !path.isAbsolute(requested)) {
+      return { error: errAppNameNotFound(requested, cu && apps ? runningAppNames(apps.filter((a) => nativeRiskOf(a) === "normal")) : undefined) };
+    }
     if (!valid.ok) return { error: cu && apps && NOT_RUNNING_HINT_ERRORS.has(valid.error) ? errAppNotRunning(valid.error, runningAppNames(apps.filter((a) => nativeRiskOf(a) === "normal"))) : valid.error };
     if (ticket.cancelled) return { error: ERR_APP_RELEASED };
     // Another key holds the user's profile of this bundle (restarting it, or running it): that instance is
