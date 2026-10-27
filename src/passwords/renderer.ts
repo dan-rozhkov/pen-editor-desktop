@@ -96,10 +96,10 @@
 
   // Site icon: the cached favicon through <img> (never inlined, even an SVG;
   // accepted only as an allowed image data: URL, which main checks too and the
-  // CSP allows), else the pen-set globe: "fill" weight on the selected row
-  // like SettingsNav's active item, regular otherwise. Used by the list rows and the hero tile.
-  function siteIcon(iconUrl?: string, filled = false, imgClass = "row-icon"): Element {
-    const globe = () => icon("Globe", filled ? "fill" : "regular");
+  // CSP allows), else the pen-set globe, always the
+  // outline weight (selected too, like SettingsNav). Used by the list rows and the hero tile.
+  function siteIcon(iconUrl?: string, imgClass = "row-icon"): Element {
+    const globe = () => icon("Globe");
     if (iconUrl && helpers.isIconDataUrl(iconUrl)) {
       const img = el("img", imgClass);
       img.alt = "";
@@ -148,7 +148,7 @@
     row.setAttribute("aria-selected", String(selected));
     row.dataset.id = e.id;
     row.setAttribute("aria-label", [host, e.username, e.label].filter(Boolean).join(", "));
-    row.append(siteIcon(e.icon, selected), el("span", "row-title", host));
+    row.append(siteIcon(e.icon), el("span", "row-title", host));
     // Same site name on two or more logins: show a suffix so they differ.
     if (suffix) row.appendChild(el("span", "row-sub", "· " + suffix));
     row.addEventListener("click", () => guardNav(() => selectEntry(e.id)));
@@ -250,7 +250,7 @@
 
     const tile = el("div", "hero-tile");
     tile.setAttribute("aria-hidden", "true");
-    tile.appendChild(siteIcon(entry.icon, false, "hero-tile-img"));
+    tile.appendChild(siteIcon(entry.icon, "hero-tile-img"));
     const hero = el("div", "hero");
     hero.append(tile, el("h1", "hero-title", host), actions);
 
