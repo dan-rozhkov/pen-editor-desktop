@@ -565,7 +565,26 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
   const cut = (v: string, n = ACTUAL_MAX_CHARS): string => (v.length > n ? `${v.slice(0, n - 3)}...` : v);
   const squash = (v: string): string => v.replace(/\s+/g, " ").trim().toLowerCase();
 
-  type CheckResult = { check: unknown; passed: boolean; actual?: string; error?: string };
+  type CheckResult = { check: unknown; passed: boolean; actual?: string; error?: string; target?: string };
+
+  /**
+   * Describes the element an index check addressed: `role "label"`, at most 80 chars. Mirrors the target format of
+   * @sideform/browser-agent (not importable: the pinned v0.4.3 lacks it). The label is cut first; no label gives the role alone.
+   */
+  const TARGET_MAX_CHARS = 80;
+  function describeTarget(el: NativeElement): string | undefined {
+    const role = (el.tag ?? "").replace(/\s+/g, " ").trim();
+    let label = (el.label ?? "").replace(/\s+/g, " ").trim();
+    if (label === `${el.tag ?? ""} #${el.index}`) label = "";
+    if (!role && !label) return undefined;
+    if (!label) return role.slice(0, TARGET_MAX_CHARS);
+    const prefix = role ? `${role.slice(0, 40)} ` : "";
+    // As in the package: a quote inside the label becomes ', and the label is cut before it is quoted.
+    label = label.replace(/"/g, "'");
+    const keep = TARGET_MAX_CHARS - prefix.length - 2;
+    if (label.length > keep) label = `${label.slice(0, Math.max(0, keep - 3)).replace(/[\uD800-\uDBFF]$/, "")}...`;
+    return `${prefix}"${label}"`;
+  }
   type Verdict = { passed: boolean; actual?: string; error?: string };
 
   /** `el` is the single element the check is about; `present` says whether any candidate with the same tag and label exists. */
@@ -607,6 +626,7 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
     const results: CheckResult[] = [];
     let read: { text: string; truncated: boolean } | undefined;
     let big: Snap | undefined;
+    let winInfo: { url: string; title: string } | undefined;
     for (const raw of parsed.value) {
       const check = raw as unknown as Record<string, unknown>;
       const type = str(check.type);
@@ -657,6 +677,8 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         }
         const el = reidentify(orig, index, big.elements);
         const ambiguous = ERR_NATIVE_CHECK_AMBIGUOUS(index, orig.tag ?? "", orig.label ?? "");
+        const target = el ? describeTarget(el) : undefined;
+        const n = results.length;
         if (type === "element") {
           results.push({ check, ...elementState(present, el, str(check.state), ambiguous) });
         } else if (!present) {
@@ -666,6 +688,8 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         } else {
           results.push({ check, ...valueCheck(el, check) });
         }
+        if (target && results.length > n) results[n].target = target;
+        winInfo ??= { url: urlOf(big.windowId), title: big.title };
       } else if (type === "url") {
         results.push({ check, passed: false, error: ERR_NATIVE_CHECK_UNSUPPORTED("url check") });
       } else if (type === "element" || type === "value" || type === "count") {
@@ -675,7 +699,7 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         results.push({ check, passed: false, error: ERR_NATIVE_CHECK_UNSUPPORTED(`${type || "unknown"} check`) });
       }
     }
-    return { ok: true, passed: results.every((r) => r.passed), results };
+    return { ok: true, passed: results.every((r) => r.passed), results, ...(winInfo ? { url: winInfo.url, title: winInfo.title } : {}) };
   }
 
   const unsupported = (name: string) => async () => ({ error: ERR_NATIVE_UNSUPPORTED(name) });

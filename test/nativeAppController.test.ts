@@ -745,6 +745,42 @@ describe("assert (QA checks)", () => {
     expect(r.results[6].actual).toBe("not found");
   });
 
+  it("target: index check names role and label; long label is cut well-formed; missing element has none", async () => {
+    const long = `Save "everything" ${"x".repeat(200)}`;
+    const els = [
+      { index: 0, tag: "AXTextField", label: "Name", ops: ["TYPE_TEXT"], value: "a" },
+      { index: 1, tag: "AXButton", label: long, ops: ["CLICK"] },
+    ];
+    let phase = 0;
+    const { ctl } = setup({
+      snapshot: () => ({ snapshotId: `s${phase}`, elements: phase === 0 ? els : els.slice(0, 1), truncated: false, window: WIN }),
+    });
+    await ctl.snapshot();
+    phase = 1;
+    const r = (await ctl.assert({
+      checks: [{ type: "value", index: 0, equals: "a" }, { type: "element", index: 1, state: "exists" }, { type: "text", text: "a" }],
+    })) as { url?: string; title?: string; results: { passed: boolean; target?: string }[] };
+    expect(r.results[0].target).toBe('AXTextField "Name"');
+    expect(r.results[1].passed).toBe(false);
+    expect(r.results[1].target).toBeUndefined();
+    expect(r.results[2].target).toBeUndefined();
+    expect(r.title).toBe("Main");
+    expect(r.url).toMatch(/^macos-app:\/\//);
+    phase = 0;
+    const r2 = (await ctl.assert({ checks: [{ type: "element", index: 1, state: "exists" }] })) as { results: { target?: string }[] };
+    const t = r2.results[0].target!;
+    expect(t.length).toBeLessThanOrEqual(80);
+    expect(t.startsWith(`AXButton "Save 'everything'`)).toBe(true);
+    expect(t.endsWith('..."')).toBe(true);
+    expect(() => JSON.parse(t.slice("AXButton ".length))).not.toThrow();
+  });
+
+  it("target: selector check has no target", async () => {
+    const { ctl } = setup({});
+    const r = (await ctl.assert({ checks: [{ type: "element", selector: "#x", state: "exists" }] })) as { results: { target?: string }[] };
+    expect(r.results[0].target).toBeUndefined();
+  });
+
   it("element by index: re-identifies when the index shifts", async () => {
     let shifted = false;
     const { ctl, of } = setup({
