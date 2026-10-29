@@ -106,6 +106,8 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "empty:open", direction: "renderer->main" },
   // Right-click on a Recent row (empty view only): native menu with Open and the reveal item.
   { name: "empty:recent-menu", direction: "renderer->main" },
+  // Filter button of the Recent header (empty view only, invoke): native menu; answers the picked choice or null.
+  { name: "empty:filter-menu", direction: "renderer->main" },
   // Bulk delete of Recent rows (empty view only, invoke): native confirm in main; docs:removed then tells the agent panel which doc ids are gone.
   { name: "empty:delete", direction: "renderer->main" },
   { name: "docs:removed", direction: "main->renderer" },

@@ -17,6 +17,12 @@
         failed?: { kind: "canvas" | "doc"; id: string }[];
         cancelled?: boolean;
       }>;
+      openFilterMenu(
+        anchor: { x: number; y: number },
+        state: { kinds: { canvas: boolean; doc: boolean }; modified: RecentModifiedRange },
+      ): Promise<
+        { action: "kind"; kind: "canvas" | "doc"; checked: boolean } | { action: "modified"; modified: RecentModifiedRange } | { action: "reset" } | null
+      >;
       onRecentChanged(cb: () => void): void;
       onState(cb: (state: { theme: "light" | "dark"; sessionTabs: number }) => void): void;
     };
@@ -57,8 +63,6 @@
   const searchInput = document.getElementById("recent-search") as HTMLInputElement;
   const searchClear = document.getElementById("recent-search-clear") as HTMLButtonElement;
   const filterToggle = document.getElementById("recent-filter-toggle") as HTMLButtonElement;
-  const popover = document.getElementById("recent-filter-popover")!;
-  const resetFilters = document.getElementById("recent-filter-reset") as HTMLButtonElement;
   const countLabel = document.getElementById("recent-count")!;
   const noteLabel = document.getElementById("recent-note")!;
   const selectAllBtn = document.getElementById("recent-select-all") as HTMLButtonElement;
@@ -102,7 +106,6 @@
     recent.classList.toggle("selecting", n > 0);
     bar.hidden = n > 0;
     selbar.hidden = n === 0;
-    if (n > 0) setPopover(false);
     countLabel.textContent = n + " selected";
     selectAllBtn.hidden = matching.length > 0 && matching.every((item) => selected.has(keyOf(item)));
     deleteBtn.disabled = deleting;
@@ -261,51 +264,32 @@
     if (searchInput.value === "") setSearchOpen(false);
   });
 
-  // ---- Filter popover ----
-  const popoverOpen = () => !popover.hidden;
-  function setPopover(open: boolean) {
-    if (open === popoverOpen()) return;
-    popover.hidden = !open;
-    filterToggle.setAttribute("aria-expanded", String(open));
-  }
+  // ---- Filter menu (native, like the other popups: main pops it under the button) ----
   function updateFilterUi() {
-    for (const el of Array.from(popover.querySelectorAll<HTMLElement>("[data-kind]"))) {
-      el.setAttribute("aria-checked", String(kinds[el.dataset.kind as Kind]));
-    }
-    for (const el of Array.from(popover.querySelectorAll<HTMLElement>("[data-modified]"))) {
-      el.setAttribute("aria-checked", String(el.dataset.modified === modified));
-    }
-    resetFilters.disabled = filterIsDefault();
     filterToggle.classList.toggle("is-active", !filterIsDefault());
   }
-  filterToggle.addEventListener("click", () => setPopover(!popoverOpen()));
-  popover.addEventListener("click", (e) => {
-    const item = (e.target as Element).closest<HTMLElement>(".pop-item");
-    if (!item || (item as HTMLButtonElement).disabled) return;
-    if (item.dataset.kind) kinds = { ...kinds, [item.dataset.kind]: !kinds[item.dataset.kind as Kind] };
-    else if (item.dataset.modified) modified = item.dataset.modified as RecentModifiedRange;
-    else if (item === resetFilters) {
+  filterToggle.addEventListener("click", async () => {
+    if (filterToggle.getAttribute("aria-expanded") === "true") return;
+    // aria-expanded keeps the button in its pressed look while the menu is open.
+    filterToggle.setAttribute("aria-expanded", "true");
+    const rect = filterToggle.getBoundingClientRect();
+    let choice: Awaited<ReturnType<typeof bridge.openFilterMenu>> = null;
+    try {
+      choice = await bridge.openFilterMenu({ x: rect.left, y: rect.bottom }, { kinds, modified });
+    } catch (err) {
+      console.error("filter menu failed", err);
+    } finally {
+      filterToggle.setAttribute("aria-expanded", "false");
+      filterToggle.focus();
+    }
+    if (!choice) return;
+    if (choice.action === "kind") kinds = { ...kinds, [choice.kind]: choice.checked };
+    else if (choice.action === "modified") modified = choice.modified;
+    else {
       kinds = { canvas: true, doc: true };
       modified = "any";
     }
     refilter();
-    if (item === resetFilters) popover.querySelector<HTMLElement>(".pop-item")?.focus();
-  });
-  popover.addEventListener("keydown", (e) => {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    const list = Array.from(popover.querySelectorAll<HTMLButtonElement>(".pop-item:not(:disabled)"));
-    const at = list.indexOf(document.activeElement as HTMLButtonElement);
-    if (at === -1) return;
-    e.preventDefault();
-    list[(at + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length].focus();
-  });
-  document.addEventListener("pointerdown", (e) => {
-    const t = e.target as Node;
-    if (popoverOpen() && !popover.contains(t) && !filterToggle.contains(t)) setPopover(false);
-  });
-  popover.addEventListener("focusout", (e) => {
-    const next = e.relatedTarget as Node | null;
-    if (next && !popover.contains(next) && !filterToggle.contains(next)) setPopover(false);
   });
 
   document.getElementById("recent-clear-filters")!.addEventListener("click", () => {
@@ -365,13 +349,10 @@
       });
   });
 
-  // Esc: close the filter popover, else the search field (text first), else the selection.
+  // Esc: clear the search field (text first), else close it, else clear the selection.
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    if (popoverOpen()) {
-      setPopover(false);
-      filterToggle.focus();
-    } else if (document.activeElement === searchInput) {
+    if (document.activeElement === searchInput) {
       if (searchInput.value !== "") {
         searchInput.value = "";
         syncSearchClear();

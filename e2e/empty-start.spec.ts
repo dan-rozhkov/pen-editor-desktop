@@ -298,16 +298,33 @@ test("the Recent list searches, filters, selects with checkboxes and bulk delete
     await expect(rows).toHaveCount(3);
     await expect(empty.locator("#recent-search")).toBeHidden();
 
-    // Filter: Type toggles; the toggle button gets the active dot class; Esc closes the popover.
-    await empty.locator("#recent-filter-toggle").click();
-    await expect(empty.locator("#recent-filter-popover")).toBeVisible();
-    await empty.getByRole("menuitemcheckbox", { name: "Canvases" }).click();
+    // Filter: a native menu, which Playwright cannot click. The main process records the template and
+    // "clicks" the item of the next menu by label, then closes it (the popup callback), like a real pick.
+    const pickFilterItem = async (label: string) => {
+      await app.evaluate(({ Menu }, wanted) => {
+        const orig = Menu.buildFromTemplate.bind(Menu);
+        Menu.buildFromTemplate = (tpl: any) => {
+          const m = orig(tpl);
+          // Only the filter menu (the one with a "Canvases" item) is intercepted; any other menu passes through.
+          if (!tpl.some((i: any) => i.label === "Canvases")) return m;
+          Menu.buildFromTemplate = orig;
+          m.popup = (opts: any) => {
+            const item = tpl.find((i: any) => i.label === wanted);
+            if (!item) throw new Error(`no "${wanted}" item in the filter menu`);
+            item.click({ checked: item.type === "checkbox" ? !item.checked : true });
+            opts?.callback?.();
+          };
+          return m;
+        };
+      }, label);
+      await empty.locator("#recent-filter-toggle").click();
+    };
+    await pickFilterItem("Canvases");
     await expect(rows).toHaveCount(2);
     await expect(empty.locator("#recent-filter-toggle")).toHaveClass(/is-active/);
-    await empty.getByRole("button", { name: "Reset filters" }).click();
+    await expect(empty.locator("#recent-filter-toggle")).toHaveAttribute("aria-expanded", "false");
+    await pickFilterItem("Reset filters");
     await expect(rows).toHaveCount(3);
-    await empty.keyboard.press("Escape");
-    await expect(empty.locator("#recent-filter-popover")).toBeHidden();
     await expect(empty.locator("#recent-filter-toggle")).not.toHaveClass(/is-active/);
 
     // The checkbox shows on hover; selecting swaps the header for "N selected" and a plain row click then toggles.

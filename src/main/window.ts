@@ -13,7 +13,7 @@ import {
   type TabsSnapshot,
   type UITheme,
 } from "./tabManager";
-import { buildMenuTemplate, buildNewTabMenuTemplate, buildRecentContextMenuTemplate, buildTabContextMenuTemplate, REVEAL_MENU_ITEM_ID } from "./menu";
+import { buildMenuTemplate, buildNewTabMenuTemplate, buildRecentContextMenuTemplate, buildRecentFilterMenuTemplate, type RecentFilterChoice, buildTabContextMenuTemplate, REVEAL_MENU_ITEM_ID } from "./menu";
 import { parseTabMenuPayload, revealInFolder, revealMenuLabel, type RevealDirs, type RevealTarget } from "./revealInFolder";
 import {
   buildBrowserToolsMenuTemplate,
@@ -77,7 +77,7 @@ import { canvasDirFor, createCanvasStore, type CanvasStore } from "./canvasStore
 import { handleCanvasDelete, handleCanvasList, handleCanvasRead, handleCanvasSave, type CanvasIpcDeps } from "./canvasIpc";
 import { changedRecentItems, loadRecentItems } from "./recentItems";
 import { deleteConfirmCopy, deleteRecentItems } from "./emptyDelete";
-import { notifyRecentChanged, openRecentItem, parseRecentMenuRequest, recentFor } from "./emptyOpen";
+import { notifyRecentChanged, openRecentItem, parseRecentFilterMenuRequest, parseRecentMenuRequest, recentFor } from "./emptyOpen";
 import { CANVAS_WRITER_GRACE_MS, canvasSenders, flushPage, flushThenClose, pendingCloseFlushes } from "./canvasWriters";
 import { chatDirFor, createChatStore, type ChatStore } from "./chatStore";
 import { handleChatDelete, handleChatList, handleChatRead, handleChatSave, type ChatIpcDeps } from "./chatIpc";
@@ -2754,6 +2754,41 @@ export function createMainWindow(
     ).popup({ window: win });
   };
   ipcMain.on("empty:recent-menu", onEmptyRecentMenu);
+  // Filter button of the Recent header: native menu under the button. Answers the pick, or null when it closed with none.
+  ipcMain.handle("empty:filter-menu", (event, payload: unknown) => {
+    const req = parseRecentFilterMenuRequest({ isEmptyView: (id) => id === emptyView.webContents.id }, event.sender.id, payload);
+    if (!req.ok) {
+      console.error(`empty:filter-menu refused: ${req.error}`);
+      return null;
+    }
+    return new Promise<RecentFilterChoice | null>((resolve) => {
+      let picked: RecentFilterChoice | null = null;
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        resolve(picked);
+      };
+      // macOS runs the click before the close callback, Windows/Linux may run it after. A click answers at once;
+      // the close callback waits one tick so a late click still wins, and settle() ignores the second call.
+      const useHeaders = process.platform === "darwin" && Number(process.getSystemVersion().split(".")[0]) >= 14;
+      const menu = Menu.buildFromTemplate(
+        buildRecentFilterMenuTemplate({ kinds: req.kinds, modified: req.modified }, useHeaders, (choice) => {
+          picked = choice;
+          settle();
+        }),
+      );
+      // The anchor is in the view's CSS px: zoom scales it, then the view's offset in the window is added.
+      const bounds = emptyView.getBounds();
+      const zoom = emptyView.webContents.getZoomFactor();
+      menu.popup({
+        window: win,
+        x: Math.round(bounds.x + req.x * zoom),
+        y: Math.round(bounds.y + req.y * zoom),
+        callback: () => void setTimeout(settle, 0),
+      });
+    });
+  });
   // Bulk delete from the Recent list: native confirm, store removals, then the agent panel drops its own copies of the docs.
   ipcMain.handle("empty:delete", async (event, payload: unknown) => {
     const result = await deleteRecentItems(
@@ -3192,6 +3227,7 @@ export function createMainWindow(
     ipcMain.removeListener("empty:open", onEmptyOpen);
     ipcMain.removeListener("empty:recent-menu", onEmptyRecentMenu);
     ipcMain.removeHandler("empty:delete");
+    ipcMain.removeHandler("empty:filter-menu");
     ipcMain.removeHandler("settings:open");
     ipcMain.removeHandler("traces:save");
     ipcMain.removeHandler("traces:read");

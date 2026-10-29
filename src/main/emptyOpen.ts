@@ -1,4 +1,5 @@
 import { isValidCanvasId, isValidDocId } from "./config";
+import { RECENT_MODIFIED_RANGES, type RecentModified } from "./menu";
 
 /** What `empty:open` needs from the window. A port, so the rule is unit-tested without Electron. */
 export interface EmptyOpenDeps {
@@ -54,6 +55,26 @@ export type RecentMenuTarget = RecentTarget;
 export function parseRecentMenuRequest(deps: Pick<EmptyOpenDeps, "isEmptyView">, sender: number, payload: unknown): RecentMenuTarget {
   if (!deps.isEmptyView(sender)) return { ok: false, error: "empty:recent-menu is only allowed from the empty view" };
   return parseRecentTarget(payload);
+}
+
+export type RecentFilterMenuRequest =
+  | { ok: true; x: number; y: number; kinds: { canvas: boolean; doc: boolean }; modified: RecentModified }
+  | { ok: false; error: string };
+
+/**
+ * `empty:filter-menu` (invoke, from the empty view only): the filter button asks for its native menu.
+ * `x`/`y` are the button's bottom-left in empty-view CSS px; `kinds` and `modified` are the page's current
+ * filter, so the menu shows the right checks. The caller adds the view's bounds and pops the menu. Never throws.
+ */
+export function parseRecentFilterMenuRequest(deps: Pick<EmptyOpenDeps, "isEmptyView">, sender: number, payload: unknown): RecentFilterMenuRequest {
+  if (!deps.isEmptyView(sender)) return { ok: false, error: "empty:filter-menu is only allowed from the empty view" };
+  const p = typeof payload === "object" && payload !== null ? (payload as { x?: unknown; y?: unknown; kinds?: unknown; modified?: unknown }) : {};
+  const { x, y, modified } = p;
+  if (typeof x !== "number" || !Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) return { ok: false, error: "invalid position" };
+  const k = typeof p.kinds === "object" && p.kinds !== null ? (p.kinds as { canvas?: unknown; doc?: unknown }) : {};
+  if (typeof k.canvas !== "boolean" || typeof k.doc !== "boolean") return { ok: false, error: "invalid kinds" };
+  if (!RECENT_MODIFIED_RANGES.some((r) => r === modified)) return { ok: false, error: "invalid modified" };
+  return { ok: true, x, y, kinds: { canvas: k.canvas, doc: k.doc }, modified: modified as RecentModified };
 }
 
 /** What `empty:recent` needs from the window. */

@@ -11,6 +11,11 @@ interface EmptyDeleteReply {
   failed?: { kind: "canvas" | "doc"; id: string }[];
   cancelled?: boolean;
 }
+/** Answer of `empty:filter-menu` (see RecentFilterChoice in src/main/menu.ts). */
+type RecentFilterChoice =
+  | { action: "kind"; kind: "canvas" | "doc"; checked: boolean }
+  | { action: "modified"; modified: "any" | "today" | "7d" | "30d" }
+  | { action: "reset" };
 /** One row of the Recent list (src/main/recentItems.ts). */
 interface RecentItem {
   kind: "canvas" | "doc";
@@ -37,6 +42,17 @@ const api = {
   openItem: (kind: "canvas" | "doc", id: string) => ipcRenderer.send("empty:open", { kind, id }),
   /** Right-click on a Recent row: main pops the native menu (Open, reveal file). */
   openItemMenu: (kind: "canvas" | "doc", id: string) => ipcRenderer.send("empty:recent-menu", { kind, id }),
+  /**
+   * Filter button: main pops the native filter menu at `anchor` (the button's bottom-left, empty-view CSS px).
+   * Resolves the picked choice, or null when the menu closed without one.
+   */
+  openFilterMenu: async (
+    anchor: { x: number; y: number },
+    state: { kinds: { canvas: boolean; doc: boolean }; modified: "any" | "today" | "7d" | "30d" },
+  ): Promise<RecentFilterChoice | null> => {
+    const result: unknown = await ipcRenderer.invoke("empty:filter-menu", { ...anchor, ...state });
+    return typeof result === "object" && result !== null ? (result as RecentFilterChoice) : null;
+  },
   /** Bulk delete: main shows a native confirm, then removes the files. `cancelled` = the user said no. */
   deleteItems: async (items: { kind: "canvas" | "doc"; id: string }[]): Promise<EmptyDeleteReply> => {
     const result: unknown = await ipcRenderer.invoke("empty:delete", { items });

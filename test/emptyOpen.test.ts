@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { notifyRecentChanged, openRecentItem, parseRecentTarget, parseRecentMenuRequest, recentFor, type EmptyOpenDeps } from "../src/main/emptyOpen";
+import { notifyRecentChanged, openRecentItem, parseRecentTarget, parseRecentMenuRequest, parseRecentFilterMenuRequest, recentFor, type EmptyOpenDeps } from "../src/main/emptyOpen";
 
 function deps(over: Partial<EmptyOpenDeps> = {}) {
   return {
@@ -94,6 +94,26 @@ describe("parseRecentMenuRequest", () => {
     expect(parseRecentMenuRequest(d, 7, { kind: "trace", id: "abc" }).ok).toBe(false);
     expect(parseRecentMenuRequest(d, 7, { kind: "doc", id: "../x" }).ok).toBe(false);
     expect(parseRecentMenuRequest(d, 7, null).ok).toBe(false);
+  });
+});
+
+describe("parseRecentFilterMenuRequest", () => {
+  const d = { isEmptyView: (id: number) => id === 7 };
+  const ok = { x: 10.5, y: 20, kinds: { canvas: true, doc: false }, modified: "7d" };
+  it("accepts a valid request from the empty view", () => {
+    expect(parseRecentFilterMenuRequest(d, 7, ok)).toEqual({ ok: true, ...ok });
+    for (const modified of ["any", "today", "7d", "30d"]) expect(parseRecentFilterMenuRequest(d, 7, { ...ok, modified }).ok).toBe(true);
+  });
+  it("refuses another sender", () => {
+    expect(parseRecentFilterMenuRequest(d, 8, ok).ok).toBe(false);
+  });
+  it("refuses a bad position, kinds or modified", () => {
+    expect(parseRecentFilterMenuRequest(d, 7, { ...ok, x: Infinity }).ok).toBe(false);
+    expect(parseRecentFilterMenuRequest(d, 7, { ...ok, y: "20" }).ok).toBe(false);
+    expect(parseRecentFilterMenuRequest(d, 7, { ...ok, kinds: { canvas: true } }).ok).toBe(false);
+    expect(parseRecentFilterMenuRequest(d, 7, { ...ok, kinds: null }).ok).toBe(false);
+    expect(parseRecentFilterMenuRequest(d, 7, { ...ok, modified: "1y" }).ok).toBe(false);
+    expect(parseRecentFilterMenuRequest(d, 7, null).ok).toBe(false);
   });
 });
 

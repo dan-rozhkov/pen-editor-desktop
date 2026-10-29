@@ -119,6 +119,60 @@ export function buildRecentContextMenuTemplate(
   ];
 }
 
+/** Same ids as `RecentModifiedRange` in src/tabbar/recentFilter.ts (that file is a plain script and exports nothing). */
+export const RECENT_MODIFIED_RANGES = ["any", "today", "7d", "30d"] as const;
+export type RecentModified = (typeof RECENT_MODIFIED_RANGES)[number];
+
+/** What the Recent filter menu on the empty start page reports: a kind toggled, a range picked, or a reset. */
+export type RecentFilterChoice =
+  | { action: "kind"; kind: "canvas" | "doc"; checked: boolean }
+  | { action: "modified"; modified: RecentModified }
+  | { action: "reset" };
+
+export interface RecentFilterMenuState {
+  kinds: { canvas: boolean; doc: boolean };
+  modified: RecentModified;
+}
+
+/**
+ * Filter menu of the Recent list: Type checkboxes, Modified radios, Reset filters. Section titles are
+ * `header` items where the OS has them (macOS 14+, `useHeaders`) and disabled labels elsewhere. A pick only reports the choice; the page owns the state.
+ */
+export function buildRecentFilterMenuTemplate(
+  state: RecentFilterMenuState,
+  useHeaders: boolean,
+  pick: (choice: RecentFilterChoice) => void,
+): MenuItemConstructorOptions[] {
+  const heading = (label: string): MenuItemConstructorOptions => (useHeaders ? { type: "header", label } : { label, enabled: false });
+  const kind = (label: string, k: "canvas" | "doc"): MenuItemConstructorOptions => ({
+    label,
+    type: "checkbox",
+    checked: state.kinds[k],
+    // Electron flips `checked` before the click runs, so the item already holds the new value.
+    click: (item) => pick({ action: "kind", kind: k, checked: item.checked }),
+  });
+  const range = (label: string, modified: RecentModified): MenuItemConstructorOptions => ({
+    label,
+    type: "radio",
+    checked: state.modified === modified,
+    click: () => pick({ action: "modified", modified }),
+  });
+  const isDefault = state.kinds.canvas && state.kinds.doc && state.modified === "any";
+  return [
+    heading("Type"),
+    kind("Canvases", "canvas"),
+    kind("Documents", "doc"),
+    { type: "separator" },
+    heading("Modified"),
+    range("Any time", "any"),
+    range("Today", "today"),
+    range("Past 7 days", "7d"),
+    range("Past 30 days", "30d"),
+    { type: "separator" },
+    { label: "Reset filters", enabled: !isDefault, click: () => pick({ action: "reset" }) },
+  ];
+}
+
 /**
  * Application menu. File actions forward pen-editor command-palette ids over
  * IPC (the cross-repo contract — see CLAUDE.md); Edit/View use native roles
