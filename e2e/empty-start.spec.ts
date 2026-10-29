@@ -272,7 +272,7 @@ test("the Recent list searches, filters, selects with checkboxes and bulk delete
     });
     const rows = empty.locator(".recent-row");
     await expect(rows).toHaveCount(3);
-    const listHeight = async () => (await empty.locator("#recent-list").boundingBox())!.height;
+    const listHeight = async () => (await empty.locator("#recent-body").boundingBox())!.height;
     const defaultHeight = await listHeight();
 
     // Search: the field opens focused, filters by title, Esc clears the text and then closes it.
@@ -281,7 +281,7 @@ test("the Recent list searches, filters, selects with checkboxes and bulk delete
     await empty.locator("#recent-search").fill("beta");
     await expect(rows).toHaveCount(1);
     await expect(rows.first().locator(".recent-title")).toHaveText("Beta notes");
-    // The list keeps its default-view height while searching, so the centred page does not jump.
+    // The list block keeps its default-view height while searching, so the centred page does not jump.
     expect(await listHeight()).toBeGreaterThanOrEqual(defaultHeight - 1);
     await expect(empty.locator("#recent-search-clear")).toBeVisible();
     await empty.locator("#recent-search-clear").click();
@@ -292,6 +292,8 @@ test("the Recent list searches, filters, selects with checkboxes and bulk delete
     await expect(rows).toHaveCount(1);
     await empty.locator("#recent-search").fill("nothing like this");
     await expect(empty.locator(".recent-empty-text")).toHaveText("No matching files");
+    // The "no matches" line sits right under the header, not below the reserved height.
+    expect((await empty.locator(".recent-empty-text").boundingBox())!.y - (await empty.locator("#recent-body").boundingBox())!.y).toBeLessThan(20);
     await empty.getByRole("button", { name: "Clear search and filters" }).click();
     await expect(rows).toHaveCount(3);
     await expect(empty.locator("#recent-search")).toBeHidden();

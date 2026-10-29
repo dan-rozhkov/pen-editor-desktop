@@ -134,18 +134,17 @@
     syncSelection();
   };
 
-  // While a search or filter is on, the list keeps the height it had in the default view: the page content is
-  // vertically centred, so a shrinking list would make the whole page jump. `baseHeight` is re-measured on every
-  // default render (list + "no matches" block + "Show all"); CSSOM is allowed under the CSP, style attributes are not.
+  // While a search or filter is on, the list block (rows + "no matches" + "Show all") keeps the height it had in
+  // the default view: the page content is vertically centred, so a shrinking block would make the whole page jump.
+  // `baseHeight` is re-measured on every default render; CSSOM is allowed under the CSP, style attributes are not.
+  const recentBody = document.getElementById("recent-body")!;
   let baseHeight = 0;
-  const blockHeight = (el: HTMLElement) => (el.hidden ? 0 : el.offsetHeight);
   const updateHeightLock = () => {
     if (filtering() || !searchWrap.hidden) {
-      const others = blockHeight(emptyResult) + blockHeight(recentMore);
-      recentList.style.minHeight = Math.max(0, baseHeight - others) + "px";
+      recentBody.style.minHeight = baseHeight + "px";
     } else {
-      recentList.style.minHeight = "";
-      baseHeight = recentList.offsetHeight + blockHeight(emptyResult) + blockHeight(recentMore);
+      recentBody.style.minHeight = "";
+      baseHeight = recentBody.offsetHeight;
     }
   };
 
