@@ -6,7 +6,7 @@ const cv = (id: string, updatedAt: number, title = "C") => ({ id, title, updated
 
 describe("mergeRecentItems", () => {
   it("merges both stores, newest first, with the kind", () => {
-    const items = mergeRecentItems({ docs: [doc("d1", 5), doc("d2", 30)] }, { canvases: [cv("c1", 20)] });
+    const items = mergeRecentItems({ docs: [doc("d1", 5), doc("d2", 30)], deleted: [] }, { canvases: [cv("c1", 20)] });
     expect(items).toEqual([
       { kind: "doc", id: "d2", title: "D", updatedAt: 30 },
       { kind: "canvas", id: "c1", title: "C", updatedAt: 20 },
@@ -16,18 +16,18 @@ describe("mergeRecentItems", () => {
 
   it("an error or null from one store does not hide the other", () => {
     expect(mergeRecentItems({ error: "x" }, { canvases: [cv("c1", 1)] }).map((i) => i.id)).toEqual(["c1"]);
-    expect(mergeRecentItems({ docs: [doc("d1", 1)] }, { error: "x" }).map((i) => i.id)).toEqual(["d1"]);
+    expect(mergeRecentItems({ docs: [doc("d1", 1)], deleted: [] }, { error: "x" }).map((i) => i.id)).toEqual(["d1"]);
     expect(mergeRecentItems(null, null)).toEqual([]);
   });
 
   it("trims titles", () => {
-    expect(mergeRecentItems({ docs: [doc("d1", 1, "  Spec \n")] }, null)[0].title).toBe("Spec");
-    expect(mergeRecentItems({ docs: [doc("d1", 1, "   ")] }, null)[0].title).toBe("");
+    expect(mergeRecentItems({ docs: [doc("d1", 1, "  Spec \n")], deleted: [] }, null)[0].title).toBe("Spec");
+    expect(mergeRecentItems({ docs: [doc("d1", 1, "   ")], deleted: [] }, null)[0].title).toBe("");
   });
 
   it("has no cap: every stored item is reachable", () => {
     const docs = Array.from({ length: 250 }, (_, i) => doc(`d${i}`, i));
-    const items = mergeRecentItems({ docs }, { canvases: [cv("c1", 1000)] });
+    const items = mergeRecentItems({ docs, deleted: [] }, { canvases: [cv("c1", 1000)] });
     expect(items).toHaveLength(251);
     expect(items[0].id).toBe("c1");
     expect(items[250].id).toBe("d0");

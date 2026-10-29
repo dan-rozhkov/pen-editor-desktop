@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import * as path from "node:path";
-import { createDocStore, docDirFor, MAX_DOC_MARKDOWN_BYTES, type DocFs } from "../src/main/docStore";
+import { createDocStore, docDirFor, MAX_DOC_MARKDOWN_BYTES, MAX_TOMBSTONES, type DocFs } from "../src/main/docStore";
 
 const ROOT = "/ud/documents";
 const doc = (over: Record<string, unknown> = {}) => ({ id: "d1", title: "T", markdown: "# hi", updatedAt: 10, rev: 1, ...over });
@@ -8,14 +8,15 @@ const doc = (over: Record<string, unknown> = {}) => ({ id: "d1", title: "T", mar
 function memFs() {
   const files = new Map<string, Buffer>();
   const mtimes = new Map<string, number>();
-  const api: DocFs & { files: Map<string, Buffer>; mtimes: Map<string, number>; delay: number; fail?: RegExp; writes: number; reads: number } = {
+  const api: DocFs & { files: Map<string, Buffer>; mtimes: Map<string, number>; delay: number; fail?: RegExp; readFail?: { re: RegExp; code: string }; writes: number; reads: number } = {
     files,
     mtimes,
     delay: 0,
     writes: 0,
     reads: 0,
     read: async (p) => {
-      api.reads++;
+      if (!p.endsWith(".deleted.json")) api.reads++; // document reads only
+      if (api.readFail?.re.test(p)) throw Object.assign(new Error("read failed"), { code: api.readFail.code });
       if (api.delay) await new Promise((r) => setTimeout(r, api.delay));
       return files.get(p) ?? null;
     },
@@ -39,14 +40,14 @@ const at = (id: string) => path.join(ROOT, `${id}.json`);
 
 describe("docStore", () => {
   it("lists nothing for a missing dir", async () => {
-    expect(await setup().store.list()).toEqual({ docs: [] });
+    expect(await setup().store.list()).toEqual({ docs: [], deleted: [] });
   });
 
   it("saves, lists and strips unknown fields", async () => {
     const { store, fs } = setup();
     expect(await store.save({ ...doc(), extra: "x" })).toEqual({ ok: true, rev: 1 });
     expect(JSON.parse(fs.files.get(at("d1"))!.toString())).toEqual(doc());
-    expect(await store.list()).toEqual({ docs: [doc()] });
+    expect(await store.list()).toEqual({ docs: [doc()], deleted: [] });
   });
 
   it("newer rev wins; an equal or lower rev is stale and writes nothing", async () => {
@@ -56,7 +57,7 @@ describe("docStore", () => {
     expect(await store.save(doc({ rev: 1 }))).toEqual({ ok: true, stale: true, rev: 2 });
     expect(fs.writes).toBe(1);
     expect(await store.save(doc({ rev: 3, markdown: "three" }))).toEqual({ ok: true, rev: 3 });
-    expect(await store.list()).toEqual({ docs: [doc({ rev: 3, markdown: "three" })] });
+    expect(await store.list()).toEqual({ docs: [doc({ rev: 3, markdown: "three" })], deleted: [] });
   });
 
   it("serializes concurrent saves of one id", async () => {
@@ -118,7 +119,7 @@ describe("docStore", () => {
     fs.files.set(at("inv"), Buffer.from(JSON.stringify({ id: "inv" })));
     fs.files.set(at("other"), Buffer.from(JSON.stringify(doc({ id: "d2" }))));
     fs.files.set(`${at("d1")}.123.tmp`, Buffer.from(JSON.stringify(doc({ id: "d1", rev: 9 }))));
-    expect(await store.list()).toEqual({ docs: [doc()] });
+    expect(await store.list()).toEqual({ docs: [doc()], deleted: [] });
     expect(err).toHaveBeenCalledTimes(3);
     err.mockRestore();
   });
@@ -159,7 +160,7 @@ describe("docStore", () => {
     await store.save(doc({ rev: 7 }));
     await store.remove("d1");
     fs.reads = 0;
-    expect(await store.save(doc({ rev: 1 }))).toEqual({ ok: true, rev: 1 });
+    expect(await store.save(doc({ rev: 8 }))).toEqual({ ok: true, rev: 8 });
     expect(fs.reads).toBe(1);
   });
 
@@ -171,7 +172,7 @@ describe("docStore", () => {
     fs.mtimes.set(old, clock.t - 3_600_000 - 1);
     fs.files.set(fresh, Buffer.from("x"));
     fs.mtimes.set(fresh, clock.t - 1000);
-    expect(await store.list()).toEqual({ docs: [] });
+    expect(await store.list()).toEqual({ docs: [], deleted: [] });
     expect(fs.files.has(old)).toBe(false);
     expect(fs.files.has(fresh)).toBe(true);
   });
@@ -185,7 +186,7 @@ describe("docStore", () => {
       throw new Error("EPERM");
     };
     await store.save(doc({ id: "d3" }));
-    expect(await store.list()).toEqual({ docs: [doc({ id: "d3" })] });
+    expect(await store.list()).toEqual({ docs: [doc({ id: "d3" })], deleted: [] });
     expect(err).toHaveBeenCalledTimes(1);
     err.mockRestore();
   });
@@ -211,6 +212,128 @@ describe("docStore", () => {
     // the chain survives a failure
     fs.fail = undefined;
     expect(await store.save(doc())).toEqual({ ok: true, rev: 1 });
+  });
+
+  describe("tombstones", () => {
+    const TOMB = path.join(ROOT, ".deleted.json");
+    const tombs = (fs: ReturnType<typeof memFs>) => JSON.parse(fs.files.get(TOMB)!.toString());
+
+    it("remove records a tombstone with the stored rev; list returns it and never reads it as a document", async () => {
+      const { store, fs, clock } = setup();
+      await store.save(doc({ rev: 4 }));
+      expect(await store.remove("d1")).toEqual({ ok: true });
+      expect(tombs(fs)).toEqual([{ id: "d1", rev: 4, at: clock.t }]);
+      expect(await store.list()).toEqual({ docs: [], deleted: [{ id: "d1", rev: 4 }] });
+    });
+
+    it("removing a document that was never stored records nothing", async () => {
+      const { store, fs } = setup();
+      expect(await store.remove("nope")).toEqual({ ok: true });
+      expect(fs.files.has(TOMB)).toBe(false);
+    });
+
+    it("a save at or below the tombstone rev is refused as stale and writes nothing", async () => {
+      const { store, fs } = setup();
+      await store.save(doc({ rev: 4 }));
+      await store.remove("d1");
+      const writes = fs.writes;
+      expect(await store.save(doc({ rev: 4 }))).toEqual({ ok: true, stale: true, rev: 4 });
+      expect(await store.save(doc({ rev: 2 }))).toEqual({ ok: true, stale: true, rev: 4 });
+      expect(fs.writes).toBe(writes);
+      expect(fs.files.has(at("d1"))).toBe(false);
+    });
+
+    it("a save with a higher rev wins and clears the tombstone", async () => {
+      const { store, fs } = setup();
+      await store.save(doc({ rev: 4 }));
+      await store.remove("d1");
+      expect(await store.save(doc({ rev: 5 }))).toEqual({ ok: true, rev: 5 });
+      expect(tombs(fs)).toEqual([]);
+      expect(await store.list()).toEqual({ docs: [doc({ rev: 5 })], deleted: [] });
+    });
+
+    it("tombstones survive a restart (a new store reads the file)", async () => {
+      const { store, fs, clock } = setup();
+      await store.save(doc({ rev: 4 }));
+      await store.remove("d1");
+      const again = createDocStore({ rootDir: ROOT, fs, now: () => clock.t });
+      expect(await again.save(doc({ rev: 3 }))).toEqual({ ok: true, stale: true, rev: 4 });
+    });
+
+    it("never ages tombstones out", async () => {
+      const { store, fs, clock } = setup();
+      await store.save(doc({ rev: 2 }));
+      await store.remove("d1");
+      clock.t += 400 * 86_400_000;
+      expect(await store.list()).toEqual({ docs: [], deleted: [{ id: "d1", rev: 2 }] });
+      expect(await store.save(doc({ rev: 1 }))).toEqual({ ok: true, stale: true, rev: 2 });
+      expect(tombs(fs)).toHaveLength(1);
+    });
+
+    it("caps the set at MAX_TOMBSTONES, dropping the oldest on write", async () => {
+      const { store, fs, clock } = setup();
+      const seed = Array.from({ length: MAX_TOMBSTONES }, (_, i) => ({ id: `s${i}`, rev: 1, at: 1000 + i }));
+      fs.files.set(TOMB, Buffer.from(JSON.stringify(seed)));
+      await store.save(doc({ rev: 2 }));
+      await store.remove("d1"); // 10_001 entries -> the oldest (s0, at 1000) goes
+      const ids = tombs(fs).map((t: { id: string }) => t.id);
+      expect(ids).toHaveLength(MAX_TOMBSTONES);
+      expect(ids).not.toContain("s0");
+      expect(ids).toContain("s1");
+      expect(ids).toContain("d1");
+      expect(clock.t).toBeGreaterThan(1000 + MAX_TOMBSTONES);
+    });
+
+    it("corrupt tombstone JSON or a wrong shape is an empty set (and is overwritten by the next remove)", async () => {
+      for (const bad of ["{not json", '{"a":1}']) {
+        const { store, fs } = setup();
+        fs.files.set(TOMB, Buffer.from(bad));
+        expect(await store.list()).toEqual({ docs: [], deleted: [] });
+        await store.save(doc({ rev: 2 }));
+        expect(await store.remove("d1")).toEqual({ ok: true });
+        expect(tombs(fs).map((t: { id: string }) => t.id)).toEqual(["d1"]);
+      }
+    });
+
+    it("a transient read error is not cached: remove fails (doc kept), save fails, list answers deleted: []", async () => {
+      const { store, fs } = setup();
+      await store.save(doc({ rev: 4 }));
+      await store.remove("d1");
+      await store.save(doc({ id: "d2", rev: 1 }));
+      const fresh = createDocStore({ rootDir: ROOT, fs, now: () => 0 });
+      fs.readFail = { re: /\.deleted\.json/, code: "EACCES" };
+      expect(await fresh.remove("d2")).toHaveProperty("error");
+      expect(fs.files.has(at("d2"))).toBe(true);
+      expect(await fresh.save(doc({ rev: 9 }))).toHaveProperty("error");
+      expect(fs.files.has(at("d1"))).toBe(false); // no write past the tombstone check
+      const listed = await fresh.list();
+      expect(listed).toMatchObject({ deleted: [] });
+      expect(tombs(fs)).toEqual([expect.objectContaining({ id: "d1", rev: 4 })]); // never overwritten
+      // Recovers once the read works: the error was not cached.
+      fs.readFail = undefined;
+      expect(await fresh.save(doc({ rev: 3 }))).toEqual({ ok: true, stale: true, rev: 4 });
+    });
+
+    it("a failed persist when clearing keeps the tombstone in memory; the save still answers ok", async () => {
+      const { store, fs } = setup();
+      await store.save(doc({ rev: 4 }));
+      await store.remove("d1");
+      fs.fail = /\.deleted\.json/;
+      expect(await store.save(doc({ rev: 5 }))).toEqual({ ok: true, rev: 5 });
+      expect(fs.files.has(at("d1"))).toBe(true);
+      expect(tombs(fs)).toEqual([expect.objectContaining({ id: "d1", rev: 4 })]);
+      expect(await store.list()).toMatchObject({ deleted: [{ id: "d1", rev: 4 }] }); // memory agrees with disk
+    });
+
+    it("a failed tombstone write fails the remove and keeps the document", async () => {
+      const { store, fs } = setup();
+      await store.save(doc());
+      fs.fail = /\.deleted\.json/;
+      expect(await store.remove("d1")).toHaveProperty("error");
+      expect(fs.files.has(at("d1"))).toBe(true);
+      fs.fail = undefined;
+      expect(await store.save(doc({ rev: 2 }))).toEqual({ ok: true, rev: 2 });
+    });
   });
 });
 

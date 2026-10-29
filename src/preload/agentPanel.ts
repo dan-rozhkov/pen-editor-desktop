@@ -151,9 +151,20 @@ const chats = {
 };
 const docs = {
   open: (docId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("doc:open", docId),
-  list: (): Promise<{ docs: unknown[] } | { error: string }> => ipcRenderer.invoke("docs:list"),
+  list: (): Promise<{ docs: unknown[]; deleted?: { id: string; rev: number }[] } | { error: string }> => ipcRenderer.invoke("docs:list"),
   save: (doc: unknown): Promise<{ ok: true; rev: number; stale?: true } | { error: string }> => ipcRenderer.invoke("docs:save", doc),
   remove: (id: string): Promise<{ ok: true } | { error: string }> => ipcRenderer.invoke("docs:delete", id),
+  // Main deleted these documents from disk (bulk delete on the empty start): the page must drop its own copies,
+  // or its startup reconcile would upload them again. Non-string payload entries are ignored.
+  onRemoved: (cb: (ids: string[]) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, ids: unknown) => {
+      if (Array.isArray(ids)) cb(ids.filter((id): id is string => typeof id === "string"));
+    };
+    ipcRenderer.on("docs:removed", listener);
+    return () => {
+      ipcRenderer.removeListener("docs:removed", listener);
+    };
+  },
 };
 
 // Workflows (tabs at `/workflow`; stored in the frontend's localStorage only): ask main to open or focus one. Main checks the sender.

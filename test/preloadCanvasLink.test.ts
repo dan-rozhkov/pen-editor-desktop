@@ -94,8 +94,8 @@ describe("agent panel preload", () => {
     expect(tcb).toHaveBeenCalledWith([1]);
   });
 
-  it("docs.list / save / remove invoke their channels; docs has exactly open, list, save, remove", async () => {
-    expect(Object.keys(exposed.penAgentPanel.docs).sort()).toEqual(["list", "open", "remove", "save"]);
+  it("docs.list / save / remove invoke their channels; docs has exactly onRemoved, open, list, save, remove", async () => {
+    expect(Object.keys(exposed.penAgentPanel.docs).sort()).toEqual(["list", "onRemoved", "open", "remove", "save"]);
     await exposed.penAgentPanel.docs.list();
     expect(invoke).toHaveBeenLastCalledWith("docs:list");
     const doc = { id: "a", title: "t", markdown: "m", updatedAt: 1, rev: 1 };
@@ -103,6 +103,19 @@ describe("agent panel preload", () => {
     expect(invoke).toHaveBeenLastCalledWith("docs:save", doc);
     await exposed.penAgentPanel.docs.remove("a");
     expect(invoke).toHaveBeenLastCalledWith("docs:delete", "a");
+  });
+
+  it("docs.onRemoved listens on docs:removed, passes only string ids, and unsubscribes", () => {
+    const cb = vi.fn();
+    const off = exposed.penAgentPanel.docs.onRemoved(cb);
+    const listener = on.mock.calls.find((x) => x[0] === "docs:removed")![1];
+    listener({}, ["a", 3, "b"]);
+    expect(cb).toHaveBeenLastCalledWith(["a", "b"]);
+    cb.mockClear();
+    listener({}, "not-an-array");
+    expect(cb).not.toHaveBeenCalled();
+    off();
+    expect(removeListener).toHaveBeenCalledWith("docs:removed", listener);
   });
 
   it("canvases has exactly list, over canvases:list", async () => {

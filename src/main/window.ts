@@ -76,6 +76,7 @@ import { createDocStore, docDirFor, nodeDocFs, type DocStore } from "./docStore"
 import { canvasDirFor, createCanvasStore, type CanvasStore } from "./canvasStore";
 import { handleCanvasDelete, handleCanvasList, handleCanvasRead, handleCanvasSave, type CanvasIpcDeps } from "./canvasIpc";
 import { changedRecentItems, loadRecentItems } from "./recentItems";
+import { deleteConfirmCopy, deleteRecentItems } from "./emptyDelete";
 import { notifyRecentChanged, openRecentItem, parseRecentMenuRequest, recentFor } from "./emptyOpen";
 import { CANVAS_WRITER_GRACE_MS, canvasSenders, flushPage, flushThenClose, pendingCloseFlushes } from "./canvasWriters";
 import { chatDirFor, createChatStore, type ChatStore } from "./chatStore";
@@ -2753,6 +2754,23 @@ export function createMainWindow(
     ).popup({ window: win });
   };
   ipcMain.on("empty:recent-menu", onEmptyRecentMenu);
+  // Bulk delete from the Recent list: native confirm, store removals, then the agent panel drops its own copies of the docs.
+  ipcMain.handle("empty:delete", async (event, payload: unknown) => {
+    const result = await deleteRecentItems(
+      {
+        isEmptyView: (id) => id === emptyView.webContents.id,
+        confirm: async (count) => (await dialog.showMessageBox(win, deleteConfirmCopy(count))).response === 0,
+        removeCanvas: (id) => getCanvasStore().remove(id),
+        removeDoc: (id) => getDocStore().remove(id),
+        notifyDocsRemoved: (ids) => panelWc()?.send("docs:removed", ids),
+      },
+      event.sender.id,
+      payload,
+    );
+    if (!result.ok) console.error(`empty:delete refused: ${result.error}`);
+    else if (result.deleted > 0) notifyRecentChanged(emptyViewContents);
+    return result;
+  });
   // `docs:export-pdf`: the doc page saves itself as a PDF; rules and flow in docPdfExport.ts.
   ipcMain.handle("docs:export-pdf", (event, fileName: unknown) =>
     handleDocExportPdf(
@@ -3173,6 +3191,7 @@ export function createMainWindow(
     ipcMain.removeHandler("empty:recent");
     ipcMain.removeListener("empty:open", onEmptyOpen);
     ipcMain.removeListener("empty:recent-menu", onEmptyRecentMenu);
+    ipcMain.removeHandler("empty:delete");
     ipcMain.removeHandler("settings:open");
     ipcMain.removeHandler("traces:save");
     ipcMain.removeHandler("traces:read");

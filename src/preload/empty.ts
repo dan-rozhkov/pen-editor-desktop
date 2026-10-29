@@ -3,6 +3,14 @@ import type { UITheme } from "../main/tabManager";
 
 // Minimal bridge of the empty-state view (agent layout, zero tabs): it can only
 // ask for a new tab and hear its state (theme, background session tab count). Nothing else of the tab bar API.
+/** Answer of `empty:delete` (see EmptyDeleteResult in src/main/emptyDelete.ts). */
+interface EmptyDeleteReply {
+  ok: boolean;
+  error?: string;
+  deleted?: number;
+  failed?: { kind: "canvas" | "doc"; id: string }[];
+  cancelled?: boolean;
+}
 /** One row of the Recent list (src/main/recentItems.ts). */
 interface RecentItem {
   kind: "canvas" | "doc";
@@ -29,6 +37,11 @@ const api = {
   openItem: (kind: "canvas" | "doc", id: string) => ipcRenderer.send("empty:open", { kind, id }),
   /** Right-click on a Recent row: main pops the native menu (Open, reveal file). */
   openItemMenu: (kind: "canvas" | "doc", id: string) => ipcRenderer.send("empty:recent-menu", { kind, id }),
+  /** Bulk delete: main shows a native confirm, then removes the files. `cancelled` = the user said no. */
+  deleteItems: async (items: { kind: "canvas" | "doc"; id: string }[]): Promise<EmptyDeleteReply> => {
+    const result: unknown = await ipcRenderer.invoke("empty:delete", { items });
+    return typeof result === "object" && result !== null ? (result as EmptyDeleteReply) : { ok: false };
+  },
   /** Main says a document or canvas was stored or deleted: the Recent list may be out of date. */
   onRecentChanged: (cb: () => void) => {
     ipcRenderer.on("empty:recent-changed", () => cb());

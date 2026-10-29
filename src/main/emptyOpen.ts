@@ -11,6 +11,17 @@ export interface EmptyOpenDeps {
   newDocTab(docId: string, opts: { focus: boolean }): number;
 }
 
+export type RecentTarget = { ok: true; kind: "canvas" | "doc"; id: string } | { ok: false; error: string };
+
+/** One `{kind, id}` entry of a Recent-list payload, validated. The error strings are part of the IPC contract. */
+export function parseRecentTarget(entry: unknown): RecentTarget {
+  const p = typeof entry === "object" && entry !== null ? (entry as { kind?: unknown; id?: unknown }) : {};
+  const { kind, id } = p;
+  if (kind !== "canvas" && kind !== "doc") return { ok: false, error: "invalid kind" };
+  if (kind === "canvas" ? !isValidCanvasId(id) : !isValidDocId(id)) return { ok: false, error: "invalid id" };
+  return { ok: true, kind, id: id as string };
+}
+
 export type EmptyOpenResult = { ok: true } | { ok: false; error: string };
 
 /**
@@ -20,22 +31,21 @@ export type EmptyOpenResult = { ok: true } | { ok: false; error: string };
  */
 export function openRecentItem(deps: EmptyOpenDeps, sender: number, payload: unknown): EmptyOpenResult {
   if (!deps.isEmptyView(sender)) return { ok: false, error: "empty:open is only allowed from the empty view" };
-  const p = typeof payload === "object" && payload !== null ? (payload as { kind?: unknown; id?: unknown }) : {};
-  const { kind, id } = p;
-  if (kind !== "canvas" && kind !== "doc") return { ok: false, error: "invalid kind" };
-  if (kind === "canvas" ? !isValidCanvasId(id) : !isValidDocId(id)) return { ok: false, error: "invalid id" };
+  const target = parseRecentTarget(payload);
+  if (!target.ok) return target;
+  const { kind, id } = target;
   try {
-    const existing = kind === "canvas" ? deps.findCanvasTab(id as string) : deps.findDocTab(id as string);
+    const existing = kind === "canvas" ? deps.findCanvasTab(id) : deps.findDocTab(id);
     if (existing !== null) deps.activate(existing, { focus: true });
-    else if (kind === "canvas") deps.newCanvasTab(id as string, { focus: true });
-    else deps.newDocTab(id as string, { focus: true });
+    else if (kind === "canvas") deps.newCanvasTab(id, { focus: true });
+    else deps.newDocTab(id, { focus: true });
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
-export type RecentMenuTarget = { ok: true; kind: "canvas" | "doc"; id: string } | { ok: false; error: string };
+export type RecentMenuTarget = RecentTarget;
 
 /**
  * `empty:recent-menu` (send, from the empty view only): a right-click on a Recent row. Checks the sender
@@ -43,11 +53,7 @@ export type RecentMenuTarget = { ok: true; kind: "canvas" | "doc"; id: string } 
  */
 export function parseRecentMenuRequest(deps: Pick<EmptyOpenDeps, "isEmptyView">, sender: number, payload: unknown): RecentMenuTarget {
   if (!deps.isEmptyView(sender)) return { ok: false, error: "empty:recent-menu is only allowed from the empty view" };
-  const p = typeof payload === "object" && payload !== null ? (payload as { kind?: unknown; id?: unknown }) : {};
-  const { kind, id } = p;
-  if (kind !== "canvas" && kind !== "doc") return { ok: false, error: "invalid kind" };
-  if (kind === "canvas" ? !isValidCanvasId(id) : !isValidDocId(id)) return { ok: false, error: "invalid id" };
-  return { ok: true, kind, id: id as string };
+  return parseRecentTarget(payload);
 }
 
 /** What `empty:recent` needs from the window. */

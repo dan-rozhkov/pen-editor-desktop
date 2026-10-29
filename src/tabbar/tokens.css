@@ -35,6 +35,8 @@
   --radius-control-xl: 12px; /* 36-40px */
   /* Focus ring of the frontend Button: 2px solid --ring, which is the accent colour in both themes. */
   --focus-ring: #0d99ff;
+  /* Outline of an unchecked checkbox (the Recent list's custom checkbox). */
+  --control-border-strong: light-dark(oklch(0 0 0 / 0.25), oklch(1 0 0 / 0.3));
   /* Page-loading fill inside the tab pill, over the pill's own background. */
   --tab-progress: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.1));
   /* Brand pair is theme-independent; only the idle (background-tab) pair differs. */

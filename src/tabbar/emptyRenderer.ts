@@ -11,6 +11,12 @@
       listRecent(): Promise<{ kind: "canvas" | "doc"; id: string; title: string; updatedAt: number }[]>;
       openItem(kind: "canvas" | "doc", id: string): void;
       openItemMenu(kind: "canvas" | "doc", id: string): void;
+      deleteItems(items: { kind: "canvas" | "doc"; id: string }[]): Promise<{
+        ok: boolean;
+        deleted?: number;
+        failed?: { kind: "canvas" | "doc"; id: string }[];
+        cancelled?: boolean;
+      }>;
       onRecentChanged(cb: () => void): void;
       onState(cb: (state: { theme: "light" | "dark"; sessionTabs: number }) => void): void;
     };
@@ -36,67 +42,355 @@
   });
 
   // ---- Recent list ----
-  // Glyphs: glyphs.ts (plain script loaded before this one).
+  // Glyphs: glyphs.ts, filter: recentFilter.ts (plain scripts loaded before this one).
+  type Kind = "canvas" | "doc";
+  type Item = { kind: Kind; id: string; title: string; updatedAt: number };
   const GLYPHS = { canvas: "PaintBrush", doc: "FileText" };
   const VISIBLE_ROWS = 8;
   const recent = document.getElementById("recent")!;
   const recentList = document.getElementById("recent-list")!;
   const recentMore = document.getElementById("recent-more") as HTMLButtonElement;
-  let items: { kind: "canvas" | "doc"; id: string; title: string; updatedAt: number }[] = [];
-  let expanded = false;
+  const bar = document.getElementById("recent-bar")!;
+  const selbar = document.getElementById("recent-selbar")!;
+  const searchToggle = document.getElementById("recent-search-toggle") as HTMLButtonElement;
+  const searchWrap = document.getElementById("recent-search-wrap")!;
+  const searchInput = document.getElementById("recent-search") as HTMLInputElement;
+  const searchClear = document.getElementById("recent-search-clear") as HTMLButtonElement;
+  const filterToggle = document.getElementById("recent-filter-toggle") as HTMLButtonElement;
+  const popover = document.getElementById("recent-filter-popover")!;
+  const resetFilters = document.getElementById("recent-filter-reset") as HTMLButtonElement;
+  const countLabel = document.getElementById("recent-count")!;
+  const noteLabel = document.getElementById("recent-note")!;
+  const selectAllBtn = document.getElementById("recent-select-all") as HTMLButtonElement;
+  const deleteBtn = document.getElementById("recent-delete") as HTMLButtonElement;
+  const emptyResult = document.getElementById("recent-empty")!;
+  penMountSlots();
 
-  const makeIcon = (kind: "canvas" | "doc") => penIcon(GLYPHS[kind], "recent-icon");
+  let items: Item[] = [];
+  let expanded = false;
+  let kinds = { canvas: true, doc: true };
+  let modified: RecentModifiedRange = "any";
+  // Selection is keyed "kind:id". `rows` maps the rendered keys to their elements, so a toggle updates in place
+  // (no rebuild: the focused checkbox keeps focus). `lastToggled` anchors Shift+click ranges.
+  const selected = new Set<string>();
+  const rows = new Map<string, { li: HTMLElement; check: HTMLInputElement; button: HTMLButtonElement }>();
+  let shownKeys: string[] = [];
+  let lastToggled: string | null = null;
+  let deleting = false;
+
+  const keyOf = (item: { kind: Kind; id: string }) => item.kind + ":" + item.id;
+  const makeIcon = (kind: Kind) => penIcon(GLYPHS[kind], "recent-icon");
   const span = (cls: string, text: string) => {
     const el = document.createElement("span");
     el.className = cls;
     el.textContent = text;
     return el;
   };
+  const filterState = (): RecentFilterState => ({ query: searchInput.value, kinds, modified });
+  const filterIsDefault = () => kinds.canvas && kinds.doc && modified === "any";
+  const filtering = () => searchInput.value.trim() !== "" || !filterIsDefault();
+  // Inline note of the selection bar ("Couldn't delete 2 items."). Any selection change clears it.
+  const setNote = (text: string) => {
+    noteLabel.textContent = text;
+  };
+  const matches = () => filterRecentItems(items, filterState(), Date.now());
+
+  // Header: selection mode swaps the bar for the selection bar; rows show their checkboxes.
+  const syncSelection = () => {
+    const n = selected.size;
+    const matching = matches();
+    recent.classList.toggle("selecting", n > 0);
+    bar.hidden = n > 0;
+    selbar.hidden = n === 0;
+    if (n > 0) setPopover(false);
+    countLabel.textContent = n + " selected";
+    selectAllBtn.hidden = matching.length > 0 && matching.every((item) => selected.has(keyOf(item)));
+    deleteBtn.disabled = deleting;
+    for (const [key, row] of rows) {
+      const on = selected.has(key);
+      row.li.classList.toggle("selected", on);
+      row.check.checked = on;
+    }
+  };
+  const clearSelection = () => {
+    setNote("");
+    selected.clear();
+    lastToggled = null;
+    syncSelection();
+  };
+  const setSelected = (key: string, on: boolean) => {
+    if (on) selected.add(key);
+    else selected.delete(key);
+  };
+  const toggleKey = (key: string, range: boolean, forceOn?: boolean) => {
+    setNote("");
+    const on = forceOn ?? !selected.has(key);
+    const from = range && lastToggled !== null ? shownKeys.indexOf(lastToggled) : -1;
+    const to = shownKeys.indexOf(key);
+    if (from !== -1 && to !== -1) {
+      for (let i = Math.min(from, to); i <= Math.max(from, to); i++) setSelected(shownKeys[i], on);
+    } else setSelected(key, on);
+    lastToggled = key;
+    syncSelection();
+  };
+
+  // While a search or filter is on, the list keeps the height it had in the default view: the page content is
+  // vertically centred, so a shrinking list would make the whole page jump. `baseHeight` is re-measured on every
+  // default render (list + "no matches" block + "Show all"); CSSOM is allowed under the CSP, style attributes are not.
+  let baseHeight = 0;
+  const blockHeight = (el: HTMLElement) => (el.hidden ? 0 : el.offsetHeight);
+  const updateHeightLock = () => {
+    if (filtering() || !searchWrap.hidden) {
+      const others = blockHeight(emptyResult) + blockHeight(recentMore);
+      recentList.style.minHeight = Math.max(0, baseHeight - others) + "px";
+    } else {
+      recentList.style.minHeight = "";
+      baseHeight = recentList.offsetHeight + blockHeight(emptyResult) + blockHeight(recentMore);
+    }
+  };
 
   const renderRecent = () => {
+    // A background refresh rebuilds the rows: remember which control of which row had focus and give it back.
+    let focusKey: string | null = null;
+    let focusCheck = false;
+    const active = document.activeElement;
+    if (active && recentList.contains(active)) {
+      for (const [key, row] of rows) {
+        if (row.check === active || row.button === active) {
+          focusKey = key;
+          focusCheck = row.check === active;
+        }
+      }
+    }
     recentList.textContent = "";
+    rows.clear();
+    // The section stays while the store has items, even if the filter hides them all.
     recent.hidden = items.length === 0;
     // Compact cards in a small window (empty.css), so the list stays above the fold.
     content.classList.toggle("has-recent", items.length > 0);
-    if (items.length === 0) return;
-    const shown = expanded ? items : items.slice(0, VISIBLE_ROWS);
+    if (items.length === 0) {
+      shownKeys = [];
+      recentMore.hidden = true;
+      emptyResult.hidden = true;
+      clearSelection();
+      updateHeightLock();
+      return;
+    }
+    const found = matches();
+    // While a search or filter is on, every match is listed (no 8-row cap).
+    const shown = expanded || filtering() ? found : found.slice(0, VISIBLE_ROWS);
+    shownKeys = shown.map(keyOf);
     const now = Date.now();
     for (const item of shown) {
+      const key = keyOf(item);
       const li = document.createElement("li");
+      li.className = "recent-item";
+      const title = item.title || "Untitled";
+      const check = document.createElement("input");
+      check.type = "checkbox";
+      check.className = "recent-check";
+      check.setAttribute("aria-label", "Select " + title);
+      check.addEventListener("click", (e) => toggleKey(key, e.shiftKey, check.checked));
       const row = document.createElement("button");
       row.type = "button";
       row.className = "recent-row";
       row.appendChild(makeIcon(item.kind));
-      row.appendChild(span("recent-title", item.title || "Untitled"));
+      row.appendChild(span("recent-title", title));
       row.appendChild(span("recent-kind", item.kind === "canvas" ? "Canvas" : "Document"));
       row.appendChild(span("recent-time", formatRelativeTime(item.updatedAt, now)));
-      row.addEventListener("click", () => bridge.openItem(item.kind, item.id));
+      row.addEventListener("click", (e) => {
+        if (selected.size > 0 || e.metaKey || e.ctrlKey) toggleKey(key, e.shiftKey && selected.size > 0);
+        else bridge.openItem(item.kind, item.id);
+      });
       row.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         bridge.openItemMenu(item.kind, item.id);
       });
+      li.appendChild(check);
       li.appendChild(row);
       recentList.appendChild(li);
+      rows.set(key, { li, check, button: row });
     }
-    const hiddenCount = items.length - VISIBLE_ROWS;
-    recentMore.hidden = expanded || hiddenCount <= 0;
-    recentMore.textContent = "Show all (" + items.length + ")";
+    emptyResult.hidden = found.length > 0;
+    recentMore.hidden = expanded || filtering() || found.length - VISIBLE_ROWS <= 0;
+    recentMore.textContent = "Show all (" + found.length + ")";
+    syncSelection();
+    updateHeightLock();
+    const back = focusKey === null ? undefined : rows.get(focusKey);
+    if (back) (focusCheck ? back.check : back.button).focus({ preventScroll: true });
   };
 
   recentMore.addEventListener("click", () => {
     expanded = true;
     renderRecent();
-    const rows = recentList.querySelectorAll<HTMLButtonElement>(".recent-row");
-    rows[VISIBLE_ROWS]?.focus();
+    const list = recentList.querySelectorAll<HTMLButtonElement>(".recent-row");
+    list[VISIBLE_ROWS]?.focus();
+  });
+
+  // A changed search or filter starts a new result set: the selection does not carry over.
+  const refilter = () => {
+    setNote("");
+    selected.clear();
+    lastToggled = null;
+    renderRecent();
+    updateFilterUi();
+  };
+
+  // ---- Search ----
+  const setSearchOpen = (open: boolean) => {
+    searchWrap.hidden = !open;
+    searchToggle.hidden = open;
+    searchToggle.setAttribute("aria-expanded", String(open));
+    if (open) searchInput.focus();
+    updateHeightLock();
+  };
+  searchToggle.addEventListener("click", () => setSearchOpen(true));
+  const syncSearchClear = () => {
+    searchClear.hidden = searchInput.value === "";
+  };
+  searchInput.addEventListener("input", () => {
+    syncSearchClear();
+    refilter();
+  });
+  searchClear.addEventListener("click", () => {
+    searchInput.value = "";
+    syncSearchClear();
+    refilter();
+    searchInput.focus();
+  });
+  searchInput.addEventListener("blur", () => {
+    if (searchInput.value === "") setSearchOpen(false);
+  });
+
+  // ---- Filter popover ----
+  const popoverOpen = () => !popover.hidden;
+  function setPopover(open: boolean) {
+    if (open === popoverOpen()) return;
+    popover.hidden = !open;
+    filterToggle.setAttribute("aria-expanded", String(open));
+  }
+  function updateFilterUi() {
+    for (const el of Array.from(popover.querySelectorAll<HTMLElement>("[data-kind]"))) {
+      el.setAttribute("aria-checked", String(kinds[el.dataset.kind as Kind]));
+    }
+    for (const el of Array.from(popover.querySelectorAll<HTMLElement>("[data-modified]"))) {
+      el.setAttribute("aria-checked", String(el.dataset.modified === modified));
+    }
+    resetFilters.disabled = filterIsDefault();
+    filterToggle.classList.toggle("is-active", !filterIsDefault());
+  }
+  filterToggle.addEventListener("click", () => setPopover(!popoverOpen()));
+  popover.addEventListener("click", (e) => {
+    const item = (e.target as Element).closest<HTMLElement>(".pop-item");
+    if (!item || (item as HTMLButtonElement).disabled) return;
+    if (item.dataset.kind) kinds = { ...kinds, [item.dataset.kind]: !kinds[item.dataset.kind as Kind] };
+    else if (item.dataset.modified) modified = item.dataset.modified as RecentModifiedRange;
+    else if (item === resetFilters) {
+      kinds = { canvas: true, doc: true };
+      modified = "any";
+    }
+    refilter();
+    if (item === resetFilters) popover.querySelector<HTMLElement>(".pop-item")?.focus();
+  });
+  popover.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const list = Array.from(popover.querySelectorAll<HTMLButtonElement>(".pop-item:not(:disabled)"));
+    const at = list.indexOf(document.activeElement as HTMLButtonElement);
+    if (at === -1) return;
+    e.preventDefault();
+    list[(at + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length].focus();
+  });
+  document.addEventListener("pointerdown", (e) => {
+    const t = e.target as Node;
+    if (popoverOpen() && !popover.contains(t) && !filterToggle.contains(t)) setPopover(false);
+  });
+  popover.addEventListener("focusout", (e) => {
+    const next = e.relatedTarget as Node | null;
+    if (next && !popover.contains(next) && !filterToggle.contains(next)) setPopover(false);
+  });
+
+  document.getElementById("recent-clear-filters")!.addEventListener("click", () => {
+    searchInput.value = "";
+    syncSearchClear();
+    setSearchOpen(false);
+    kinds = { canvas: true, doc: true };
+    modified = "any";
+    refilter();
+    filterToggle.focus();
+  });
+
+  // ---- Selection actions ----
+  document.getElementById("recent-clear-selection")!.addEventListener("click", () => {
+    clearSelection();
+    filterToggle.focus();
+  });
+  selectAllBtn.addEventListener("click", () => {
+    setNote("");
+    // Every match, so list them all: nothing selected may hide behind "Show all".
+    expanded = true;
+    for (const item of matches()) selected.add(keyOf(item));
+    renderRecent();
+    deleteBtn.focus();
+  });
+  deleteBtn.addEventListener("click", () => {
+    if (deleting || selected.size === 0) return;
+    const chosen = items.filter((item) => selected.has(keyOf(item))).map((item) => ({ kind: item.kind, id: item.id }));
+    deleting = true;
+    syncSelection();
+    bridge
+      .deleteItems(chosen)
+      .then((result) => {
+        if (!result || result.cancelled) return; // cancelled: the selection stays so the user can retry
+        if (!result.ok) {
+          setNote("Couldn't delete these items.");
+          return;
+        }
+        // Only the deleted keys leave the selection: toggles made while the delete ran stay, and so do the failed items.
+        const failedKeys = new Set((result.failed ?? []).map(keyOf));
+        for (const item of chosen) {
+          const key = keyOf(item);
+          if (failedKeys.has(key)) continue;
+          selected.delete(key);
+          if (lastToggled === key) lastToggled = null;
+        }
+        if (failedKeys.size > 0) setNote(failedKeys.size === 1 ? "Couldn't delete 1 item." : "Couldn't delete " + failedKeys.size + " items.");
+        else setNote("");
+        syncSelection(); // swaps the header back before focus moves into it
+        if (selected.size === 0) filterToggle.focus();
+      })
+      .catch(() => {})
+      .finally(() => {
+        deleting = false;
+        syncSelection();
+        refreshRecent();
+      });
+  });
+
+  // Esc: close the filter popover, else the search field (text first), else the selection.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (popoverOpen()) {
+      setPopover(false);
+      filterToggle.focus();
+    } else if (document.activeElement === searchInput) {
+      if (searchInput.value !== "") {
+        searchInput.value = "";
+        syncSearchClear();
+        refilter();
+      } else {
+        setSearchOpen(false);
+        searchToggle.focus();
+      }
+    } else if (selected.size > 0) clearSelection();
   });
 
   // ArrowUp / ArrowDown move focus between the rows.
   recentList.addEventListener("keydown", (e) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    const rows = Array.from(recentList.querySelectorAll<HTMLButtonElement>(".recent-row"));
-    const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+    const list = Array.from(recentList.querySelectorAll<HTMLButtonElement>(".recent-row"));
+    const at = list.indexOf(document.activeElement as HTMLButtonElement);
     if (at === -1) return;
-    const next = rows[at + (e.key === "ArrowDown" ? 1 : -1)];
+    const next = list[at + (e.key === "ArrowDown" ? 1 : -1)];
     if (next) {
       e.preventDefault();
       next.focus();
@@ -112,6 +406,9 @@
       .then((list) => {
         if (seq !== refreshSeq) return;
         items = Array.isArray(list) ? list : [];
+        // Drop selected ids that left the list.
+        const live = new Set(items.map(keyOf));
+        for (const key of Array.from(selected)) if (!live.has(key)) selected.delete(key);
         renderRecent();
       })
       .catch(() => {});

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { notifyRecentChanged, openRecentItem, parseRecentMenuRequest, recentFor, type EmptyOpenDeps } from "../src/main/emptyOpen";
+import { notifyRecentChanged, openRecentItem, parseRecentTarget, parseRecentMenuRequest, recentFor, type EmptyOpenDeps } from "../src/main/emptyOpen";
 
 function deps(over: Partial<EmptyOpenDeps> = {}) {
   return {
@@ -94,5 +94,17 @@ describe("parseRecentMenuRequest", () => {
     expect(parseRecentMenuRequest(d, 7, { kind: "trace", id: "abc" }).ok).toBe(false);
     expect(parseRecentMenuRequest(d, 7, { kind: "doc", id: "../x" }).ok).toBe(false);
     expect(parseRecentMenuRequest(d, 7, null).ok).toBe(false);
+  });
+});
+
+describe("parseRecentTarget", () => {
+  it("accepts a valid canvas or doc entry", () => {
+    expect(parseRecentTarget({ kind: "canvas", id: "cv_1" })).toEqual({ ok: true, kind: "canvas", id: "cv_1" });
+    expect(parseRecentTarget({ kind: "doc", id: "doc_1", extra: 1 })).toEqual({ ok: true, kind: "doc", id: "doc_1" });
+  });
+  it("names the invalid part", () => {
+    expect(parseRecentTarget(null)).toEqual({ ok: false, error: "invalid kind" });
+    expect(parseRecentTarget({ kind: "note", id: "a" })).toEqual({ ok: false, error: "invalid kind" });
+    expect(parseRecentTarget({ kind: "doc", id: "../x" })).toEqual({ ok: false, error: "invalid id" });
   });
 });

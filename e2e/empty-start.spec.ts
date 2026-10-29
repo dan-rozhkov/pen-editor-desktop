@@ -244,3 +244,129 @@ test("the empty start lists stored canvases and documents; a click opens or acti
     fs.rmSync(userData, { recursive: true, force: true });
   }
 });
+
+test("the Recent list searches, filters, selects with checkboxes and bulk deletes after a native confirm", async () => {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), "pen-desktop-bulk-"));
+  const now = Date.now();
+  const docDir = path.join(userData, "documents-dev");
+  const canvasDir = path.join(userData, "canvases-dev");
+  fs.mkdirSync(docDir, { recursive: true });
+  fs.mkdirSync(canvasDir, { recursive: true });
+  const writeDoc = (id: string, title: string, age: number) =>
+    fs.writeFileSync(path.join(docDir, `${id}.json`), JSON.stringify({ id, title, markdown: "", updatedAt: now - age, rev: 1 }));
+  writeDoc("doc_alpha", "Alpha plan", 60_000);
+  writeDoc("doc_beta", "Beta notes", 2 * 3_600_000);
+  fs.writeFileSync(path.join(canvasDir, "cv_gamma.meta.json"), JSON.stringify({ id: "cv_gamma", title: "Gamma board", updatedAt: now - 3 * 3_600_000, rev: 1 }));
+  fs.writeFileSync(path.join(canvasDir, "cv_gamma.pen.json"), JSON.stringify({ id: "cv_gamma", rev: 1, document: "{}" }));
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: `${baseUrl}/app`, PEN_DESKTOP_USER_DATA_DIR: userData },
+  });
+  try {
+    const empty =
+      app.windows().find((p) => p.url().endsWith("/tabbar/empty.html")) ??
+      (await app.waitForEvent("window", { predicate: (p) => p.url().endsWith("/tabbar/empty.html") }));
+    const cspErrors: string[] = [];
+    empty.on("console", (m) => {
+      if (/content security policy/i.test(m.text())) cspErrors.push(m.text());
+    });
+    const rows = empty.locator(".recent-row");
+    await expect(rows).toHaveCount(3);
+    const listHeight = async () => (await empty.locator("#recent-list").boundingBox())!.height;
+    const defaultHeight = await listHeight();
+
+    // Search: the field opens focused, filters by title, Esc clears the text and then closes it.
+    await empty.locator("#recent-search-toggle").click();
+    await expect(empty.locator("#recent-search")).toBeFocused();
+    await empty.locator("#recent-search").fill("beta");
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first().locator(".recent-title")).toHaveText("Beta notes");
+    // The list keeps its default-view height while searching, so the centred page does not jump.
+    expect(await listHeight()).toBeGreaterThanOrEqual(defaultHeight - 1);
+    await expect(empty.locator("#recent-search-clear")).toBeVisible();
+    await empty.locator("#recent-search-clear").click();
+    await expect(empty.locator("#recent-search")).toHaveValue("");
+    await expect(empty.locator("#recent-search-clear")).toBeHidden();
+    await expect(rows).toHaveCount(3);
+    await empty.locator("#recent-search").fill("beta");
+    await expect(rows).toHaveCount(1);
+    await empty.locator("#recent-search").fill("nothing like this");
+    await expect(empty.locator(".recent-empty-text")).toHaveText("No matching files");
+    await empty.getByRole("button", { name: "Clear search and filters" }).click();
+    await expect(rows).toHaveCount(3);
+    await expect(empty.locator("#recent-search")).toBeHidden();
+
+    // Filter: Type toggles; the toggle button gets the active dot class; Esc closes the popover.
+    await empty.locator("#recent-filter-toggle").click();
+    await expect(empty.locator("#recent-filter-popover")).toBeVisible();
+    await empty.getByRole("menuitemcheckbox", { name: "Canvases" }).click();
+    await expect(rows).toHaveCount(2);
+    await expect(empty.locator("#recent-filter-toggle")).toHaveClass(/is-active/);
+    await empty.getByRole("button", { name: "Reset filters" }).click();
+    await expect(rows).toHaveCount(3);
+    await empty.keyboard.press("Escape");
+    await expect(empty.locator("#recent-filter-popover")).toBeHidden();
+    await expect(empty.locator("#recent-filter-toggle")).not.toHaveClass(/is-active/);
+
+    // The checkbox shows on hover; selecting swaps the header for "N selected" and a plain row click then toggles.
+    const checks = empty.locator(".recent-check");
+    await expect(checks.first()).toHaveCSS("opacity", "0");
+    await rows.first().hover();
+    await expect(checks.first()).toHaveCSS("opacity", "1");
+    await checks.nth(0).click();
+    await expect(empty.locator("#recent-count")).toHaveText("1 selected");
+    await expect(empty.locator("#recent-search-toggle")).toBeHidden();
+    await rows.nth(1).click();
+    await expect(empty.locator("#recent-count")).toHaveText("2 selected");
+    await expect(empty.locator(".recent-item.selected")).toHaveCount(2);
+
+    // Esc clears; "Select all" picks every match.
+    await empty.keyboard.press("Escape");
+    await expect(empty.locator("#recent-selbar")).toBeHidden();
+    await checks.nth(0).click();
+    await empty.getByRole("button", { name: "Select all" }).click();
+    await expect(empty.locator("#recent-count")).toHaveText("3 selected");
+    await expect(empty.getByRole("button", { name: "Select all" })).toBeHidden();
+
+    // A cancelled confirm keeps everything; an accepted one removes the files and empties the list.
+    await app.evaluate(({ dialog }) => {
+      (dialog as unknown as { showMessageBox: unknown }).showMessageBox = async () => ({ response: 1, checkboxChecked: false });
+    });
+    await empty.locator("#recent-delete").click();
+    await expect(empty.locator("#recent-delete")).toBeEnabled();
+    await expect(empty.locator("#recent-count")).toHaveText("3 selected");
+    expect(fs.existsSync(path.join(docDir, "doc_alpha.json"))).toBe(true);
+    await app.evaluate(({ dialog }) => {
+      (dialog as unknown as { showMessageBox: unknown }).showMessageBox = async () => ({ response: 0, checkboxChecked: false });
+    });
+    // A partial failure (the documents directory is read-only, so both documents fail): the canvas goes, the two
+    // failed items stay selected and the bar says so. The note clears on the next selection change.
+    fs.chmodSync(docDir, 0o500);
+    try {
+      await empty.locator("#recent-delete").click();
+      await expect(empty.locator("#recent-note")).toHaveText("Couldn't delete 2 items.");
+    } finally {
+      fs.chmodSync(docDir, 0o700);
+    }
+    await expect(rows).toHaveCount(2);
+    await expect(empty.locator("#recent-count")).toHaveText("2 selected");
+    expect(fs.existsSync(path.join(canvasDir, "cv_gamma.meta.json"))).toBe(false);
+    expect(fs.existsSync(path.join(docDir, "doc_alpha.json"))).toBe(true);
+    await empty.locator(".recent-check").nth(0).click();
+    await expect(empty.locator("#recent-note")).toHaveText("");
+    await empty.locator(".recent-check").nth(0).click();
+    await expect(empty.locator("#recent-count")).toHaveText("2 selected");
+    await empty.locator("#recent-delete").click();
+    await expect(empty.locator("#recent")).toBeHidden();
+    await expect(rows).toHaveCount(0);
+    expect(fs.existsSync(path.join(docDir, "doc_alpha.json"))).toBe(false);
+    expect(fs.existsSync(path.join(docDir, "doc_beta.json"))).toBe(false);
+    expect(fs.existsSync(path.join(canvasDir, "cv_gamma.meta.json"))).toBe(false);
+    // Deleted documents leave tombstones, which are not documents.
+    expect(JSON.parse(fs.readFileSync(path.join(docDir, ".deleted.json"), "utf8")).map((t: { id: string }) => t.id).sort()).toEqual(["doc_alpha", "doc_beta"]);
+    expect(cspErrors).toEqual([]);
+  } finally {
+    await app.close();
+    fs.rmSync(userData, { recursive: true, force: true });
+  }
+});

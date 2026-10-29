@@ -3,7 +3,7 @@ import { handleDocDelete, handleDocList, handleDocSave, type DocIpcDeps } from "
 
 function deps(role: "panel" | "editor" | "doc" | "trace" | "browser"): DocIpcDeps & { store: { list: ReturnType<typeof vi.fn>; save: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> } } {
   return {
-    store: { list: vi.fn(async () => ({ docs: [] })), save: vi.fn(async () => ({ ok: true as const, rev: 1 })), remove: vi.fn(async () => ({ ok: true as const })) },
+    store: { list: vi.fn(async () => ({ docs: [], deleted: [] })), save: vi.fn(async () => ({ ok: true as const, rev: 1 })), remove: vi.fn(async () => ({ ok: true as const })) },
     isPanel: () => role === "panel",
     isEditorTab: () => role === "editor",
     isDocTab: () => role === "doc",
@@ -15,7 +15,7 @@ describe("docs:* sender rules", () => {
   for (const role of ["panel", "editor", "doc", "trace"] as const) {
     it(`allows ${role}`, async () => {
       const d = deps(role);
-      expect(await handleDocList(d, 1)).toEqual({ docs: [] });
+      expect(await handleDocList(d, 1)).toEqual({ docs: [], deleted: [] });
       expect(await handleDocSave(d, 1, { id: "a" })).toEqual({ ok: true, rev: 1 });
       expect(await handleDocDelete(d, 1, "a")).toEqual({ ok: true });
       expect(d.store.save).toHaveBeenCalledWith({ id: "a" });
