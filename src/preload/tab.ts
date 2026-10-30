@@ -223,11 +223,16 @@ const canvasHost = {
 };
 
 // Browse-run traces: editor tabs store the trace of a run they drove; trace tabs read it. Main checks the sender.
-const traces = {
+// `open` (below) only on the doc page: a `/trace/<id>` link clicked in a document opens that trace tab.
+const traceStorage = {
   save: (payload: { manifest: unknown; assets: { path: string; dataUrl: string }[] }): Promise<{ id: string } | { error: string }> =>
     ipcRenderer.invoke("traces:save", payload),
   read: (id: string): Promise<{ trace: unknown } | { error: string }> => ipcRenderer.invoke("traces:read", id),
   list: (): Promise<TraceListResult> => ipcRenderer.invoke("traces:list"),
+};
+const traces = {
+  ...traceStorage,
+  open: (traceId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("traces:open", traceId),
 };
 
 // Documents (markdown tabs at `/doc`): disk mirror on every tab; `open` (below) only on the trace viewer page. Main checks the sender.
@@ -314,7 +319,7 @@ const api = {
   browser,
   agentLayout: true as const,
   canvasHost,
-  traces,
+  traces: typeof location !== "undefined" && location.pathname.replace(/\/+$/, "").split("/").pop() === "doc" ? traces : traceStorage,
   auth,
   logins,
   browserSettings,

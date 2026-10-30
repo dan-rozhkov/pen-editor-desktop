@@ -326,6 +326,31 @@ describe("preload/tab.ts browserSettings bridge", () => {
   });
 });
 
+describe("preload/tab.ts traces.open", () => {
+  async function load(pathname: string) {
+    vi.resetModules();
+    invokeMock.mockClear();
+    exposedApi = undefined;
+    (globalThis as unknown as { location: unknown }).location = { pathname };
+    await import("../src/preload/tab");
+  }
+
+  it("on the doc page adds open, over traces:open", async () => {
+    await load("/doc");
+    expect(Object.keys(exposedApi.traces).sort()).toEqual(["list", "open", "read", "save"]);
+    invokeMock.mockResolvedValueOnce({ ok: true });
+    await expect(exposedApi.traces.open("run_1")).resolves.toEqual({ ok: true });
+    expect(invokeMock).toHaveBeenLastCalledWith("traces:open", "run_1");
+  });
+
+  it("has no open on other pages", async () => {
+    await load("/app");
+    expect(exposedApi.traces.open).toBeUndefined();
+    await load("/trace/abc");
+    expect(exposedApi.traces.open).toBeUndefined();
+  });
+});
+
 describe("preload/tab.ts docs bridge", () => {
   async function load(pathname: string) {
     vi.resetModules();

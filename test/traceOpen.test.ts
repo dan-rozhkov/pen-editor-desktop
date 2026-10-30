@@ -5,6 +5,7 @@ import { handleTraceList, handleTraceListTabs, handleTraceRead, handleTraceSave,
 function deps(over: Partial<TraceOpenDeps> = {}): TraceOpenDeps {
   return {
     isPanel: (id) => id === 1,
+    isDocViewer: vi.fn((id: number, url: string | undefined) => id === 6 && url === "https://ed.example/doc"),
     findTraceTab: vi.fn(() => null),
     activate: vi.fn(),
     newTraceTab: vi.fn(() => 5),
@@ -12,31 +13,57 @@ function deps(over: Partial<TraceOpenDeps> = {}): TraceOpenDeps {
   };
 }
 
+const panel = { senderId: 1, topFrame: true, frameUrl: undefined };
+const other = { senderId: 2, topFrame: true, frameUrl: "https://ed.example/doc" };
+const docTab = { senderId: 6, topFrame: true, frameUrl: "https://ed.example/doc" };
+
 describe("traces:open", () => {
   it("opens a new trace tab, without keyboard focus, when none shows the trace", () => {
     const d = deps();
-    expect(openTraceTab(d, 1, "run_1")).toEqual({ ok: true });
+    expect(openTraceTab(d, panel, "run_1")).toEqual({ ok: true });
     expect(d.newTraceTab).toHaveBeenCalledWith("run_1", { focus: false });
     expect(d.activate).not.toHaveBeenCalled();
   });
 
   it("focuses the existing tab instead of opening a second one", () => {
     const d = deps({ findTraceTab: vi.fn(() => 9) });
-    expect(openTraceTab(d, 1, "run_1")).toEqual({ ok: true });
+    expect(openTraceTab(d, panel, "run_1")).toEqual({ ok: true });
     expect(d.activate).toHaveBeenCalledWith(9, { focus: false });
     expect(d.newTraceTab).not.toHaveBeenCalled();
   });
 
-  it("refuses any sender but the agent panel", () => {
+  it("refuses any sender but the agent panel and a doc tab", () => {
     const d = deps();
-    expect(openTraceTab(d, 2, "run_1")).toMatchObject({ ok: false });
+    expect(openTraceTab(d, other, "run_1")).toMatchObject({ ok: false });
+    expect(d.newTraceTab).not.toHaveBeenCalled();
+    expect(d.activate).not.toHaveBeenCalled();
+  });
+
+  it("a doc tab on the doc page opens a new trace tab WITH focus", () => {
+    const d = deps();
+    expect(openTraceTab(d, docTab, "run_1")).toEqual({ ok: true });
+    expect(d.newTraceTab).toHaveBeenCalledWith("run_1", { focus: true });
+  });
+
+  it("a doc tab focuses an existing trace tab", () => {
+    const d = deps({ findTraceTab: vi.fn(() => 9) });
+    expect(openTraceTab(d, docTab, "run_1")).toEqual({ ok: true });
+    expect(d.activate).toHaveBeenCalledWith(9, { focus: true });
+    expect(d.newTraceTab).not.toHaveBeenCalled();
+  });
+
+  it("a doc tab call from a subframe, or off the doc page, is refused", () => {
+    const d = deps();
+    expect(openTraceTab(d, { ...docTab, topFrame: false }, "run_1")).toMatchObject({ ok: false });
+    expect(openTraceTab(d, { ...docTab, frameUrl: "https://ed.example/app" }, "run_1")).toMatchObject({ ok: false });
+    expect(openTraceTab(d, { ...docTab, frameUrl: undefined }, "run_1")).toMatchObject({ ok: false });
     expect(d.newTraceTab).not.toHaveBeenCalled();
   });
 
   it("rejects invalid ids without touching tabs", () => {
     const d = deps();
     for (const bad of ["", "a b", "../x", "a/b", "x".repeat(65), 7, undefined, null]) {
-      expect(openTraceTab(d, 1, bad)).toEqual({ ok: false, error: "invalid trace id" });
+      expect(openTraceTab(d, panel, bad)).toEqual({ ok: false, error: "invalid trace id" });
     }
     expect(d.findTraceTab).not.toHaveBeenCalled();
     expect(d.newTraceTab).not.toHaveBeenCalled();
@@ -44,7 +71,7 @@ describe("traces:open", () => {
 
   it("turns a thrown error into {ok:false,error}", () => {
     const d = deps({ newTraceTab: () => { throw new Error("boom"); } });
-    expect(openTraceTab(d, 1, "abc")).toEqual({ ok: false, error: "boom" });
+    expect(openTraceTab(d, panel, "abc")).toEqual({ ok: false, error: "boom" });
   });
 });
 

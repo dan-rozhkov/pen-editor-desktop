@@ -2886,11 +2886,12 @@ export function createMainWindow(
     openTraceTab(
       {
         isPanel: (wcId) => panelWc()?.id === wcId,
+        isDocViewer: (wcId, frameUrl) => tabs.isDocViewer(wcId, frameUrl),
         findTraceTab: (traceId) => tabs.findTraceTab(traceId),
         activate: (tabId, opts) => tabs.activate(tabId, opts),
         newTraceTab: (traceId, opts) => tabs.newTab("trace", undefined, { traceId, focus: opts.focus }),
       },
-      event.sender.id,
+      { senderId: event.sender.id, topFrame: event.senderFrame != null && event.senderFrame === event.sender.mainFrame, frameUrl: event.senderFrame?.url },
       id,
     ),
   );
