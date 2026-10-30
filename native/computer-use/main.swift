@@ -39,7 +39,9 @@ func handle(_ line: String) {
     }
     let timeout: Double
     switch cmd {
-    case "snapshot", "read", "screenshot", "perform": timeout = 5
+    // snapshot/read may wait up to 4 s for a Chromium AX tree to come back (Accessibility.swift).
+    case "snapshot", "read": timeout = 9
+    case "screenshot", "perform": timeout = 5
     case "type": timeout = 10
     default: timeout = 2
     }

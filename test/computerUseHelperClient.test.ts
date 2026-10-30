@@ -86,12 +86,13 @@ describe("ComputerUseHelper", () => {
     expect(e.code).toBe("STALE");
   });
 
-  it("uses helper budget + 1 s: 6 s snapshot/read/screenshot/perform, 11 s type, 3 s others, and overrides", async () => {
+  it("uses helper budget + 1 s: 10 s snapshot/read, 6 s screenshot/perform, 11 s type, 3 s others, and overrides", async () => {
     vi.useFakeTimers();
     const { helper } = setup({ read: 100 });
     const snap = helper.call("snapshot").catch((e) => e);
     const click = helper.call("click").catch((e) => e);
     const read = helper.call("read").catch((e) => e);
+    expect(helper.timeoutFor("snapshot")).toBe(10000);
     expect(helper.timeoutFor("perform")).toBe(6000);
     expect(helper.timeoutFor("screenshot")).toBe(6000);
     expect(helper.timeoutFor("type")).toBe(11000);
@@ -105,7 +106,7 @@ describe("ComputerUseHelper", () => {
     expect((await click).code).toBe("TIMEOUT");
     let snapDone = false;
     void snap.then(() => (snapDone = true));
-    await vi.advanceTimersByTimeAsync(2900);
+    await vi.advanceTimersByTimeAsync(6900);
     expect(snapDone).toBe(false);
     await vi.advanceTimersByTimeAsync(100);
     expect((await snap).code).toBe("TIMEOUT");

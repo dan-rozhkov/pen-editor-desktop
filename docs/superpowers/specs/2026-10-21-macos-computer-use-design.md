@@ -79,7 +79,7 @@ Protocol: one long-lived process per Sideform main process. Requests and respons
 JSON on stdin/stdout. Request `{ "id": number, "cmd": string, ...args }`; response
 `{ "id": number, "ok": true, ...result }` or `{ "id": number, "ok": false, "error": string, "code"?: string }`.
 Unsolicited events have no `id`: `{ "event": "appTerminated", "pid": number }`. stderr is a log.
-Every command answers within its own timeout (snapshot 5 s, screenshot 5 s, others 2 s); the helper
+Every command answers within its own timeout (snapshot and read 9 s, screenshot 5 s, others 2 s); the helper
 never blocks the read loop (work runs on a serial queue, AX calls use `AXUIElementSetMessagingTimeout`
 of 1 s per element).
 
@@ -102,9 +102,12 @@ of 1 s per element).
 | `activate` | `{ pid }` | `{ done: true }` |
 | `watch` | `{ pid }` | `{ done: true }` — emits `appTerminated` once the pid exits (`NSWorkspace.didTerminateApplicationNotification`). |
 
-Electron/Chromium apps expose an empty AX tree until asked: on the first `snapshot`/`read` of a
-pid, the helper sets `AXManualAccessibility = true` on the app element (ignored by native apps)
-and, if the window has no children yet, retries once after 400 ms. It never sets
+Electron/Chromium apps expose an empty AX tree until asked, and Chromium turns it off again by
+itself later. On a `snapshot`/`read` whose window has an empty web area, the helper sets
+`AXManualAccessibility = true` on the app element (ignored by native apps; at most once per 3 s per
+pid, because every set restarts Chromium's ~2 s rebuild delay) and waits up to 4 s for a stable
+web-area size. A window whose wait ran out is not waited for again for 60 s. A native app whose
+window has no children yet is retried once after 400 ms. It never sets
 `AXEnhancedUserInterface` (it breaks window animations).
 
 #### Element table

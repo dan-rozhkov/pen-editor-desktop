@@ -27,7 +27,8 @@ Notes on details the spec leaves open:
 - `watch` on a pid that has already exited answers `NOT_FOUND` and keeps no state for it.
 - `windows` matches each AX window to the layer-0 CG window of the same pid with the smallest bounds
   distance (each CG id used once). `windowId` is 0 only when no CG window is left or the AX window has no area.
-- Timeouts per command (watchdog answers `TIMEOUT`): `snapshot`, `read`, `screenshot`, `perform` 5 s;
+- Timeouts per command (watchdog answers `TIMEOUT`): `snapshot`, `read` 9 s (they may wait up to 4 s for a
+  Chromium AX tree to come back); `screenshot`, `perform` 5 s;
   `type` 10 s; every other command 2 s.
 - `scroll` takes DOM-style deltas: positive `dy` scrolls the content down.
 - `key` accepts `key` plus `modifiers`, or a combined `"Meta+a"` string in `key`.

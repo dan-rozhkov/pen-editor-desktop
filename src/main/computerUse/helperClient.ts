@@ -33,8 +33,11 @@ export class HelperError extends Error {
 
 /** Client codes: `TIMEOUT`, `HELPER_EXIT`, `HELPER_CLOSED`, `HELPER_SPAWN`. */
 // Client timeout = the helper's own budget + 1 s, so the helper's error answer (a timeout code of its own)
-// arrives before the client gives up. Helper budgets: snapshot/read/screenshot/perform 5 s, type 10 s, others 2 s.
-export const SLOW_COMMANDS: ReadonlySet<string> = new Set(["snapshot", "read", "screenshot", "perform"]);
+// arrives before the client gives up. Helper budgets: snapshot/read 9 s (they may wait for a Chromium AX tree),
+// screenshot/perform 5 s, type 10 s, others 2 s.
+export const TREE_COMMANDS: ReadonlySet<string> = new Set(["snapshot", "read"]);
+export const TREE_TIMEOUT_MS = 10000;
+export const SLOW_COMMANDS: ReadonlySet<string> = new Set(["screenshot", "perform"]);
 export const SLOW_TIMEOUT_MS = 6000;
 export const TYPE_TIMEOUT_MS = 11000;
 export const FAST_TIMEOUT_MS = 3000;
@@ -90,6 +93,7 @@ export class ComputerUseHelper {
     const configured = this.opts.timeouts?.[cmd];
     if (configured !== undefined) return configured;
     if (cmd === "type") return TYPE_TIMEOUT_MS;
+    if (TREE_COMMANDS.has(cmd)) return TREE_TIMEOUT_MS;
     return SLOW_COMMANDS.has(cmd) ? SLOW_TIMEOUT_MS : FAST_TIMEOUT_MS;
   }
 

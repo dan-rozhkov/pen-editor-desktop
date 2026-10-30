@@ -55,9 +55,15 @@ func axValueText(_ el: AXUIElement) -> String? {
 
 private struct Snapshot { let id: String; let pid: pid_t; let refs: [AXUIElement] }
 private var snapshotRings: [pid_t: [Snapshot]] = [:] // last 8 snapshots per pid
+private var manualSetAt: [pid_t: Date] = [:] // last AXManualAccessibility set, per pid
+private var manualAccepted: [pid_t: Bool] = [:] // the app took the flag (Chromium/Electron)
+private var webWaitFailedAt: [String: Date] = [:] // last web-area wait that ran out, per "pid:windowId"
 
 func dropSnapshots(_ pid: pid_t) {
     snapshotRings[pid] = nil
+    manualSetAt[pid] = nil
+    manualAccepted[pid] = nil
+    webWaitFailedAt = webWaitFailedAt.filter { !$0.key.hasPrefix("\(pid):") }
 }
 
 private func lookup(_ a: JSON) throws -> AXUIElement {
@@ -110,43 +116,59 @@ private func pickWindow(_ pid: pid_t, _ windowId: Int?) throws -> WinInfo {
     throw fail("The app has no open window.", "NO_WINDOW")
 }
 
-/// Turns on the AX tree of Chromium/Electron apps and waits for the web area to be rebuilt.
-/// The flag is set on EVERY call, not once per pid: Chromium turns accessibility off by itself later,
-/// so one set per helper life lost the tree after a few agent runs. The wait stays inside the
-/// command deadline; when the web area is still empty we continue (best effort).
+/// Turns the AX tree of a Chromium/Electron app back on when its web area is empty, and waits for it.
+/// Chromium turns accessibility off by itself later, so one set per helper life lost the tree after a
+/// few agent runs. Measured on Electron 43: after a set the web area stays empty about 2 s, then fills
+/// in one burst (1 node at 2.01 s, 334 at 2.10 s), and a new set restarts that delay. So the flag is
+/// set only when the web area is empty and the last set of this pid is over 3 s old, never in the
+/// wait loop. The wait stays inside the command deadline (8.2 s: up to 4 s of wait, then 4.2 s for
+/// the walk); a still-empty web area is walked anyway (best effort).
 private func prepareWindow(_ pid: pid_t, _ windowId: Int?, deadline: Date) throws -> WinInfo {
     _ = try runningApp(pid)
     try requireAccessibility()
     let app = AXUIElementCreateApplication(pid)
     AXUIElementSetMessagingTimeout(app, 1.0)
-    // Chromium/Electron accept the attribute; other apps return an error.
-    let chromium = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success
     var win = try pickWindow(pid, windowId)
+    if hasWebContent(win.ax) { return win } // usual case: the tree is on
     // Pin the window so a re-pick cannot jump to another one.
     let pinned: Int? = (windowId ?? 0) != 0 ? windowId : Int(win.id)
-    if chromium {
-        let pollEnd = min(Date().addingTimeInterval(1.5), deadline.addingTimeInterval(-2.0))
-        while !webContentReady(win.ax) && Date() < pollEnd {
+    let now = Date()
+    let rebuilding = manualSetAt[pid].map { now.timeIntervalSince($0) < 3 } ?? false
+    if !rebuilding {
+        // Chromium/Electron accept the attribute; other apps return an error.
+        manualAccepted[pid] = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success
+        manualSetAt[pid] = now
+    }
+    // A window whose wait ran out recently is not waited for again: it may hold no web content at all.
+    let key = "\(pid):\(win.id)"
+    let recentFail = webWaitFailedAt[key].map { now.timeIntervalSince($0) < 60 } ?? false
+    if manualAccepted[pid] == true && !recentFail {
+        let pollEnd = min(now.addingTimeInterval(4.0), deadline.addingTimeInterval(-4.2))
+        // Wait for a size that is above 0 and the same in two samples 0.15 s apart.
+        var last = 0
+        var ready = false
+        while Date() < pollEnd {
             Thread.sleep(forTimeInterval: 0.15)
-            _ = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
             win = try pickWindow(pid, pinned)
+            let size = webContentSize(win.ax, until: pollEnd)
+            if size > 0 && size == last { ready = true; break }
+            last = size
         }
-    } else if axChildren(win.ax).isEmpty {
+        webWaitFailedAt[key] = ready ? nil : Date()
+    } else if manualAccepted[pid] != true && axChildren(win.ax).isEmpty {
         Thread.sleep(forTimeInterval: 0.4)
         win = try pickWindow(pid, pinned)
     }
     return win
 }
 
-/// True once the window holds an AXWebArea with at least one child. Bounded breadth-first search.
-private func webContentReady(_ win: AXUIElement) -> Bool {
+/// True when the window holds an AXWebArea with at least one child. Bounded breadth-first search.
+private func hasWebContent(_ win: AXUIElement) -> Bool {
     var queue: [(AXUIElement, Int)] = [(win, 0)]
     var head = 0
-    var visited = 0
-    while head < queue.count && visited < 300 {
+    while head < queue.count && head < 300 {
         let (el, depth) = queue[head]
         head += 1
-        visited += 1
         let role = axString(el, "AXRole") ?? ""
         if skippedRoles.contains(role) { continue }
         let kids = axChildren(el)
@@ -154,6 +176,23 @@ private func webContentReady(_ win: AXUIElement) -> Bool {
         if depth < 12 { for k in kids { queue.append((k, depth + 1)) } }
     }
     return false
+}
+
+/// Number of elements inside the window's AXWebArea (0 = no web content). Bounded breadth-first
+/// search that also stops at `until`.
+private func webContentSize(_ win: AXUIElement, until: Date) -> Int {
+    var queue: [(AXUIElement, Int, Bool)] = [(win, 0, false)]
+    var head = 0
+    var size = 0
+    while head < queue.count && head < 600 && Date() < until {
+        let (el, depth, inWeb) = queue[head]
+        head += 1
+        let role = axString(el, "AXRole") ?? ""
+        if skippedRoles.contains(role) { continue }
+        if inWeb { size += 1 }
+        if depth < 40 { for k in axChildren(el) { queue.append((k, depth + 1, inWeb || role == "AXWebArea")) } }
+    }
+    return size
 }
 
 // MARK: Labels
@@ -363,7 +402,7 @@ private final class ReadWalker {
 
 func cmdSnapshot(_ a: JSON) throws -> JSON {
     let pid = try a.pid()
-    let deadline = Date().addingTimeInterval(4.2)
+    let deadline = Date().addingTimeInterval(8.2)
     let win = try prepareWindow(pid, a.int("windowId"), deadline: deadline)
     let maxEl = max(1, min(a.int("maxElements") ?? 120, 1000))
     let walker = SnapWalker(windowFrame: win.frame, maxElements: maxEl, deadline: deadline)
@@ -381,7 +420,7 @@ func cmdSnapshot(_ a: JSON) throws -> JSON {
 
 func cmdRead(_ a: JSON) throws -> JSON {
     let pid = try a.pid()
-    let deadline = Date().addingTimeInterval(4.2)
+    let deadline = Date().addingTimeInterval(8.2)
     let win = try prepareWindow(pid, a.int("windowId"), deadline: deadline)
     let walker = ReadWalker(windowFrame: win.frame, maxChars: max(1, a.int("maxChars") ?? 12000), deadline: deadline)
     walker.walk(win.ax, depth: 0)
