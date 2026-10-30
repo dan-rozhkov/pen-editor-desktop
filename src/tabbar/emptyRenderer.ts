@@ -51,7 +51,7 @@
   // Glyphs: glyphs.ts, filter: recentFilter.ts (plain scripts loaded before this one).
   type Kind = "canvas" | "doc" | "workflow";
   type Item = { kind: Kind; id: string; title: string; updatedAt: number };
-  const GLYPHS = { canvas: "PaintBrush", doc: "FileText", workflow: "ListBullets" };
+  const GLYPHS = { canvas: "PaintBrush", doc: "FileText", workflow: "TreeStructure" };
   const KIND_LABELS = { canvas: "Canvas", doc: "Document", workflow: "Workflow" };
   const VISIBLE_ROWS = 8;
   const recent = document.getElementById("recent")!;
