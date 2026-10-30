@@ -7,6 +7,9 @@ import {
   ERR_NATIVE_NO_WINDOW,
   ERR_NATIVE_NOT_FRONTMOST,
   ERR_NATIVE_POINT_NOT_IN_APP,
+  ERR_NATIVE_NO_SCREENSHOT,
+  ERR_NATIVE_WINDOW_MOVED,
+  ERR_NATIVE_POINT_OUTSIDE,
   ERR_NATIVE_SHORTCUT_BLOCKED,
   ERR_NATIVE_OPEN_LOCKED,
   ERR_NATIVE_TABS,
@@ -1005,5 +1008,151 @@ describe("target search order and read-back", () => {
     await ctl.act({ action: "type", target: "Search", text: "hi" });
     // before (120), big search (1000), read-back (1000), after (120)
     expect(of("snapshot").map((c) => c.args.maxElements)).toEqual([120, 1000, 1000, 120]);
+  });
+});
+
+describe("click and type at a point", () => {
+  const BIG = { ...WIN, x: 0, y: 0, width: 1440, height: 900 };
+  const encodeImage = () => ({ data: "JPG", width: 1280, height: 800, mimeType: "image/jpeg" });
+  /** A controller whose window is `BIG` (as the screenshot saw it); `win.current` can be changed afterwards. */
+  function withShot() {
+    const win = { current: BIG };
+    const t = setup({ windows: () => ({ windows: [win.current] }) }, { encodeImage });
+    return { ...t, win };
+  }
+
+  it("refuses x and y before any screenshot", async () => {
+    const { ctl, of } = withShot();
+    expect(await ctl.act({ action: "click", x: 10, y: 10 })).toEqual({ error: ERR_NATIVE_NO_SCREENSHOT });
+    expect(of("click")).toHaveLength(0);
+  });
+
+  it("maps image pixels to screen points by window size over image size", async () => {
+    const { ctl, of } = withShot();
+    await ctl.screenshot({});
+    await ctl.act({ action: "click", x: 640, y: 400 });
+    expect(of("click")[0].args).toEqual({ pid: 42, x: 720, y: 450, button: "left", count: 1 });
+    await ctl.act({ action: "click", x: 100, y: 80 });
+    expect(of("click")[1].args).toMatchObject({ x: 112.5, y: 90 });
+  });
+
+  it("keeps a negative window origin", async () => {
+    const win = { ...BIG, x: -1440, y: -100 };
+    const { ctl, of } = setup({ windows: () => ({ windows: [win] }) }, { encodeImage });
+    await ctl.screenshot({});
+    await ctl.act({ action: "click", x: 0, y: 0 });
+    expect(of("click")[0].args).toMatchObject({ x: -1440, y: -100 });
+  });
+
+  it("sends the right button and a double click", async () => {
+    const { ctl, of } = withShot();
+    await ctl.screenshot({});
+    await ctl.act({ action: "click", x: 1, y: 2, button: "right" });
+    await ctl.act({ action: "click", x: 1, y: 2, clicks: 2 });
+    expect(of("click")[0].args).toMatchObject({ button: "right", count: 1 });
+    expect(of("click")[1].args).toMatchObject({ button: "left", count: 2 });
+  });
+
+  it("refuses a point outside the screenshot, a non-integer and a lone coordinate", async () => {
+    const { ctl, of } = withShot();
+    await ctl.screenshot({});
+    expect(await ctl.act({ action: "click", x: 1280, y: 10 })).toEqual({ error: ERR_NATIVE_POINT_OUTSIDE("1280", "10", 1280, 800) });
+    expect(await ctl.act({ action: "click", x: 10, y: -1 })).toEqual({ error: ERR_NATIVE_POINT_OUTSIDE("10", "-1", 1280, 800) });
+    expect(await ctl.act({ action: "click", x: 1.5, y: 1 })).toMatchObject({ error: expect.stringContaining("outside the screenshot") });
+    expect(await ctl.act({ action: "click", x: 5 })).toEqual({ error: 'browse_act: "x" and "y" must be given together.' });
+    expect(of("click")).toHaveLength(0);
+  });
+
+  it("refuses when the window moved or resized by more than 1 point, and forgets the screenshot", async () => {
+    const { ctl, of, win } = withShot();
+    await ctl.screenshot({});
+    win.current = { ...BIG, x: 1 }; // one point: still fine
+    await ctl.act({ action: "click", x: 10, y: 10 });
+    expect(of("click")).toHaveLength(1);
+    win.current = { ...BIG, width: 1000 };
+    expect(await ctl.act({ action: "click", x: 10, y: 10 })).toEqual({ error: ERR_NATIVE_WINDOW_MOVED });
+    win.current = BIG;
+    expect(await ctl.act({ action: "click", x: 10, y: 10 })).toEqual({ error: ERR_NATIVE_NO_SCREENSHOT });
+    expect(of("click")).toHaveLength(1);
+  });
+
+  it("keeps the screenshot after a click", async () => {
+    const { ctl, of } = withShot();
+    await ctl.screenshot({});
+    await ctl.act({ action: "click", x: 10, y: 10 });
+    await ctl.act({ action: "click", x: 20, y: 20 });
+    expect(of("click")).toHaveLength(2);
+  });
+
+  it("type at a point clicks, waits, then types with no key event", async () => {
+    const { ctl, calls, sleep } = withShot();
+    await ctl.screenshot({});
+    await ctl.act({ action: "type", x: 640, y: 400, text: "hello" });
+    const names = calls.map((c) => c.cmd).filter((c) => c === "click" || c === "type" || c === "key");
+    expect(names).toEqual(["click", "type"]);
+    expect(calls.find((c) => c.cmd === "type")?.args).toEqual({ pid: 42, text: "hello" });
+    expect(calls.find((c) => c.cmd === "click")?.args).toMatchObject({ button: "left", count: 1 });
+    expect(sleep).toHaveBeenCalledWith(150);
+  });
+
+  it("type with no target, index, x or y types into the focused element only", async () => {
+    const { ctl, calls } = setup();
+    await ctl.act({ action: "type", text: "hi" });
+    expect(calls.map((c) => c.cmd).filter((c) => ["click", "type", "key", "perform"].includes(c))).toEqual(["type"]);
+  });
+
+  it("refuses x and y together with index or target, and on other actions", async () => {
+    const { ctl, of } = withShot();
+    await ctl.screenshot({});
+    const both = { error: 'browse_act: use either "index"/"target"/"element" or "x" and "y", not both.' };
+    expect(await ctl.act({ action: "click", x: 1, y: 1, index: 0, snapshotId: "s1" })).toEqual(both);
+    expect(await ctl.act({ action: "click", x: 1, y: 1, element: "Save" })).toEqual(both);
+    expect(await ctl.act({ action: "click", x: 1, y: 1, target: "Save" })).toEqual(both);
+    const only = { error: 'browse_act: "x" and "y" work only with "click" and "type".' };
+    expect(await ctl.act({ action: "hover", x: 1, y: 1 })).toEqual(only);
+    expect(await ctl.act({ actions: [{ action: "scroll", x: 1, y: 1 }] })).toEqual(only);
+    expect(of("click")).toHaveLength(0);
+  });
+
+  it("ignores a snapshotId on the point path", async () => {
+    const { ctl, of } = withShot();
+    await ctl.screenshot({});
+    await ctl.act({ action: "click", x: 640, y: 400, snapshotId: "s1" });
+    expect(of("click")).toHaveLength(1);
+  });
+
+  it("refuses button and clicks without x and y", async () => {
+    const { ctl, of } = withShot();
+    const err = { error: 'browse_act: "button" and "clicks" work only with "x" and "y".' };
+    expect(await ctl.act({ action: "click", index: 0, snapshotId: "s1", button: "right" })).toEqual(err);
+    expect(await ctl.act({ action: "click", target: "Save", clicks: 2 })).toEqual(err);
+    expect(of("click")).toHaveLength(0);
+  });
+
+  it("refuses a blank target and empty text instead of typing into focus", async () => {
+    const { ctl, calls } = setup();
+    expect(await ctl.act({ action: "type", target: "   ", text: "hi" })).toEqual({ error: 'browse_act "type" requires a "target" (or "index" with "snapshotId").' });
+    expect(await ctl.act({ action: "type", text: "" })).toEqual({ error: 'browse_act "type" requires a non-empty "text" field.' });
+    expect(calls.filter((c) => c.cmd === "type")).toHaveLength(0);
+  });
+
+  it("lists windows once per screenshot for the frame and the title", async () => {
+    const { ctl, calls } = withShot();
+    await ctl.screenshot({});
+    const n = () => calls.filter((c) => c.cmd === "windows").length;
+    const before = n();
+    await ctl.screenshot({});
+    expect(n() - before).toBe(1);
+  });
+
+  it("drops the screenshot when the current window changes through tabs switch", async () => {
+    const other = { ...BIG, windowId: 14, focused: false, main: false };
+    const t = setup({ windows: () => ({ windows: [BIG, other] }) }, { encodeImage });
+    await t.ctl.screenshot({});
+    await t.ctl.tabs({ action: "switch", tabId: 14 });
+    expect(await t.ctl.act({ action: "click", x: 10, y: 10 })).toEqual({ error: ERR_NATIVE_NO_SCREENSHOT });
+    await t.ctl.tabs({ action: "switch", tabId: 11 });
+    expect(await t.ctl.act({ action: "click", x: 10, y: 10 })).toEqual({ error: ERR_NATIVE_NO_SCREENSHOT });
+    expect(t.of("click")).toHaveLength(0);
   });
 });

@@ -9,6 +9,9 @@ import {
   ERR_NATIVE_CHECK_NO_INDEX,
   ERR_NATIVE_CHECK_UNSUPPORTED,
   ERR_NATIVE_NO_CAPTURE,
+  ERR_NATIVE_NO_SCREENSHOT,
+  ERR_NATIVE_POINT_OUTSIDE,
+  ERR_NATIVE_WINDOW_MOVED,
   ERR_NATIVE_NO_WINDOW,
   ERR_NATIVE_NOT_FRONTMOST,
   ERR_NATIVE_OPEN_LOCKED,
@@ -73,6 +76,8 @@ const WAIT_TEXT_DEFAULT_MS = 5000;
 const WAIT_MAX_MS = 15000;
 const WAIT_POLL_MS = 500;
 const SETTLE_MS = 300;
+/** Pause between a click at a point and the typing that follows it, so the field has taken focus. */
+const CLICK_FOCUS_MS = 150;
 /** Pixels scrolled per unit of `amount`. */
 const SCROLL_STEP_PX = 500;
 
@@ -174,6 +179,7 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
     windowId = chosen.windowId;
     lastWindow = { x: chosen.x, y: chosen.y, width: chosen.width, height: chosen.height };
     if (latestShown && latestShown.windowId !== chosen.windowId) latestShown = undefined;
+    if (lastShot && lastShot.windowId !== chosen.windowId) lastShot = undefined;
     return chosen;
   }
 
@@ -198,6 +204,12 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
 
   /** The snapshot the model saw last (`browse_snapshot`, or the result of `browse_act`): QA checks by index refer to it. Dropped when the window changes. */
   let latestShown: { windowId: number; elements: NativeElement[] } | undefined;
+
+  /**
+   * The last screenshot the model got: the window frame (screen points) at capture time and the size of the FINAL image
+   * (after re-encoding). `x` and `y` of a click are pixels of that image. Dropped when the window changes or moves.
+   */
+  let lastShot: { windowId: number; frame: WindowFrame; imgWidth: number; imgHeight: number } | undefined;
 
   /** Elements of recent snapshots, so a later read-back can tell which element it is looking at. */
   const knownElements = new Map<string, NativeElement[]>();
@@ -433,10 +445,38 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
     await sleep(Math.min(ms ?? WAIT_DEFAULT_MS, WAIT_MAX_MS));
   }
 
+  const hasPoint = (step: Record<string, unknown>): boolean => step.x != null || step.y != null;
+
+  /** Screen point of an image pixel `x`, `y` of the last screenshot. Refuses when the window moved or resized since (more than 1 point). */
+  async function resolvePoint(step: Record<string, unknown>): Promise<{ x: number; y: number }> {
+    const { x, y } = step;
+    if (x == null || y == null) throw new Fail('browse_act: "x" and "y" must be given together.');
+    const shot = lastShot;
+    if (!shot || shot.windowId !== (await winId())) throw new Fail(ERR_NATIVE_NO_SCREENSHOT);
+    const cur = (await listWindows()).find((w) => w.windowId === shot.windowId);
+    if (!cur) throw new Fail(ERR_NATIVE_NO_WINDOW);
+    const f = shot.frame;
+    if (Math.abs(cur.x - f.x) > 1 || Math.abs(cur.y - f.y) > 1 || Math.abs(cur.width - f.width) > 1 || Math.abs(cur.height - f.height) > 1) {
+      lastShot = undefined;
+      throw new Fail(ERR_NATIVE_WINDOW_MOVED);
+    }
+    if (typeof x !== "number" || typeof y !== "number" || !Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= shot.imgWidth || y >= shot.imgHeight) {
+      throw new Fail(ERR_NATIVE_POINT_OUTSIDE(String(x), String(y), shot.imgWidth, shot.imgHeight));
+    }
+    // The frame is the one the screenshot was taken at (it differs from the current frame by at most 1 point).
+    return { x: f.x + (x * f.width) / shot.imgWidth, y: f.y + (y * f.height) / shot.imgHeight };
+  }
+
   /** One browse_act action. Returns the matched label, if a target was used. */
   async function runStep(step: Record<string, unknown>, fresh: () => Promise<Snap>): Promise<string | undefined> {
     const action = step.action;
     if (typeof action !== "string") throw new Fail('browse_act requires an "action".');
+    const point = hasPoint(step);
+    if (point && action !== "click" && action !== "type") throw new Fail('browse_act: "x" and "y" work only with "click" and "type".');
+    if (point && ((typeof step.target === "string" && step.target !== "") || step.index != null || step.element != null)) {
+      throw new Fail('browse_act: use either "index"/"target"/"element" or "x" and "y", not both.');
+    }
+    if (!point && (step.button != null || step.clicks != null)) throw new Fail('browse_act: "button" and "clicks" work only with "x" and "y".');
     switch (action) {
       case "back":
       case "forward":
@@ -448,15 +488,37 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         await runWait(step);
         return undefined;
       case "click": {
+        if (point) {
+          const at = await resolvePoint(step);
+          await pointCursor(at, "click");
+          await call("click", { pid, x: at.x, y: at.y, button: step.button === "right" ? "right" : "left", count: step.clicks === 2 ? 2 : 1 });
+          return undefined;
+        }
         const l = await locate(step, "CLICK", fresh);
         if (!l) throw new Fail('browse_act "click" requires a "target" (or "index" with "snapshotId").');
         await press(l.snapshotId, l.index);
         return l.matched;
       }
       case "type": {
-        if (typeof step.text !== "string") throw new Fail('browse_act "type" requires a string "text".');
+        if (typeof step.text !== "string" || step.text === "") throw new Fail('browse_act "type" requires a non-empty "text" field.');
+        if (point) {
+          // Click the point to focus it, then type with key events: no Select All, the text goes where the caret is.
+          const at = await resolvePoint(step);
+          await pointCursor(at, "click");
+          await call("click", { pid, x: at.x, y: at.y, button: "left", count: 1 });
+          await sleep(CLICK_FOCUS_MS);
+          await call("type", { pid, text: step.text });
+          return undefined;
+        }
         const l = await locate(step, "TYPE_TEXT", fresh);
-        if (!l) throw new Fail('browse_act "type" requires a "target" (or "index" with "snapshotId").');
+        if (!l) {
+          // Blind typing only when nothing at all names a target; a blank target is an error, not a request to type into focus.
+          if (step.target != null || step.index != null || step.element != null) {
+            throw new Fail('browse_act "type" requires a "target" (or "index" with "snapshotId").');
+          }
+          await call("type", { pid, text: step.text });
+          return undefined;
+        }
         await typeText(l.snapshotId, l.index, step.text);
         return l.matched;
       }
@@ -724,6 +786,7 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         if (target.windowId !== windowId) latestShown = undefined;
         windowId = target.windowId;
         lastWindow = { x: target.x, y: target.y, width: target.width, height: target.height };
+        if (lastShot && lastShot.windowId !== target.windowId) lastShot = undefined;
         ws = await listWindows();
       }
       let cur = windowId !== undefined ? ws.find((w) => w.windowId === windowId) : undefined;
@@ -773,10 +836,16 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
       const snap = annotate ? await takeSnapshot() : undefined;
       let id = snap?.windowId ?? 0;
       let shot: Record<string, unknown>;
+      let frame: WindowFrame | undefined;
+      let shotWin: WindowInfo | undefined;
       try {
-        shot = await withWindow((wid) => {
+        shot = await withWindow(async (wid) => {
           id = wid;
           if (wid === 0) throw new Fail(ERR_NATIVE_NO_CAPTURE);
+          // The frame right before capture: the click mapping needs the window as the image shows it.
+          const w = (await listWindows().catch(() => [])).find((x) => x.windowId === wid);
+          shotWin = w;
+          frame = w ? { x: w.x, y: w.y, width: w.width, height: w.height } : undefined;
           return call("screenshot", { windowId: wid, maxWidth: SCREENSHOT_MAX_WIDTH });
         });
       } catch (e) {
@@ -790,7 +859,11 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
       const img = deps.encodeImage
         ? deps.encodeImage(png, SCREENSHOT_MAX_WIDTH)
         : { data: png, width: num(shot.width), height: num(shot.height), mimeType: "image/png" };
-      const title = snap?.title ?? ((await listWindows().catch(() => [])).find((w) => w.windowId === id)?.title ?? "");
+      lastShot =
+        frame && Number.isFinite(img.width) && Number.isFinite(img.height) && img.width > 0 && img.height > 0
+          ? { windowId: id, frame, imgWidth: img.width, imgHeight: img.height }
+          : undefined;
+      const title = snap?.title ?? shotWin?.title ?? "";
       const result: Record<string, unknown> = {
         imageData: `data:${img.mimeType ?? "image/jpeg"};base64,${img.data}`,
         width: img.width,

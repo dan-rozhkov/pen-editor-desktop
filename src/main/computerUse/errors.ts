@@ -19,6 +19,11 @@ export const ERR_NATIVE_SHORTCUT_BLOCKED = (key: string): string =>
   `The shortcut "${key}" is blocked because it could quit or switch the app. Use the app's own controls instead.`;
 export const ERR_NATIVE_NOT_FRONTMOST = "The app did not come to the front, so no input was sent. Ask the user to bring it to the front.";
 export const ERR_NATIVE_POINT_NOT_IN_APP = "The point is covered by another app's window, so no click was sent.";
+export const ERR_NATIVE_NO_SCREENSHOT = "No screenshot of this window exists. Call browse_screenshot first, then use x and y from that image.";
+export const ERR_NATIVE_WINDOW_MOVED =
+  "The window moved or changed size after the last screenshot, so no click was sent. Call browse_screenshot again and use x and y from the new image.";
+export const ERR_NATIVE_POINT_OUTSIDE = (x: number | string, y: number | string, w: number, h: number): string =>
+  `The point (${x}, ${y}) is outside the screenshot, which is ${w} by ${h} pixels. No click was sent.`;
 
 /** Added to a snapshot result when the element list was cut at `max`. */
 export const NATIVE_LIST_TRUNCATED_NOTE = (max: number, searchMax: number): string =>
