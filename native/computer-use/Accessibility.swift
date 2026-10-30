@@ -55,11 +55,9 @@ func axValueText(_ el: AXUIElement) -> String? {
 
 private struct Snapshot { let id: String; let pid: pid_t; let refs: [AXUIElement] }
 private var snapshotRings: [pid_t: [Snapshot]] = [:] // last 8 snapshots per pid
-private var manualSet = Set<pid_t>()
 
 func dropSnapshots(_ pid: pid_t) {
     snapshotRings[pid] = nil
-    manualSet.remove(pid)
 }
 
 private func lookup(_ a: JSON) throws -> AXUIElement {
@@ -112,22 +110,50 @@ private func pickWindow(_ pid: pid_t, _ windowId: Int?) throws -> WinInfo {
     throw fail("The app has no open window.", "NO_WINDOW")
 }
 
-/// Turns on the AX tree of Chromium/Electron apps and retries once when the window is still empty.
-private func prepareWindow(_ pid: pid_t, _ windowId: Int?) throws -> WinInfo {
+/// Turns on the AX tree of Chromium/Electron apps and waits for the web area to be rebuilt.
+/// The flag is set on EVERY call, not once per pid: Chromium turns accessibility off by itself later,
+/// so one set per helper life lost the tree after a few agent runs. The wait stays inside the
+/// command deadline; when the web area is still empty we continue (best effort).
+private func prepareWindow(_ pid: pid_t, _ windowId: Int?, deadline: Date) throws -> WinInfo {
     _ = try runningApp(pid)
     try requireAccessibility()
     let app = AXUIElementCreateApplication(pid)
     AXUIElementSetMessagingTimeout(app, 1.0)
-    if !manualSet.contains(pid) {
-        manualSet.insert(pid)
-        _ = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-    }
+    // Chromium/Electron accept the attribute; other apps return an error.
+    let chromium = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success
     var win = try pickWindow(pid, windowId)
-    if axChildren(win.ax).isEmpty {
+    // Pin the window so a re-pick cannot jump to another one.
+    let pinned: Int? = (windowId ?? 0) != 0 ? windowId : Int(win.id)
+    if chromium {
+        let pollEnd = min(Date().addingTimeInterval(1.5), deadline.addingTimeInterval(-2.0))
+        while !webContentReady(win.ax) && Date() < pollEnd {
+            Thread.sleep(forTimeInterval: 0.15)
+            _ = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+            win = try pickWindow(pid, pinned)
+        }
+    } else if axChildren(win.ax).isEmpty {
         Thread.sleep(forTimeInterval: 0.4)
-        win = try pickWindow(pid, windowId)
+        win = try pickWindow(pid, pinned)
     }
     return win
+}
+
+/// True once the window holds an AXWebArea with at least one child. Bounded breadth-first search.
+private func webContentReady(_ win: AXUIElement) -> Bool {
+    var queue: [(AXUIElement, Int)] = [(win, 0)]
+    var head = 0
+    var visited = 0
+    while head < queue.count && visited < 300 {
+        let (el, depth) = queue[head]
+        head += 1
+        visited += 1
+        let role = axString(el, "AXRole") ?? ""
+        if skippedRoles.contains(role) { continue }
+        let kids = axChildren(el)
+        if role == "AXWebArea" && !kids.isEmpty { return true }
+        if depth < 12 { for k in kids { queue.append((k, depth + 1)) } }
+    }
+    return false
 }
 
 // MARK: Labels
@@ -178,15 +204,16 @@ private func menuOptions(_ el: AXUIElement) -> [String] {
 private final class SnapWalker {
     let windowFrame: CGRect
     let maxElements: Int
-    let deadline = Date().addingTimeInterval(4.2)
+    let deadline: Date
     var entries: [JSON] = []
     var refs: [AXUIElement] = []
     var truncated = false
     var visited = 0
 
-    init(windowFrame: CGRect, maxElements: Int) {
+    init(windowFrame: CGRect, maxElements: Int, deadline: Date) {
         self.windowFrame = windowFrame
         self.maxElements = maxElements
+        self.deadline = deadline
     }
 
     func walk(_ el: AXUIElement, parentRole: String?, depth: Int) {
@@ -270,15 +297,16 @@ private final class SnapWalker {
 private final class ReadWalker {
     let windowFrame: CGRect
     let maxChars: Int
-    let deadline = Date().addingTimeInterval(4.2)
+    let deadline: Date
     var lines: [String] = []
     var chars = 0
     var truncated = false
     var visited = 0
 
-    init(windowFrame: CGRect, maxChars: Int) {
+    init(windowFrame: CGRect, maxChars: Int, deadline: Date) {
         self.windowFrame = windowFrame
         self.maxChars = maxChars
+        self.deadline = deadline
     }
 
     func add(_ s: String?) {
@@ -335,9 +363,10 @@ private final class ReadWalker {
 
 func cmdSnapshot(_ a: JSON) throws -> JSON {
     let pid = try a.pid()
-    let win = try prepareWindow(pid, a.int("windowId"))
+    let deadline = Date().addingTimeInterval(4.2)
+    let win = try prepareWindow(pid, a.int("windowId"), deadline: deadline)
     let maxEl = max(1, min(a.int("maxElements") ?? 120, 1000))
-    let walker = SnapWalker(windowFrame: win.frame, maxElements: maxEl)
+    let walker = SnapWalker(windowFrame: win.frame, maxElements: maxEl, deadline: deadline)
     walker.walk(win.ax, parentRole: nil, depth: 0)
     let sid = UUID().uuidString
     var ring = snapshotRings[pid] ?? []
@@ -352,8 +381,9 @@ func cmdSnapshot(_ a: JSON) throws -> JSON {
 
 func cmdRead(_ a: JSON) throws -> JSON {
     let pid = try a.pid()
-    let win = try prepareWindow(pid, a.int("windowId"))
-    let walker = ReadWalker(windowFrame: win.frame, maxChars: max(1, a.int("maxChars") ?? 12000))
+    let deadline = Date().addingTimeInterval(4.2)
+    let win = try prepareWindow(pid, a.int("windowId"), deadline: deadline)
+    let walker = ReadWalker(windowFrame: win.frame, maxChars: max(1, a.int("maxChars") ?? 12000), deadline: deadline)
     walker.walk(win.ax, depth: 0)
     return ["title": win.title, "text": walker.lines.joined(separator: "\n"), "truncated": walker.truncated]
 }
