@@ -245,6 +245,48 @@ test("the empty start lists stored canvases and documents; a click opens or acti
   }
 });
 
+test("the empty start lists stored workflows; a click opens a workflow tab for the id", async () => {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), "pen-desktop-recent-wf-"));
+  const now = Date.now();
+  const docDir = path.join(userData, "documents-dev");
+  const workflowDir = path.join(userData, "workflows-dev");
+  fs.mkdirSync(docDir, { recursive: true });
+  fs.mkdirSync(workflowDir, { recursive: true });
+  fs.writeFileSync(path.join(docDir, "doc_e2e.json"), JSON.stringify({ id: "doc_e2e", title: "E2E brief", markdown: "# hi", updatedAt: now - 2 * 3_600_000, rev: 1 }));
+  const steps = [{ id: "st_1", text: "Open the pricing page" }, { id: "st_2", text: "Compare plans" }];
+  fs.writeFileSync(path.join(workflowDir, "wf_e2e1.json"), JSON.stringify({ id: "wf_e2e1", title: "Weekly competitor check", steps, updatedAt: now - 5 * 60_000, rev: 3 }));
+  const app = await electron.launch({
+    args: ["."],
+    env: { ...process.env, PEN_DESKTOP_URL: `${baseUrl}/app`, PEN_DESKTOP_USER_DATA_DIR: userData },
+  });
+  try {
+    const find = async (pred: (u: string) => boolean): Promise<Page> =>
+      app.windows().find((p) => pred(p.url())) ?? (await app.waitForEvent("window", { predicate: (p) => pred(p.url()) }));
+    const tabbar = await find((u) => u.endsWith("/tabbar/tabbar.html"));
+    const empty = await find((u) => u.endsWith("/tabbar/empty.html"));
+
+    const rows = empty.locator(".recent-row");
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0).locator(".recent-title")).toHaveText("Weekly competitor check");
+    await expect(rows.nth(0).locator(".recent-kind")).toHaveText("Workflow");
+    await expect(rows.nth(0).locator(".recent-time")).toHaveText("5 min ago");
+
+    const outFile = process.env.EMPTY_START_WORKFLOW_SHOT;
+    if (outFile) {
+      fs.mkdirSync(path.dirname(outFile), { recursive: true });
+      await empty.screenshot({ path: outFile });
+    }
+
+    await rows.nth(0).click();
+    const wf = await find((u) => u.startsWith(`${baseUrl}/workflow`) && u.includes("id=wf_e2e1"));
+    expect(new URL(wf.url()).searchParams.get("id")).toBe("wf_e2e1");
+    await expect(tabbar.locator(".tab")).toHaveCount(1);
+  } finally {
+    await app.close();
+    fs.rmSync(userData, { recursive: true, force: true });
+  }
+});
+
 test("the Recent list searches, filters, selects with checkboxes and bulk deletes after a native confirm", async () => {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), "pen-desktop-bulk-"));
   const now = Date.now();

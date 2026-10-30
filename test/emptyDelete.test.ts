@@ -8,7 +8,9 @@ function deps(over: Partial<EmptyDeleteDeps> = {}): EmptyDeleteDeps {
     confirm: vi.fn(async () => true),
     removeCanvas: vi.fn(async () => ({ ok: true as const })),
     removeDoc: vi.fn(async () => ({ ok: true as const })),
+    removeWorkflow: vi.fn(async () => ({ ok: true as const })),
     notifyDocsRemoved: vi.fn(),
+    notifyWorkflowsRemoved: vi.fn(),
     ...over,
   };
 }
@@ -69,6 +71,23 @@ describe("deleteRecentItems", () => {
     expect(d.removeDoc).toHaveBeenCalledTimes(2);
     expect(d.notifyDocsRemoved).toHaveBeenCalledTimes(1);
     expect(d.notifyDocsRemoved).toHaveBeenCalledWith(["doc_1", "doc_2"]);
+  });
+  it("removes workflows and announces only the removed workflow ids", async () => {
+    const d = deps({
+      removeWorkflow: vi.fn(async (id: string) => (id === "wf_bad" ? { error: "disk" } : { ok: true as const })),
+    });
+    const items = [{ kind: "workflow", id: "wf_a" }, { kind: "workflow", id: "wf_bad" }, { kind: "doc", id: "doc_1" }];
+    expect(await deleteRecentItems(d, EMPTY, { items })).toEqual({ ok: true, deleted: 2, failed: [{ kind: "workflow", id: "wf_bad" }] });
+    expect(d.notifyWorkflowsRemoved).toHaveBeenCalledTimes(1);
+    expect(d.notifyWorkflowsRemoved).toHaveBeenCalledWith(["wf_a"]);
+    expect(d.notifyDocsRemoved).toHaveBeenCalledWith(["doc_1"]);
+  });
+  it("a delete without workflows announces none; a failing workflow notify is contained", async () => {
+    const d = deps();
+    await deleteRecentItems(d, EMPTY, payload);
+    expect(d.notifyWorkflowsRemoved).not.toHaveBeenCalled();
+    const bad = deps({ notifyWorkflowsRemoved: vi.fn(() => { throw new Error("gone"); }) });
+    expect(await deleteRecentItems(bad, EMPTY, { items: [{ kind: "workflow", id: "wf_a" }] })).toEqual({ ok: true, deleted: 1 });
   });
   it("a canvas-only delete announces no documents", async () => {
     const d = deps();

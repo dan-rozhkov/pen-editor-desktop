@@ -253,6 +253,13 @@ const canvases = {
   remove: (id: string): Promise<{ ok: true } | { error: string }> => ipcRenderer.invoke("canvases:delete", id),
 };
 
+// Workflows (the frontend's `/workflow` page): disk mirror. Main answers only this window's workflow tabs and the agent panel.
+const workflows = {
+  list: (): Promise<{ workflows: unknown[]; deleted?: { id: string; rev: number }[] } | { error: string }> => ipcRenderer.invoke("workflows:list"),
+  save: (workflow: unknown): Promise<{ ok: true; rev: number; stale?: true } | { error: string }> => ipcRenderer.invoke("workflows:save", workflow),
+  remove: (id: string): Promise<{ ok: true } | { error: string }> => ipcRenderer.invoke("workflows:delete", id),
+};
+
 // Saved logins for the doc tabs' `@` mention picker. No password ever comes back: `list` gives id, origin, username,
 // label and icon?, `add` answers with the entry id only. Always present on the tab preload (like `docs.list`): main is
 // the trust boundary. It answers only the top frame of a doc tab still on the doc page (`{ ok: false, error: "Not allowed." }`
@@ -326,6 +333,7 @@ const api = {
   // Only the trace viewer page may open documents (main refuses other senders), so other tabs do not advertise `open`.
   docs: typeof location !== "undefined" && location.pathname.includes("/trace/") ? docs : docStorage,
   canvases,
+  workflows,
 };
 
 contextBridge.exposeInMainWorld("penDesktop", api);

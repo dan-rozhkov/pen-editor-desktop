@@ -217,6 +217,17 @@ export function isValidWorkflowId(workflowId: unknown): workflowId is string {
   return typeof workflowId === "string" && /^wf_[A-Za-z0-9]{1,64}$/.test(workflowId);
 }
 
+/** True when the URL is the frontend's workflow page ON the editor's origin (last path segment `workflow`). */
+export function isWorkflowPageOn(rawUrl: string | undefined, editorOrigin: string): boolean {
+  if (rawUrl === undefined) return false;
+  try {
+    const u = new URL(rawUrl);
+    return u.origin === editorOrigin && u.pathname.replace(/\/+$/, "").split("/").pop() === "workflow";
+  } catch {
+    return false;
+  }
+}
+
 /** The `id` query param of a workflow tab URL, or null. */
 export function workflowIdOfUrl(rawUrl: string): string | null {
   try {

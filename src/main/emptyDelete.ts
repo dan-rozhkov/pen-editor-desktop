@@ -24,15 +24,18 @@ export interface EmptyDeleteDeps {
   /** Removing a missing file is a success (the stores' contract). */
   removeCanvas(id: string): Promise<{ ok: true } | { error: string }>;
   removeDoc(id: string): Promise<{ ok: true } | { error: string }>;
+  removeWorkflow(id: string): Promise<{ ok: true } | { error: string }>;
   /** Tells the agent panel which documents are gone, so its localStorage mirror cannot re-upload them. */
   notifyDocsRemoved(ids: string[]): void;
+  /** Same for workflows (`workflows:removed`). */
+  notifyWorkflowsRemoved(ids: string[]): void;
 }
 
 export type EmptyDeleteResult =
   | { ok: false; error: string }
   | { ok: true; deleted: number; failed?: DeleteTarget[]; cancelled?: true };
 
-export type DeleteTarget = { kind: "canvas" | "doc"; id: string };
+export type DeleteTarget = { kind: "canvas" | "doc" | "workflow"; id: string };
 
 /** Validates the payload: only valid kinds and ids, duplicates dropped. Anything malformed refuses the whole request. */
 export function parseDeleteItems(payload: unknown): { ok: true; items: DeleteTarget[] } | { ok: false; error: string } {
@@ -53,7 +56,7 @@ export function parseDeleteItems(payload: unknown): { ok: true; items: DeleteTar
 }
 
 /**
- * `empty:delete` (invoke, from the empty view only): confirm, then remove the chosen canvases and documents.
+ * `empty:delete` (invoke, from the empty view only): confirm, then remove the chosen canvases, documents and workflows.
  * A cancelled confirm deletes nothing. Each removal is independent: failures are returned (`failed`), the rest still go.
  * Removed documents are announced once (`notifyDocsRemoved`). Never throws.
  */
@@ -66,7 +69,8 @@ export async function deleteRecentItems(deps: EmptyDeleteDeps, sender: number, p
     const settled = await Promise.all(
       parsed.items.map(async (item) => {
         try {
-          const r = item.kind === "canvas" ? await deps.removeCanvas(item.id) : await deps.removeDoc(item.id);
+          const r =
+            item.kind === "canvas" ? await deps.removeCanvas(item.id) : item.kind === "doc" ? await deps.removeDoc(item.id) : await deps.removeWorkflow(item.id);
           return "ok" in r;
         } catch {
           return false;
@@ -79,6 +83,14 @@ export async function deleteRecentItems(deps: EmptyDeleteDeps, sender: number, p
         deps.notifyDocsRemoved(removedDocs);
       } catch {
         // a panel that is going away is not worth a failure
+      }
+    }
+    const removedWorkflows = parsed.items.filter((item, i) => item.kind === "workflow" && settled[i]).map((item) => item.id);
+    if (removedWorkflows.length > 0) {
+      try {
+        deps.notifyWorkflowsRemoved(removedWorkflows);
+      } catch {
+        // same as above
       }
     }
     const failed = parsed.items.filter((_, i) => !settled[i]);

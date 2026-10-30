@@ -91,6 +91,10 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   { name: "docs:save", direction: "renderer->main" },
   { name: "docs:delete", direction: "renderer->main" },
   { name: "docs:export-pdf", direction: "renderer->main" },
+  // Workflow storage (invoke/handle): same mirror as documents; the panel and workflow tabs only. See CLAUDE.md "Workflow storage".
+  { name: "workflows:list", direction: "renderer->main" },
+  { name: "workflows:save", direction: "renderer->main" },
+  { name: "workflows:delete", direction: "renderer->main" },
   // Canvas storage (invoke/handle): canvas tabs and the panel save/read/list canvases under userData. See CLAUDE.md "Canvas storage".
   { name: "canvases:list", direction: "renderer->main" },
   { name: "canvases:read", direction: "renderer->main" },
@@ -111,6 +115,7 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   // Bulk delete of Recent rows (empty view only, invoke): native confirm in main; docs:removed then tells the agent panel which doc ids are gone.
   { name: "empty:delete", direction: "renderer->main" },
   { name: "docs:removed", direction: "main->renderer" },
+  { name: "workflows:removed", direction: "main->renderer" },
   // Main tells every empty view that a doc/canvas was stored or deleted (no payload): the page refetches.
   { name: "empty:recent-changed", direction: "main->renderer" },
   // Browse-run traces (invoke/handle): save/read stored traces, open a trace tab. See CLAUDE.md "Trace tabs".

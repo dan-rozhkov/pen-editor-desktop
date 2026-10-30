@@ -8,20 +8,20 @@
       newCanvasTab(): void;
       newBrowserTab(): void;
       newDocTab(): void;
-      listRecent(): Promise<{ kind: "canvas" | "doc"; id: string; title: string; updatedAt: number }[]>;
-      openItem(kind: "canvas" | "doc", id: string): void;
-      openItemMenu(kind: "canvas" | "doc", id: string): void;
-      deleteItems(items: { kind: "canvas" | "doc"; id: string }[]): Promise<{
+      listRecent(): Promise<{ kind: "canvas" | "doc" | "workflow"; id: string; title: string; updatedAt: number }[]>;
+      openItem(kind: "canvas" | "doc" | "workflow", id: string): void;
+      openItemMenu(kind: "canvas" | "doc" | "workflow", id: string): void;
+      deleteItems(items: { kind: "canvas" | "doc" | "workflow"; id: string }[]): Promise<{
         ok: boolean;
         deleted?: number;
-        failed?: { kind: "canvas" | "doc"; id: string }[];
+        failed?: { kind: "canvas" | "doc" | "workflow"; id: string }[];
         cancelled?: boolean;
       }>;
       openFilterMenu(
         anchor: { x: number; y: number },
-        state: { kinds: { canvas: boolean; doc: boolean }; modified: RecentModifiedRange },
+        state: { kinds: { canvas: boolean; doc: boolean; workflow: boolean }; modified: RecentModifiedRange },
       ): Promise<
-        { action: "kind"; kind: "canvas" | "doc"; checked: boolean } | { action: "modified"; modified: RecentModifiedRange } | { action: "reset" } | null
+        { action: "kind"; kind: "canvas" | "doc" | "workflow"; checked: boolean } | { action: "modified"; modified: RecentModifiedRange } | { action: "reset" } | null
       >;
       onRecentChanged(cb: () => void): void;
       onState(cb: (state: { theme: "light" | "dark"; sessionTabs: number }) => void): void;
@@ -49,9 +49,10 @@
 
   // ---- Recent list ----
   // Glyphs: glyphs.ts, filter: recentFilter.ts (plain scripts loaded before this one).
-  type Kind = "canvas" | "doc";
+  type Kind = "canvas" | "doc" | "workflow";
   type Item = { kind: Kind; id: string; title: string; updatedAt: number };
-  const GLYPHS = { canvas: "PaintBrush", doc: "FileText" };
+  const GLYPHS = { canvas: "PaintBrush", doc: "FileText", workflow: "ListBullets" };
+  const KIND_LABELS = { canvas: "Canvas", doc: "Document", workflow: "Workflow" };
   const VISIBLE_ROWS = 8;
   const recent = document.getElementById("recent")!;
   const recentList = document.getElementById("recent-list")!;
@@ -72,7 +73,7 @@
 
   let items: Item[] = [];
   let expanded = false;
-  let kinds = { canvas: true, doc: true };
+  let kinds = { canvas: true, doc: true, workflow: true };
   let modified: RecentModifiedRange = "any";
   // Selection is keyed "kind:id". `rows` maps the rendered keys to their elements, so a toggle updates in place
   // (no rebuild: the focused checkbox keeps focus). `lastToggled` anchors Shift+click ranges.
@@ -91,7 +92,7 @@
     return el;
   };
   const filterState = (): RecentFilterState => ({ query: searchInput.value, kinds, modified });
-  const filterIsDefault = () => kinds.canvas && kinds.doc && modified === "any";
+  const filterIsDefault = () => kinds.canvas && kinds.doc && kinds.workflow && modified === "any";
   const filtering = () => searchInput.value.trim() !== "" || !filterIsDefault();
   // Inline note of the selection bar ("Couldn't delete 2 items."). Any selection change clears it.
   const setNote = (text: string) => {
@@ -198,7 +199,7 @@
       row.className = "recent-row";
       row.appendChild(makeIcon(item.kind));
       row.appendChild(span("recent-title", title));
-      row.appendChild(span("recent-kind", item.kind === "canvas" ? "Canvas" : "Document"));
+      row.appendChild(span("recent-kind", KIND_LABELS[item.kind]));
       row.appendChild(span("recent-time", formatRelativeTime(item.updatedAt, now)));
       row.addEventListener("click", (e) => {
         if (selected.size > 0 || e.metaKey || e.ctrlKey) toggleKey(key, e.shiftKey && selected.size > 0);
@@ -286,7 +287,7 @@
     if (choice.action === "kind") kinds = { ...kinds, [choice.kind]: choice.checked };
     else if (choice.action === "modified") modified = choice.modified;
     else {
-      kinds = { canvas: true, doc: true };
+      kinds = { canvas: true, doc: true, workflow: true };
       modified = "any";
     }
     refilter();
@@ -296,7 +297,7 @@
     searchInput.value = "";
     syncSearchClear();
     setSearchOpen(false);
-    kinds = { canvas: true, doc: true };
+    kinds = { canvas: true, doc: true, workflow: true };
     modified = "any";
     refilter();
     filterToggle.focus();

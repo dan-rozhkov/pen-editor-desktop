@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, isValidCanvasId, canvasIdOfUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, isDocPageUrl, isDocPageOn, isSettingsPageOn, resolveWorkflowTabUrl, isValidWorkflowId, workflowIdOfUrl, resolveTraceTabUrl, resolveSettingsTabUrl, isValidSettingsSection, SETTINGS_SECTIONS, isValidTraceId, traceIdOfUrl, INITIAL_TABS, isAdBlockDisabledByEnv } from "../src/main/config";
+import { resolveEditorUrl, DEFAULT_EDITOR_URL, resolveBrowserCursorEnabled, resolveUserDataDir, resolveStorageIdentity, LEGACY_APP_NAME, DISPLAY_APP_NAME, resolveAgentPanelUrl, resolveCanvasTabUrl, isValidCanvasId, canvasIdOfUrl, resolveDocTabUrl, isValidDocId, docIdOfUrl, isDocPageUrl, isDocPageOn, isSettingsPageOn, isWorkflowPageOn, resolveWorkflowTabUrl, isValidWorkflowId, workflowIdOfUrl, resolveTraceTabUrl, resolveSettingsTabUrl, isValidSettingsSection, SETTINGS_SECTIONS, isValidTraceId, traceIdOfUrl, INITIAL_TABS, isAdBlockDisabledByEnv } from "../src/main/config";
 
 describe("resolveEditorUrl", () => {
   it("defaults to the production URL", () => {
@@ -159,6 +159,15 @@ describe("workflow id and page helpers", () => {
     expect(isValidWorkflowId("wf_" + "a".repeat(64))).toBe(true);
     for (const bad of ["", "wf_", "abc", "wf_a-b", "wf_a b", "wf_../x", "wf_" + "a".repeat(65), 5, null, undefined, {}]) expect(isValidWorkflowId(bad)).toBe(false);
   });
+  it("isWorkflowPageOn", () => {
+    expect(isWorkflowPageOn("https://h/workflow?new=1", "https://h")).toBe(true);
+    expect(isWorkflowPageOn("https://h/workflow/", "https://h")).toBe(true);
+    expect(isWorkflowPageOn("https://h/doc?id=x", "https://h")).toBe(false);
+    expect(isWorkflowPageOn("https://other/workflow", "https://h")).toBe(false);
+    expect(isWorkflowPageOn("file:///offline.html", "https://h")).toBe(false);
+    expect(isWorkflowPageOn(undefined, "https://h")).toBe(false);
+  });
+
   it("workflowIdOfUrl", () => {
     expect(workflowIdOfUrl("https://h/workflow?id=wf_a&chat=off")).toBe("wf_a");
     expect(workflowIdOfUrl("https://h/workflow?new=1")).toBeNull();

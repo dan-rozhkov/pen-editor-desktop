@@ -73,6 +73,8 @@ import { addLoginCopy } from "./loginsIpc";
 import { handleDocExportPdf } from "./docPdfExport";
 import { handleDocDelete, handleDocList, handleDocSave, type DocIpcDeps } from "./docIpc";
 import { createDocStore, docDirFor, nodeDocFs, type DocStore } from "./docStore";
+import { handleWorkflowDelete, handleWorkflowList, handleWorkflowSave, type WorkflowIpcDeps } from "./workflowIpc";
+import { createWorkflowStore, nodeWorkflowFs, workflowDirFor, type WorkflowStore } from "./workflowStore";
 import { canvasDirFor, createCanvasStore, type CanvasStore } from "./canvasStore";
 import { handleCanvasDelete, handleCanvasList, handleCanvasRead, handleCanvasSave, type CanvasIpcDeps } from "./canvasIpc";
 import { changedRecentItems, loadRecentItems } from "./recentItems";
@@ -135,6 +137,16 @@ function getDocStore(): DocStore {
   return processDocStore;
 }
 
+// One workflow store per PROCESS, for the same reason.
+let processWorkflowStore: WorkflowStore | null = null;
+function getWorkflowStore(): WorkflowStore {
+  processWorkflowStore ??= createWorkflowStore({
+    rootDir: path.join(app.getPath("userData"), workflowDirFor(isEnvValueSet(process.env.PEN_DESKTOP_URL))),
+    fs: nodeWorkflowFs,
+  });
+  return processWorkflowStore;
+}
+
 // One canvas store per PROCESS, for the same reason.
 let processCanvasStore: CanvasStore | null = null;
 function getCanvasStore(): CanvasStore {
@@ -153,13 +165,14 @@ function getChatStore(): ChatStore {
   return processChatStore;
 }
 
-/** Where canvases, documents and traces live on disk (same roots as the stores). */
+/** Where canvases, documents, workflows and traces live on disk (same roots as the stores). */
 function revealDirs(): RevealDirs {
   const userData = app.getPath("userData");
   const overridden = isEnvValueSet(process.env.PEN_DESKTOP_URL);
   return {
     canvases: path.join(userData, canvasDirFor(overridden)),
     documents: path.join(userData, docDirFor(overridden)),
+    workflows: path.join(userData, workflowDirFor(overridden)),
     traces: path.join(userData, TRACE_DIR),
   };
 }
@@ -2716,10 +2729,19 @@ export function createMainWindow(
   ipcMain.handle("docs:list", (event) => handleDocList(docIpc, event.sender.id));
   ipcMain.handle("docs:save", async (event, doc: unknown) => recentChanged(await handleDocSave(docIpc, event.sender.id, doc)));
   ipcMain.handle("docs:delete", async (event, id: unknown) => recentChanged(await handleDocDelete(docIpc, event.sender.id, id)));
+  // Workflow storage: same mirror as documents; sender rules in workflowIpc.ts.
+  const workflowIpc: WorkflowIpcDeps = {
+    store: getWorkflowStore(),
+    isPanel: (id) => panelWc()?.id === id,
+    isWorkflowTab: (id) => tabs.isWorkflowTab(id),
+  };
+  ipcMain.handle("workflows:list", (event) => handleWorkflowList(workflowIpc, event.sender.id));
+  ipcMain.handle("workflows:save", async (event, workflow: unknown) => recentChanged(await handleWorkflowSave(workflowIpc, event.sender.id, workflow)));
+  ipcMain.handle("workflows:delete", async (event, id: unknown) => recentChanged(await handleWorkflowDelete(workflowIpc, event.sender.id, id)));
   // Empty start "Recent" list: only this window's empty view may ask for it or open a row.
   ipcMain.handle("empty:recent", (event) =>
     recentFor(
-      { isEmptyView: (id) => id === emptyView.webContents.id, load: () => loadRecentItems(getDocStore(), getCanvasStore()) },
+      { isEmptyView: (id) => id === emptyView.webContents.id, load: () => loadRecentItems(getDocStore(), getCanvasStore(), getWorkflowStore()) },
       event.sender.id,
     ),
   );
@@ -2732,6 +2754,8 @@ export function createMainWindow(
         activate: (tabId, opts) => tabs.activate(tabId, opts),
         newCanvasTab: (id, opts) => tabs.newTab("editor", undefined, { canvasId: id, focus: opts.focus }),
         newDocTab: (id, opts) => tabs.newTab("doc", undefined, { docId: id, focus: opts.focus }),
+        findWorkflowTab: (id) => tabs.findWorkflowTab(id),
+        newWorkflowTab: (id, opts) => tabs.newTab("workflow", undefined, { workflowId: id, focus: opts.focus }),
       },
       event.sender.id,
       payload,
@@ -2797,7 +2821,9 @@ export function createMainWindow(
         confirm: async (count) => (await dialog.showMessageBox(win, deleteConfirmCopy(count))).response === 0,
         removeCanvas: (id) => getCanvasStore().remove(id),
         removeDoc: (id) => getDocStore().remove(id),
+        removeWorkflow: (id) => getWorkflowStore().remove(id),
         notifyDocsRemoved: (ids) => panelWc()?.send("docs:removed", ids),
+        notifyWorkflowsRemoved: (ids) => panelWc()?.send("workflows:removed", ids),
       },
       event.sender.id,
       payload,
@@ -3223,6 +3249,9 @@ export function createMainWindow(
     ipcMain.removeHandler("docs:save");
     ipcMain.removeHandler("docs:delete");
     ipcMain.removeHandler("docs:export-pdf");
+    ipcMain.removeHandler("workflows:list");
+    ipcMain.removeHandler("workflows:save");
+    ipcMain.removeHandler("workflows:delete");
     ipcMain.removeHandler("empty:recent");
     ipcMain.removeListener("empty:open", onEmptyOpen);
     ipcMain.removeListener("empty:recent-menu", onEmptyRecentMenu);

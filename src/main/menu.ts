@@ -125,12 +125,12 @@ export type RecentModified = (typeof RECENT_MODIFIED_RANGES)[number];
 
 /** What the Recent filter menu on the empty start page reports: a kind toggled, a range picked, or a reset. */
 export type RecentFilterChoice =
-  | { action: "kind"; kind: "canvas" | "doc"; checked: boolean }
+  | { action: "kind"; kind: "canvas" | "doc" | "workflow"; checked: boolean }
   | { action: "modified"; modified: RecentModified }
   | { action: "reset" };
 
 export interface RecentFilterMenuState {
-  kinds: { canvas: boolean; doc: boolean };
+  kinds: { canvas: boolean; doc: boolean; workflow: boolean };
   modified: RecentModified;
 }
 
@@ -144,7 +144,7 @@ export function buildRecentFilterMenuTemplate(
   pick: (choice: RecentFilterChoice) => void,
 ): MenuItemConstructorOptions[] {
   const heading = (label: string): MenuItemConstructorOptions => (useHeaders ? { type: "header", label } : { label, enabled: false });
-  const kind = (label: string, k: "canvas" | "doc"): MenuItemConstructorOptions => ({
+  const kind = (label: string, k: "canvas" | "doc" | "workflow"): MenuItemConstructorOptions => ({
     label,
     type: "checkbox",
     checked: state.kinds[k],
@@ -157,11 +157,12 @@ export function buildRecentFilterMenuTemplate(
     checked: state.modified === modified,
     click: () => pick({ action: "modified", modified }),
   });
-  const isDefault = state.kinds.canvas && state.kinds.doc && state.modified === "any";
+  const isDefault = state.kinds.canvas && state.kinds.doc && state.kinds.workflow && state.modified === "any";
   return [
     heading("Type"),
     kind("Canvases", "canvas"),
     kind("Documents", "doc"),
+    kind("Workflows", "workflow"),
     { type: "separator" },
     heading("Modified"),
     range("Any time", "any"),

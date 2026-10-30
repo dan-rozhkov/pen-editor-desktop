@@ -412,6 +412,29 @@ describe("TabManager", () => {
       expect(tm.fileTargetOf(fresh)).toBeNull();
     });
 
+    it("workflow tab: the live id wins, else the opened id; only a valid id", () => {
+      const w = tm.newTab("workflow", undefined, { workflowId: "wf_a1" });
+      expect(tm.fileTargetOf(w)).toEqual({ kind: "workflow", id: "wf_a1" });
+      setUrl(0, "https://pen-editor.onrender.com/workflow?id=wf_live&chat=off");
+      expect(tm.fileTargetOf(w)).toEqual({ kind: "workflow", id: "wf_live" });
+      // On the workflow page without an id (deleted workflow, empty state): no file.
+      setUrl(0, "https://pen-editor.onrender.com/workflow?new=1&chat=off");
+      expect(tm.fileTargetOf(w)).toBeNull();
+      // Offline fallback page: the opened id still names a file on disk.
+      setUrl(0, "file:///app/assets/offline.html");
+      expect(tm.fileTargetOf(w)).toEqual({ kind: "workflow", id: "wf_a1" });
+      setUrl(0, "https://pen-editor.onrender.com/workflow?id=../x&chat=off");
+      expect(tm.fileTargetOf(w)).toBeNull();
+      expect(tm.fileTargetOf(tm.newTab("workflow"))).toBeNull();
+    });
+
+    it("isWorkflowTab is true only for workflow tabs", () => {
+      tm.newTab("workflow");
+      tm.newTab("doc");
+      expect(tm.isWorkflowTab(views[0].getWebContentsId())).toBe(true);
+      expect(tm.isWorkflowTab(views[1].getWebContentsId())).toBe(false);
+    });
+
     it("trace tab: the live URL, else the opened id", () => {
       const t = tm.newTab("trace", undefined, { traceId: "tr1" });
       expect(tm.fileTargetOf(t)).toEqual({ kind: "trace", id: "tr1" });

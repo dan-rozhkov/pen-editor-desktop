@@ -167,9 +167,22 @@ const docs = {
   },
 };
 
-// Workflows (tabs at `/workflow`; stored in the frontend's localStorage only): ask main to open or focus one. Main checks the sender.
+// Workflows (tabs at `/workflow`): open or focus one, and the disk mirror (same shapes as `docs`). Main checks the sender.
 const workflows = {
   open: (workflowId: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("workflow:open", workflowId),
+  list: (): Promise<{ workflows: unknown[]; deleted?: { id: string; rev: number }[] } | { error: string }> => ipcRenderer.invoke("workflows:list"),
+  save: (workflow: unknown): Promise<{ ok: true; rev: number; stale?: true } | { error: string }> => ipcRenderer.invoke("workflows:save", workflow),
+  remove: (id: string): Promise<{ ok: true } | { error: string }> => ipcRenderer.invoke("workflows:delete", id),
+  // Main deleted these workflows from disk (bulk delete on the empty start): the page must drop its own copies.
+  onRemoved: (cb: (ids: string[]) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, ids: unknown) => {
+      if (Array.isArray(ids)) cb(ids.filter((id): id is string => typeof id === "string"));
+    };
+    ipcRenderer.on("workflows:removed", listener);
+    return () => {
+      ipcRenderer.removeListener("workflows:removed", listener);
+    };
+  },
 };
 
 // Browse-run traces: store a finished trace locally, open its viewer tab. Main checks the sender.

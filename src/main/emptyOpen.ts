@@ -1,4 +1,4 @@
-import { isValidCanvasId, isValidDocId } from "./config";
+import { isValidCanvasId, isValidDocId, isValidWorkflowId } from "./config";
 import { RECENT_MODIFIED_RANGES, type RecentModified } from "./menu";
 
 /** What `empty:open` needs from the window. A port, so the rule is unit-tested without Electron. */
@@ -7,19 +7,21 @@ export interface EmptyOpenDeps {
   isEmptyView(webContentsId: number): boolean;
   findCanvasTab(canvasId: string): number | null;
   findDocTab(docId: string): number | null;
+  findWorkflowTab(workflowId: string): number | null;
   activate(tabId: number, opts: { focus: boolean }): void;
   newCanvasTab(canvasId: string, opts: { focus: boolean }): number;
   newDocTab(docId: string, opts: { focus: boolean }): number;
+  newWorkflowTab(workflowId: string, opts: { focus: boolean }): number;
 }
 
-export type RecentTarget = { ok: true; kind: "canvas" | "doc"; id: string } | { ok: false; error: string };
+export type RecentTarget = { ok: true; kind: "canvas" | "doc" | "workflow"; id: string } | { ok: false; error: string };
 
 /** One `{kind, id}` entry of a Recent-list payload, validated. The error strings are part of the IPC contract. */
 export function parseRecentTarget(entry: unknown): RecentTarget {
   const p = typeof entry === "object" && entry !== null ? (entry as { kind?: unknown; id?: unknown }) : {};
   const { kind, id } = p;
-  if (kind !== "canvas" && kind !== "doc") return { ok: false, error: "invalid kind" };
-  if (kind === "canvas" ? !isValidCanvasId(id) : !isValidDocId(id)) return { ok: false, error: "invalid id" };
+  if (kind !== "canvas" && kind !== "doc" && kind !== "workflow") return { ok: false, error: "invalid kind" };
+  if (!(kind === "canvas" ? isValidCanvasId(id) : kind === "doc" ? isValidDocId(id) : isValidWorkflowId(id))) return { ok: false, error: "invalid id" };
   return { ok: true, kind, id: id as string };
 }
 
@@ -36,10 +38,11 @@ export function openRecentItem(deps: EmptyOpenDeps, sender: number, payload: unk
   if (!target.ok) return target;
   const { kind, id } = target;
   try {
-    const existing = kind === "canvas" ? deps.findCanvasTab(id) : deps.findDocTab(id);
+    const existing = kind === "canvas" ? deps.findCanvasTab(id) : kind === "doc" ? deps.findDocTab(id) : deps.findWorkflowTab(id);
     if (existing !== null) deps.activate(existing, { focus: true });
     else if (kind === "canvas") deps.newCanvasTab(id, { focus: true });
-    else deps.newDocTab(id, { focus: true });
+    else if (kind === "doc") deps.newDocTab(id, { focus: true });
+    else deps.newWorkflowTab(id, { focus: true });
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -58,7 +61,7 @@ export function parseRecentMenuRequest(deps: Pick<EmptyOpenDeps, "isEmptyView">,
 }
 
 export type RecentFilterMenuRequest =
-  | { ok: true; x: number; y: number; kinds: { canvas: boolean; doc: boolean }; modified: RecentModified }
+  | { ok: true; x: number; y: number; kinds: { canvas: boolean; doc: boolean; workflow: boolean }; modified: RecentModified }
   | { ok: false; error: string };
 
 /**
@@ -71,10 +74,10 @@ export function parseRecentFilterMenuRequest(deps: Pick<EmptyOpenDeps, "isEmptyV
   const p = typeof payload === "object" && payload !== null ? (payload as { x?: unknown; y?: unknown; kinds?: unknown; modified?: unknown }) : {};
   const { x, y, modified } = p;
   if (typeof x !== "number" || !Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) return { ok: false, error: "invalid position" };
-  const k = typeof p.kinds === "object" && p.kinds !== null ? (p.kinds as { canvas?: unknown; doc?: unknown }) : {};
-  if (typeof k.canvas !== "boolean" || typeof k.doc !== "boolean") return { ok: false, error: "invalid kinds" };
+  const k = typeof p.kinds === "object" && p.kinds !== null ? (p.kinds as { canvas?: unknown; doc?: unknown; workflow?: unknown }) : {};
+  if (typeof k.canvas !== "boolean" || typeof k.doc !== "boolean" || typeof k.workflow !== "boolean") return { ok: false, error: "invalid kinds" };
   if (!RECENT_MODIFIED_RANGES.some((r) => r === modified)) return { ok: false, error: "invalid modified" };
-  return { ok: true, x, y, kinds: { canvas: k.canvas, doc: k.doc }, modified: modified as RecentModified };
+  return { ok: true, x, y, kinds: { canvas: k.canvas, doc: k.doc, workflow: k.workflow }, modified: modified as RecentModified };
 }
 
 /** What `empty:recent` needs from the window. */

@@ -143,11 +143,30 @@ describe("agent panel preload", () => {
     expect(invoke).toHaveBeenLastCalledWith("doc:open", "abc_1");
   });
 
-  it("workflows has exactly open, over workflow:open", async () => {
-    expect(Object.keys(exposed.penAgentPanel.workflows)).toEqual(["open"]);
+  it("workflows has exactly open, list, save, remove, onRemoved", async () => {
+    expect(Object.keys(exposed.penAgentPanel.workflows).sort()).toEqual(["list", "onRemoved", "open", "remove", "save"]);
     invoke.mockResolvedValueOnce({ ok: true } as never);
     await expect(exposed.penAgentPanel.workflows.open("wf_abc123def456")).resolves.toEqual({ ok: true });
     expect(invoke).toHaveBeenLastCalledWith("workflow:open", "wf_abc123def456");
+    await exposed.penAgentPanel.workflows.list();
+    expect(invoke).toHaveBeenLastCalledWith("workflows:list");
+    const wf = { id: "wf_a", title: "t", steps: [], updatedAt: 1, rev: 1 };
+    await exposed.penAgentPanel.workflows.save(wf);
+    expect(invoke).toHaveBeenLastCalledWith("workflows:save", wf);
+    await exposed.penAgentPanel.workflows.remove("wf_a");
+    expect(invoke).toHaveBeenLastCalledWith("workflows:delete", "wf_a");
+  });
+
+  it("workflows.onRemoved listens on workflows:removed, passes only string ids, and unsubscribes", () => {
+    const cb = vi.fn();
+    const off = exposed.penAgentPanel.workflows.onRemoved(cb);
+    const listener = on.mock.calls.find((x) => x[0] === "workflows:removed")![1];
+    listener({}, ["wf_a", 3, "wf_b"]);
+    expect(cb).toHaveBeenCalledWith(["wf_a", "wf_b"]);
+    listener({}, "nope");
+    expect(cb).toHaveBeenCalledTimes(1);
+    off();
+    expect(removeListener).toHaveBeenCalledWith("workflows:removed", listener);
   });
 
   it("settings.open invokes settings:open with the optional section and returns main's reply", async () => {

@@ -6,9 +6,11 @@ function deps(over: Partial<EmptyOpenDeps> = {}) {
     isEmptyView: (id: number) => id === 7,
     findCanvasTab: vi.fn((): number | null => null),
     findDocTab: vi.fn((): number | null => null),
+    findWorkflowTab: vi.fn((): number | null => null),
     activate: vi.fn(),
     newCanvasTab: vi.fn(() => 1),
     newDocTab: vi.fn(() => 2),
+    newWorkflowTab: vi.fn(() => 3),
     ...over,
   };
 }
@@ -25,6 +27,16 @@ describe("openRecentItem", () => {
     const d = deps();
     expect(openRecentItem(d, 7, { kind: "doc", id: "abc" })).toEqual({ ok: true });
     expect(d.newDocTab).toHaveBeenCalledWith("abc", { focus: true });
+  });
+
+  it("opens a new workflow tab with focus, or activates the open one", () => {
+    const d = deps();
+    expect(openRecentItem(d, 7, { kind: "workflow", id: "wf_abc" })).toEqual({ ok: true });
+    expect(d.newWorkflowTab).toHaveBeenCalledWith("wf_abc", { focus: true });
+    const open = deps({ findWorkflowTab: vi.fn(() => 9) });
+    openRecentItem(open, 7, { kind: "workflow", id: "wf_abc" });
+    expect(open.activate).toHaveBeenCalledWith(9, { focus: true });
+    expect(open.newWorkflowTab).not.toHaveBeenCalled();
   });
 
   it("activates an open tab for that id, with focus", () => {
@@ -99,7 +111,7 @@ describe("parseRecentMenuRequest", () => {
 
 describe("parseRecentFilterMenuRequest", () => {
   const d = { isEmptyView: (id: number) => id === 7 };
-  const ok = { x: 10.5, y: 20, kinds: { canvas: true, doc: false }, modified: "7d" };
+  const ok = { x: 10.5, y: 20, kinds: { canvas: true, doc: false, workflow: true }, modified: "7d" };
   it("accepts a valid request from the empty view", () => {
     expect(parseRecentFilterMenuRequest(d, 7, ok)).toEqual({ ok: true, ...ok });
     for (const modified of ["any", "today", "7d", "30d"]) expect(parseRecentFilterMenuRequest(d, 7, { ...ok, modified }).ok).toBe(true);
@@ -110,7 +122,7 @@ describe("parseRecentFilterMenuRequest", () => {
   it("refuses a bad position, kinds or modified", () => {
     expect(parseRecentFilterMenuRequest(d, 7, { ...ok, x: Infinity }).ok).toBe(false);
     expect(parseRecentFilterMenuRequest(d, 7, { ...ok, y: "20" }).ok).toBe(false);
-    expect(parseRecentFilterMenuRequest(d, 7, { ...ok, kinds: { canvas: true } }).ok).toBe(false);
+    expect(parseRecentFilterMenuRequest(d, 7, { ...ok, kinds: { canvas: true, doc: true } }).ok).toBe(false);
     expect(parseRecentFilterMenuRequest(d, 7, { ...ok, kinds: null }).ok).toBe(false);
     expect(parseRecentFilterMenuRequest(d, 7, { ...ok, modified: "1y" }).ok).toBe(false);
     expect(parseRecentFilterMenuRequest(d, 7, null).ok).toBe(false);
@@ -121,6 +133,10 @@ describe("parseRecentTarget", () => {
   it("accepts a valid canvas or doc entry", () => {
     expect(parseRecentTarget({ kind: "canvas", id: "cv_1" })).toEqual({ ok: true, kind: "canvas", id: "cv_1" });
     expect(parseRecentTarget({ kind: "doc", id: "doc_1", extra: 1 })).toEqual({ ok: true, kind: "doc", id: "doc_1" });
+  });
+  it("accepts a workflow entry and validates its id", () => {
+    expect(parseRecentTarget({ kind: "workflow", id: "wf_abc123" })).toEqual({ ok: true, kind: "workflow", id: "wf_abc123" });
+    expect(parseRecentTarget({ kind: "workflow", id: "../x" })).toEqual({ ok: false, error: "invalid id" });
   });
   it("names the invalid part", () => {
     expect(parseRecentTarget(null)).toEqual({ ok: false, error: "invalid kind" });

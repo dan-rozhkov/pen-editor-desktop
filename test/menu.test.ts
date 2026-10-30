@@ -376,17 +376,17 @@ describe("buildRecentContextMenuTemplate", () => {
 });
 
 describe("buildRecentFilterMenuTemplate", () => {
-  const all = { kinds: { canvas: true, doc: true }, modified: "any" as const };
+  const all = { kinds: { canvas: true, doc: true, workflow: true }, modified: "any" as const };
   const labels = (t: { label?: string; type?: string }[]) => t.map((i) => i.label ?? i.type);
 
   it("lists Type, Modified and Reset in order", () => {
     const t = buildRecentFilterMenuTemplate(all, false, vi.fn());
     expect(labels(t)).toEqual([
-      "Type", "Canvases", "Documents", "separator", "Modified", "Any time", "Today", "Past 7 days", "Past 30 days", "separator", "Reset filters",
+      "Type", "Canvases", "Documents", "Workflows", "separator", "Modified", "Any time", "Today", "Past 7 days", "Past 30 days", "separator", "Reset filters",
     ]);
   });
   it("shows the state as checkbox and radio checks", () => {
-    const t = buildRecentFilterMenuTemplate({ kinds: { canvas: false, doc: true }, modified: "7d" }, false, vi.fn());
+    const t = buildRecentFilterMenuTemplate({ kinds: { canvas: false, doc: true, workflow: true }, modified: "7d" }, false, vi.fn());
     const by = (l: string) => t.find((i) => i.label === l)!;
     expect([by("Canvases").type, by("Canvases").checked, by("Documents").checked]).toEqual(["checkbox", false, true]);
     expect(["Any time", "Today", "Past 7 days", "Past 30 days"].map((l) => [by(l).type, by(l).checked])).toEqual([
@@ -395,21 +395,21 @@ describe("buildRecentFilterMenuTemplate", () => {
   });
   it("makes the section titles headers when the OS has them and disabled labels elsewhere", () => {
     const mac = buildRecentFilterMenuTemplate(all, true, vi.fn());
-    expect([mac[0], mac[4]]).toEqual([{ type: "header", label: "Type" }, { type: "header", label: "Modified" }]);
+    expect([mac[0], mac[5]]).toEqual([{ type: "header", label: "Type" }, { type: "header", label: "Modified" }]);
     const other = buildRecentFilterMenuTemplate(all, false, vi.fn());
-    expect([other[0], other[4]]).toEqual([{ label: "Type", enabled: false }, { label: "Modified", enabled: false }]);
+    expect([other[0], other[5]]).toEqual([{ label: "Type", enabled: false }, { label: "Modified", enabled: false }]);
   });
   it("enables Reset only when the filter is not the default", () => {
     const reset = (s: Parameters<typeof buildRecentFilterMenuTemplate>[0]) =>
       buildRecentFilterMenuTemplate(s, false, vi.fn()).find((i) => i.label === "Reset filters")!.enabled;
     expect(reset(all)).toBe(false);
     expect(reset({ ...all, modified: "today" })).toBe(true);
-    expect(reset({ kinds: { canvas: true, doc: false }, modified: "any" })).toBe(true);
+    expect(reset({ kinds: { canvas: true, doc: false, workflow: true }, modified: "any" })).toBe(true);
   });
   it("reports each pick", () => {
     const pick = vi.fn();
     const t = buildRecentFilterMenuTemplate({ ...all, modified: "today" }, false, pick);
-    for (const l of ["Canvases", "Documents", "Any time", "Today", "Past 7 days", "Past 30 days", "Reset filters"]) {
+    for (const l of ["Canvases", "Documents", "Workflows", "Any time", "Today", "Past 7 days", "Past 30 days", "Reset filters"]) {
       const item = t.find((i) => i.label === l)!;
       // Electron flips a checkbox before click: Canvases and Documents start checked, so they report false.
       (item.click as (mi: { checked: boolean }) => void)({ checked: item.type === "checkbox" ? !item.checked : true });
@@ -417,6 +417,7 @@ describe("buildRecentFilterMenuTemplate", () => {
     expect(pick.mock.calls.map((c) => c[0])).toEqual([
       { action: "kind", kind: "canvas", checked: false },
       { action: "kind", kind: "doc", checked: false },
+      { action: "kind", kind: "workflow", checked: false },
       { action: "modified", modified: "any" },
       { action: "modified", modified: "today" },
       { action: "modified", modified: "7d" },

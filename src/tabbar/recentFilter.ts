@@ -6,12 +6,12 @@ type RecentModifiedRange = "any" | "today" | "7d" | "30d";
 interface RecentFilterState {
   /** Case-insensitive substring of the title (an empty title is shown, and matched, as "Untitled"). */
   query: string;
-  kinds: { canvas: boolean; doc: boolean };
+  kinds: { canvas: boolean; doc: boolean; workflow: boolean };
   modified: RecentModifiedRange;
 }
 
 /** `now` is epoch ms. "today" = since the viewer's local midnight; "7d" / "30d" = the last 7 / 30 x 24 h. Both kinds off = nothing. */
-function filterRecentItems<T extends { kind: "canvas" | "doc"; title: string; updatedAt: number }>(
+function filterRecentItems<T extends { kind: "canvas" | "doc" | "workflow"; title: string; updatedAt: number }>(
   items: T[],
   filter: RecentFilterState,
   now: number,

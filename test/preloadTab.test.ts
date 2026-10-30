@@ -367,6 +367,24 @@ describe("preload/tab.ts docs bridge", () => {
   });
 });
 
+describe("preload/tab.ts workflows bridge", () => {
+  it("exposes list, save and remove over workflows:list / save / delete", async () => {
+    vi.resetModules();
+    invokeMock.mockClear();
+    exposedApi = undefined;
+    (globalThis as unknown as { location: unknown }).location = { pathname: "/workflow" };
+    await import("../src/preload/tab");
+    expect(Object.keys(exposedApi.workflows).sort()).toEqual(["list", "remove", "save"]);
+    await exposedApi.workflows.list();
+    expect(invokeMock).toHaveBeenLastCalledWith("workflows:list");
+    const wf = { id: "wf_a", title: "t", steps: [], updatedAt: 1, rev: 1 };
+    await exposedApi.workflows.save(wf);
+    expect(invokeMock).toHaveBeenLastCalledWith("workflows:save", wf);
+    await exposedApi.workflows.remove("wf_a");
+    expect(invokeMock).toHaveBeenLastCalledWith("workflows:delete", "wf_a");
+  });
+});
+
 describe("preload/tab.ts canvases bridge", () => {
   it("exposes list, read, save and remove over canvases:list / read / save / delete", async () => {
     vi.resetModules();

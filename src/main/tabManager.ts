@@ -1,5 +1,5 @@
 import type { BrowserPageHandle, BrowserTabInfo } from "@sideform/browser-agent/controller";
-import { canvasIdOfUrl, docIdOfUrl, isValidCanvasId, isValidDocId, resolveCanvasTabUrl, isDocPageOn, isSettingsPageOn, isValidSettingsSection, isValidTraceId, resolveDocTabUrl, resolveSettingsTabUrl, resolveTraceTabUrl, resolveWorkflowTabUrl, traceIdOfUrl, workflowIdOfUrl } from "./config";
+import { canvasIdOfUrl, docIdOfUrl, isValidCanvasId, isValidDocId, resolveCanvasTabUrl, isDocPageOn, isWorkflowPageOn, isSettingsPageOn, isValidSettingsSection, isValidTraceId, isValidWorkflowId, resolveDocTabUrl, resolveSettingsTabUrl, resolveTraceTabUrl, resolveWorkflowTabUrl, traceIdOfUrl, workflowIdOfUrl } from "./config";
 export type UITheme = "light" | "dark";
 
 /** How a tab becomes the active one. `focus: false` shows it without moving keyboard focus into it. */
@@ -42,7 +42,7 @@ export type McpStatus = "listening" | "not-published" | "off" | "error";
  * same preload, default session and title/theme callbacks as "editor", but it
  * is NOT a canvas tab: never in the canvas link, the MCP active tab or
  * `lastEditorWebContentsId`. "workflow" is the same kind of tab for the frontend's
- * `/workflow` page (localStorage only; no disk store here).
+ * `/workflow` page (stored on disk by workflowStore.ts, like documents).
  */
 export type TabKind = "editor" | "browser" | "doc" | "workflow" | "trace" | "settings" | "passwords" | "history";
 
@@ -837,12 +837,12 @@ export class TabManager {
   }
 
   /**
-   * The stored file behind a tab, for "Reveal in Finder": a canvas, document or trace id, resolved with the
+   * The stored file behind a tab, for "Reveal in Finder": a canvas, document, workflow or trace id, resolved with the
    * same rules as `findCanvasTab` / `findDocTab` / `findTraceTab` (live URL first). Null for an unknown tab,
-   * a kind with no file (workflow, browser, settings, passwords, history) and a tab with no id yet (`new=1` doc,
+   * a kind with no file (browser, settings, passwords, history) and a tab with no id yet (`new=1` doc,
    * canvas the frontend has not named). The id is not validated here; `revealTargetFor` does that.
    */
-  fileTargetOf(tabId: number): { kind: "canvas" | "doc" | "trace"; id: string } | null {
+  fileTargetOf(tabId: number): { kind: "canvas" | "doc" | "workflow" | "trace"; id: string } | null {
     const t = this.tabs.find((x) => x.id === tabId);
     if (!t) return null;
     const live = t.view.getURL();
@@ -851,15 +851,26 @@ export class TabManager {
     // The doc page's own URL decides (a `new=1` page has no file yet); anything else (the offline fallback page)
     // falls back to the opened id, since the file is still on disk.
     else if (t.kind === "doc") id = live && this.isOnDocPage(live) ? docIdOfUrl(live) : t.docId;
+    // Same as docs: on the workflow page its URL decides (no id = the empty state, no file); off it (offline fallback) the opened id.
+    else if (t.kind === "workflow") id = live && this.isOnWorkflowPage(live) ? workflowIdOfUrl(live) : t.workflowId;
     else if (t.kind === "trace") id = traceIdOfUrl(live) ?? t.traceId;
     else return null;
-    const valid = t.kind === "trace" ? isValidTraceId(id) : t.kind === "doc" ? isValidDocId(id) : isValidCanvasId(id);
+    const valid =
+      t.kind === "trace" ? isValidTraceId(id) : t.kind === "doc" ? isValidDocId(id) : t.kind === "workflow" ? isValidWorkflowId(id) : isValidCanvasId(id);
     return valid && id ? { kind: t.kind === "editor" ? "canvas" : t.kind, id } : null;
   }
 
   private isOnDocPage(url: string): boolean {
     try {
       return isDocPageOn(url, new URL(this.opts.editorUrl).origin);
+    } catch {
+      return false;
+    }
+  }
+
+  private isOnWorkflowPage(url: string): boolean {
+    try {
+      return isWorkflowPageOn(url, new URL(this.opts.editorUrl).origin);
     } catch {
       return false;
     }
@@ -960,6 +971,11 @@ export class TabManager {
   /** True when the webContents is one of this window's trace tabs. */
   isTraceTab(webContentsId: number): boolean {
     return this.tabs.some((t) => t.kind === "trace" && t.view.getWebContentsId() === webContentsId);
+  }
+
+  /** True when the webContents is one of this window's workflow tabs. */
+  isWorkflowTab(webContentsId: number): boolean {
+    return this.tabs.some((t) => t.kind === "workflow" && t.view.getWebContentsId() === webContentsId);
   }
 
   /** True when the webContents is one of this window's doc (Markdown) tabs. */

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import path from "node:path";
 import { parseTabMenuPayload, revealInFolder, revealMenuLabel, revealTargetFor, type RevealPorts } from "../src/main/revealInFolder";
 
-const dirs = { canvases: "/u/canvases", documents: "/u/documents", traces: "/u/browse-traces" };
+const dirs = { canvases: "/u/canvases", documents: "/u/documents", workflows: "/u/workflows", traces: "/u/browse-traces" };
 
 describe("revealMenuLabel", () => {
   it("is per platform", () => {
@@ -16,6 +16,8 @@ describe("revealTargetFor", () => {
   it("builds the canvas, doc and trace paths", () => {
     expect(revealTargetFor({ kind: "canvas", id: "cv_1" }, dirs)).toEqual({ file: path.join("/u/canvases", "cv_1.pen.json"), dir: "/u/canvases" });
     expect(revealTargetFor({ kind: "doc", id: "d-1" }, dirs)).toEqual({ file: path.join("/u/documents", "d-1.json"), dir: "/u/documents" });
+    expect(revealTargetFor({ kind: "workflow", id: "wf_a1" }, dirs)).toEqual({ file: path.join("/u/workflows", "wf_a1.json"), dir: "/u/workflows" });
+    expect(revealTargetFor({ kind: "workflow", id: "d-1" }, dirs)).toBeNull();
     expect(revealTargetFor({ kind: "trace", id: "t1" }, dirs)).toEqual({
       file: path.join("/u/browse-traces", "t1", "trace.json"),
       dir: path.join("/u/browse-traces", "t1"),
