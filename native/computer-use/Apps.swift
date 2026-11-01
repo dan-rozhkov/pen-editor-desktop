@@ -87,15 +87,17 @@ private func boundsDistance(_ a: CGRect, _ b: CGRect) -> CGFloat {
 /// AX windows of the app, matched to CGWindowIDs of the same pid (layer 0): the closest bounds win,
 /// every CG window is used once, and the title breaks ties. windowId 0 only when no CG window is left
 /// (or the AX window has no area, like Finder's desktop).
-func windowsFor(_ pid: pid_t) throws -> [WinInfo] {
+func windowsFor(_ pid: pid_t, deadline: Date? = nil) throws -> [WinInfo] {
     try requireAccessibility()
     let app = AXUIElementCreateApplication(pid)
-    AXUIElementSetMessagingTimeout(app, 1.0)
+    axTimeout(app, cap: 1.0, deadline: deadline) // one-off listing: 1 s, never past the deadline
     let axWins = axCopy(app, "AXWindows") as? [AXUIElement] ?? []
     let pool = cgWindows(pid)
     struct Ax { let el: AXUIElement; let frame: CGRect; let title: String; let minimized: Bool }
     var items: [Ax] = []
     for w in axWins {
+        // Every per-window read is bounded: 250 ms with a deadline (never past it), else 1 s.
+        axTimeout(w, cap: deadline != nil ? 0.25 : 1.0, deadline: deadline)
         guard let frame = axFrame(w) else { continue }
         items.append(Ax(el: w, frame: frame, title: axString(w, "AXTitle") ?? "", minimized: axBool(w, "AXMinimized") ?? false))
     }

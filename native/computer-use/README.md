@@ -6,7 +6,7 @@ Sideform main process; JSON lines on stdin/stdout, stderr is a log.
 
 Protocol, element table and error codes: `docs/superpowers/specs/2026-10-21-macos-computer-use-design.md`
 (section 1). Error codes: `STALE`, `NO_ACCESSIBILITY`, `NO_SCREEN_RECORDING`, `NO_WINDOW`, `NO_ACTION`,
-`NOT_FOUND`, `BAD_ARGS`, `NOT_FRONTMOST`, `POINT_NOT_IN_APP`, plus `TIMEOUT`, `AX_FAILED`, `CAPTURE_FAILED`, `INTERNAL`.
+`AMBIGUOUS`, `NOT_FOUND`, `BAD_ARGS`, `NOT_FRONTMOST`, `POINT_NOT_IN_APP`, plus `TIMEOUT`, `AX_FAILED`, `CAPTURE_FAILED`, `INTERNAL`.
 
 Notes on details the spec leaves open:
 
@@ -77,6 +77,56 @@ Notes on details the spec leaves open:
   queue per pid, created lazily, so a slow app does not block another. Commands without a pid share one queue.
   A pid's queue is removed when its app ends (the `watch` handler). Shared state (snapshot rings, Chromium AX flags) is behind a lock that is never held across an AX call.
   Physical input stays on ONE global serial queue (the machine-wide input lease); background `key`/`type` use it too.
+- Read timeout. Before it reads a node, the snapshot, `read` and lookup paths set the AX messaging timeout on that
+  element to the smaller of 250 ms and the time left to the command deadline (`snapshot` and `read` measure the
+  deadline, 8.2 s, from the arrival of the request) (never below 50 ms: 0 means the global
+  default). A node whose read times out is skipped, and the reply says `truncated: true`. Actions (`perform`,
+  `axScroll`) keep 1.0 s, because a press on a slow app may take longer. The one-off `AXWindows` listing of the app
+  element also keeps 1.0 s, but never past the deadline. Every per-window read of that listing uses 250 ms when a
+  deadline is given (1 s without one). Reads of the pre-walk web-content check stop at the poll end (the deadline
+  minus the 4.2 s kept for the walk), not at the full deadline.
+- Batched read. The walker reads role, subrole, title, description, value, enabled, focused, selected, expanded,
+  identifier, placeholder, label, help, hidden, position and size with one `AXUIElementCopyMultipleAttributeValues`
+  call per node (options 0). A value that comes back as an AXValue error counts as missing. When the batch fails, the
+  walker reads the attributes one by one, with 300 ms in total for that fallback (never past the deadline); when it is
+  spent the node counts as timed out. A batch that times out is probed with a 50 ms `AXRole` read, so a hung node costs
+  about 300 ms at most, and is then skipped. `AXChildren` stays a separate read: the plain copy first; only when
+  it fails with a timeout-like error (`cannotComplete`) and the node reports more than 100 children, ranged pages of
+  100. Other failures (no value, unsupported) are an empty list with no extra call. A child read that did not
+  finish (failed page, deadline) is reported as incomplete: the snapshot answers `truncated: true`, the read
+  answers `truncated: true`, and the re-find search below gives up. The value of an `AXSecureTextField` is read only to
+  test it for emptiness (`hasValue`). It is never stored or sent.
+- Transparent wrappers. A node with role `AXGroup`, `AXGenericElement` or `AXSplitGroup` that has no title,
+  description, value, identifier, placeholder or label, and only `AXShowMenu`, `AXScrollToVisible`, `AXFocus` or
+  `AXRaise` as actions, does not count toward the depth limit of 60. The walker still goes into it. It was never
+  emitted as an element, and it still is not, so index numbers do not change. Deep Electron trees fit the budget.
+- Stable references. Each snapshot stores the app's process token (pid + process start time from
+  `proc_pidinfo`). When the start time of the pid changed (the app restarted or the pid was reused), `lookup` answers
+  `STALE`. For each emitted element the snapshot also keeps the retained `AXUIElement`, its base role and its
+  `AXIdentifier`. The retained native object is authoritative: a removed element never silently resolves to another
+  one. `lookup` first checks that the snapshot's window still exists (an element of a closed window can still answer reads);
+  if not, `STALE` ("The window is gone"). Then it reads the retained element. When the read works, the role matches and
+  the identifier matches (if the snapshot saw one), or when the read only times out (alive but slow), the retained
+  element is used. When it is gone or its role no longer matches, the element is re-found ONLY if the snapshot saw a non-empty `AXIdentifier`: a search of the window
+  (depth 50, at most 5000 nodes, skipping elements outside the window frame like the snapshot walk) for the same base role
+  and the same identifier, de-duplicated with `CFEqual`.
+  Exactly one match, from a search that finished, is used and replaces the stored element. Several matches are
+  `AMBIGUOUS` ("Several elements match. Take a new snapshot."), no match is `STALE`. A search that hits the node cap
+  or the deadline (or skips a node whose read timed out, or reads a child list only in part) answers `STALE` with "The window is too large to find the
+  element again. Take a new snapshot." An element without an identifier is `STALE` at once: there is no label,
+  bounds or child-path matching. The ring of 8 snapshots per pid stays.
+- Chromium and Electron activation. When the window has no web content, the helper writes
+  `AXManualAccessibility = true` to the app element of EVERY app, unconditionally (harmless where unsupported).
+  A success, `kAXErrorNotImplemented` (Chromium answers that to a write that applied) or a read-back of true counts as
+  applied. When it did not apply, an app whose bundle holds a Chromium-based framework (a name in
+  `Contents/Frameworks` that contains electron, chromium, chrome, brave or vivaldi, or the word cef, edge or opera,
+  case-insensitive) gets `AXEnhancedUserInterface` (settable probe, write, read-back), then the helper waits 2 s
+  (Chromium debounce), only when the poll end allows it; otherwise it skips the wait and logs a line.
+  `AXEnhancedUserInterface` is written only to those apps, because it changes how AppKit apps behave. The time of the
+  write is stamped at the write itself, before any wait. The flag is never restored. Activation stays reactive: it
+  runs only when the window has no web content, and at most once per 3 s per pid. Then the helper waits for the web
+  tree with the delays 25, 50, 100, 200 and then 400 ms, up to the deadline minus the 4.2 s kept for the walk. A
+  native window that is still empty waits at most 0.4 s in total.
 - `scroll` takes DOM-style deltas: positive `dy` scrolls the content down.
 - `key` accepts `key` plus `modifiers`, or a combined `"Meta+a"` string in `key`.
 - Slider and incrementor entries get `ops: ["TYPE_TEXT"]` (`perform setValue` with a number).

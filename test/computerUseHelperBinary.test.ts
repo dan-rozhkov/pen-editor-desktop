@@ -100,6 +100,12 @@ describe.skipIf(process.platform !== "darwin" || !existsSync(binPath))("sideform
     expect(await call("type", { pid: 999999, text: "x", background: true })).toMatchObject({ ok: false, code: "NOT_FOUND" });
   });
 
+  it("keeps NOT_FOUND for snapshot and read of a pid that does not exist, and STALE for unknown references", async () => {
+    expect(await call("snapshot", { pid: 999999 })).toMatchObject({ ok: false, code: "NOT_FOUND" });
+    expect(await call("read", { pid: 999999 })).toMatchObject({ ok: false, code: "NOT_FOUND" });
+    expect(await call("perform", { pid: 999999, snapshotId: "none", index: 0, action: "press" })).toMatchObject({ ok: false, code: "STALE" });
+  });
+
   it("answers per-pid commands in parallel for different pids", async () => {
     const rs = await Promise.all([
       call("windows", { pid: 999998 }),

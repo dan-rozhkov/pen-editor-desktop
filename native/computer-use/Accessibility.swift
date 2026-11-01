@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import ApplicationServices
+import Darwin
 
 // MARK: AX attribute helpers
 
@@ -34,8 +35,8 @@ func axActions(_ el: AXUIElement) -> [String] {
     return n
 }
 
-func axFrame(_ el: AXUIElement) -> CGRect? {
-    guard let p = axCopy(el, "AXPosition"), let s = axCopy(el, "AXSize"),
+private func frameOf(position p: CFTypeRef?, size s: CFTypeRef?) -> CGRect? {
+    guard let p = p, let s = s,
           CFGetTypeID(p) == AXValueGetTypeID(), CFGetTypeID(s) == AXValueGetTypeID() else { return nil }
     var pt = CGPoint.zero
     var sz = CGSize.zero
@@ -44,20 +45,157 @@ func axFrame(_ el: AXUIElement) -> CGRect? {
     return CGRect(origin: pt, size: sz)
 }
 
-func axValueText(_ el: AXUIElement) -> String? {
-    guard let v = axCopy(el, "AXValue") else { return nil }
+func axFrame(_ el: AXUIElement) -> CGRect? {
+    frameOf(position: axCopy(el, "AXPosition"), size: axCopy(el, "AXSize"))
+}
+
+private func valueTextOf(_ v: CFTypeRef?) -> String? {
+    guard let v = v else { return nil }
     if let s = v as? String { return s }
     if CFGetTypeID(v) == CFNumberGetTypeID() { return (v as! NSNumber).stringValue }
     return nil
 }
 
+func axValueText(_ el: AXUIElement) -> String? {
+    valueTextOf(axCopy(el, "AXValue"))
+}
+
+// MARK: Read timeout policy
+//
+// Every read of the snapshot, read and lookup paths sets the messaging timeout on the element it is about to
+// read: min(cap, time left to the command deadline), with cap 250 ms. A hung app then costs 250 ms per node,
+// not 1 s, and never outlasts the command. The one-off window listing of the app element uses cap 1.0 s.
+// Actions (perform, axScroll) keep 1.0 s: a press on a slow app may take longer. A timeout value of 0 would
+// mean "global default", so the value never goes below 50 ms.
+
+private let readTimeoutCap = 0.25
+
+func axTimeout(_ el: AXUIElement, cap: Double, deadline: Date?) {
+    let left = deadline.map { $0.timeIntervalSinceNow } ?? cap
+    AXUIElementSetMessagingTimeout(el, Float(max(0.05, min(cap, left))))
+}
+
+// MARK: Batched node read
+
+private let nodeAttrNames: [String] = [
+    "AXRole", "AXSubrole", "AXTitle", "AXDescription", "AXValue", "AXEnabled", "AXFocused", "AXSelected",
+    "AXExpanded", "AXIdentifier", "AXPlaceholderValue", "AXLabel", "AXHelp", "AXHidden", "AXPosition", "AXSize",
+]
+
+struct NodeAttrs {
+    var raw: [String: CFTypeRef] = [:]
+    var timedOut = false
+    var gone = false
+
+    func string(_ k: String) -> String? { raw[k] as? String }
+    func bool(_ k: String) -> Bool? {
+        guard let v = raw[k], CFGetTypeID(v) == CFBooleanGetTypeID() else { return nil }
+        return CFBooleanGetValue((v as! CFBoolean))
+    }
+    var role: String { string("AXRole") ?? "" }
+    var frame: CGRect? { frameOf(position: raw["AXPosition"], size: raw["AXSize"]) }
+    var valueText: String? { valueTextOf(raw["AXValue"]) }
+}
+
+/// One AXUIElementCopyMultipleAttributeValues call per node. Values that come back as AXValue errors count as
+/// missing. When the batch fails (not because of a timeout), it falls back to one read per attribute.
+func axReadNode(_ el: AXUIElement, deadline: Date?) -> NodeAttrs {
+    axTimeout(el, cap: readTimeoutCap, deadline: deadline)
+    var out = NodeAttrs()
+    var values: CFArray?
+    var err = AXUIElementCopyMultipleAttributeValues(el, nodeAttrNames as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &values)
+    if err == .cannotComplete {
+        // A timeout, or an app that cannot answer the batch: one cheap single read tells them apart.
+        // A 50 ms probe: a hung node costs the batch (250 ms) plus 50 ms, not twice the full timeout.
+        AXUIElementSetMessagingTimeout(el, 0.05)
+        var probe: CFTypeRef?
+        let pe = AXUIElementCopyAttributeValue(el, "AXRole" as CFString, &probe)
+        if pe == .cannotComplete { out.timedOut = true; return out }
+        if pe == .invalidUIElement { out.gone = true; return out }
+        err = .failure
+        axTimeout(el, cap: readTimeoutCap, deadline: deadline)
+    }
+    if err == .success, let arr = values as? [AnyObject], arr.count == nodeAttrNames.count {
+        for (i, v) in arr.enumerated() {
+            if CFGetTypeID(v) == AXValueGetTypeID(), AXValueGetType(v as! AXValue) == .axError { continue }
+            out.raw[nodeAttrNames[i]] = v
+        }
+        return out
+    }
+    if err == .invalidUIElement { out.gone = true; return out }
+    // The per-attribute fallback gets 300 ms in total (never past the deadline). When the budget is spent the node
+    // is marked timedOut (partial) and no further attribute is read.
+    let fallbackEnd = min(Date().addingTimeInterval(0.3), deadline ?? .distantFuture)
+    for name in nodeAttrNames {
+        let left = fallbackEnd.timeIntervalSinceNow
+        if left <= 0 { out.timedOut = true; return out }
+        AXUIElementSetMessagingTimeout(el, Float(max(0.05, min(readTimeoutCap, left))))
+        var v: CFTypeRef?
+        let e = AXUIElementCopyAttributeValue(el, name as CFString, &v)
+        if e == .success, let v = v { out.raw[name] = v }
+        else if e == .invalidUIElement { out.gone = true; return out }
+        else if e == .cannotComplete && name == "AXRole" { out.timedOut = true; return out }
+    }
+    return out
+}
+
+/// AXChildren. The plain copy comes first (one call per node). Only when it fails with .cannotComplete (a timeout,
+/// or an app too slow for one huge copy) are ranged pages of 100 tried. Any other failure (no value, unsupported)
+/// is an empty list that counts as complete, with no extra IPC. `complete` is false when children could not be
+/// read: a failed count, a failed page or the deadline. Callers that need a complete answer (the re-find search)
+/// or report partial results (the walkers) must look at it.
+func axChildrenPaged(_ el: AXUIElement, deadline: Date?) -> (items: [AXUIElement], complete: Bool) {
+    axTimeout(el, cap: readTimeoutCap, deadline: deadline)
+    var plain: CFTypeRef?
+    let e = AXUIElementCopyAttributeValue(el, "AXChildren" as CFString, &plain)
+    if e == .success { return (plain as? [AXUIElement] ?? [], true) }
+    if e != .cannotComplete { return ([], true) }
+    var count: CFIndex = 0
+    guard AXUIElementGetAttributeValueCount(el, "AXChildren" as CFString, &count) == .success, count > 100 else {
+        return ([], false)
+    }
+    var out: [AXUIElement] = []
+    var index: CFIndex = 0
+    while index < count {
+        if let d = deadline, Date() > d { return (out, false) }
+        axTimeout(el, cap: readTimeoutCap, deadline: deadline)
+        var page: CFArray?
+        guard AXUIElementCopyAttributeValues(el, "AXChildren" as CFString, index, 100, &page) == .success,
+              let items = page as? [AXUIElement], !items.isEmpty else { return (out, false) }
+        out.append(contentsOf: items)
+        index += CFIndex(items.count)
+    }
+    return (out, true)
+}
+
+// MARK: Process identity
+
+/// pid + process start time. A pid that was reused by another process has another start time.
+func processToken(_ pid: pid_t) -> String? {
+    var info = proc_bsdinfo()
+    let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+    guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+    return "\(pid):\(info.pbi_start_tvsec).\(info.pbi_start_tvusec)"
+}
+
 // MARK: Snapshot store (AX commands of different pids run in parallel: every access takes `stateLock`,
 // which is never held across an AX call)
 
-private struct Snapshot { let id: String; let pid: pid_t; let refs: [AXUIElement] }
+private final class Snapshot {
+    let id: String
+    let pid: pid_t
+    let proc: String?
+    let windowId: Int
+    var refs: [AXUIElement]
+    var metas: [Identity]
+    init(id: String, pid: pid_t, proc: String?, windowId: Int, refs: [AXUIElement], metas: [Identity]) {
+        self.id = id; self.pid = pid; self.proc = proc; self.windowId = windowId; self.refs = refs; self.metas = metas
+    }
+}
+
 private let stateLock = NSLock()
 private var snapshotRings: [pid_t: [Snapshot]] = [:] // last 8 snapshots per pid
-private var manualSetAt: [pid_t: Date] = [:] // last AXManualAccessibility set, per pid
+private var manualSetAt: [pid_t: Date] = [:] // last accessibility flag set, per pid
 private var manualAccepted: [pid_t: Bool] = [:] // the app took the flag (Chromium/Electron)
 private var webWaitFailedAt: [String: Date] = [:] // last web-area wait that ran out, per "pid:windowId"
 
@@ -80,16 +218,104 @@ private func findSnapshot(_ sid: String) -> Snapshot? {
     withState { snapshotRings.values.lazy.compactMap({ $0.first(where: { $0.id == sid }) }).first }
 }
 
-private func lookup(_ a: JSON) throws -> AXUIElement {
+/// The identity of a node: base role (without subrole) and AXIdentifier. One type for the snapshot's stored
+/// metadata and for every identity check.
+private struct Identity {
+    let role: String
+    let identifier: String?
+
+    init(_ at: NodeAttrs) {
+        role = at.role
+        identifier = trimmed(at.string("AXIdentifier"))
+    }
+
+    /// Same element kind? Same role, and the same identifier when the stored one has an identifier.
+    func matches(_ stored: Identity) -> Bool {
+        if role != stored.role { return false }
+        if let want = stored.identifier { return identifier == want }
+        return true
+    }
+}
+
+/// Finds the element of `snapshotId`/`index` again. The retained native object is authoritative: a removed
+/// element never silently resolves to a surviving one.
+/// - Another process (pid or start time) is STALE.
+/// - The retained element is used when its AXRole reads, the role matches and the identifier matches (if the
+///   snapshot saw one).
+/// - Otherwise it is re-found ONLY when the snapshot saw a non-empty AXIdentifier: a bounded search of the window
+///   (depth 50, 5000 nodes) for the same role and identifier, de-duplicated with CFEqual. Exactly one match, found
+///   by a search that finished, is used. Several are AMBIGUOUS, none are STALE, a search that hit the node cap or
+///   the deadline is STALE ("too large"). No identifier means STALE at once: no label, bounds or path adoption.
+private func lookup(_ a: JSON, deadline: Date) throws -> AXUIElement {
     guard let sid = a.str("snapshotId"), let idx = a.int("index"),
           let snap = findSnapshot(sid),
-          idx >= 0, idx < snap.refs.count else {
+          let (ref, meta) = withState({ () -> (AXUIElement, Identity)? in
+              idx >= 0 && idx < snap.refs.count ? (snap.refs[idx], snap.metas[idx]) : nil
+          }) else {
         throw fail("Unknown snapshot or index. Take a new snapshot.", "STALE")
     }
     if a["pid"] != nil, a.int("pid").map({ pid_t($0) }) != snap.pid {
         throw fail("The snapshot belongs to another app. Take a new snapshot.", "STALE")
     }
-    return snap.refs[idx]
+    if let token = snap.proc, processToken(snap.pid) != token {
+        throw fail("The app was restarted since the snapshot. Take a new snapshot.", "STALE")
+    }
+
+    // The snapshot's window must still exist. An element of a closed window can still answer AX reads
+    // (TextEdit keeps the text view alive for a while after its window closed), and an action on it must not run.
+    let win: WinInfo
+    do {
+        win = try pickWindow(snap.pid, snap.windowId != 0 ? snap.windowId : nil, deadline: deadline)
+    } catch let e as CmdError where e.code == "NO_WINDOW" {
+        throw fail("The window is gone. Take a new snapshot.", "STALE")
+    }
+
+    // The retained element.
+    let now = axReadNode(ref, deadline: deadline)
+    // Alive but slow: the window-exists check above already passed, so use the retained element (never STALE).
+    if now.timedOut { return ref }
+    if !now.gone, !now.role.isEmpty, Identity(now).matches(meta) { return ref }
+
+    // Gone (or another element now): re-find by identifier only.
+    guard let want = meta.identifier else {
+        throw fail("The element is gone. Take a new snapshot.", "STALE")
+    }
+    var found: [AXUIElement] = []
+    var stack: [(AXUIElement, Int)] = [(win.ax, 0)]
+    var visited = 0
+    var complete = true
+    while let (el, depth) = stack.popLast() {
+        if Date() > deadline || visited >= 5000 { complete = false; break }
+        visited += 1
+        let at = axReadNode(el, deadline: deadline)
+        if at.gone { continue }
+        if at.timedOut { complete = false; continue }
+        if at.bool("AXHidden") == true || skippedRoles.contains(at.role) { continue }
+        // The same window-frame filter as the snapshot walker: off-window (recycled) cells do not count.
+        if let f = at.frame, f.width > 0, f.height > 0, !f.intersects(win.frame) { continue }
+        let id = Identity(at)
+        if id.role == meta.role, id.identifier == want, !found.contains(where: { CFEqual($0, el) }) {
+            found.append(el)
+        }
+        if depth < 50 && !leafRoles.contains(at.role) {
+            let kids = axChildrenPaged(el, deadline: deadline)
+            if !kids.complete { complete = false }
+            for k in kids.items.reversed() { stack.append((k, depth + 1)) }
+        }
+    }
+    if found.count > 1 { throw fail("Several elements match. Take a new snapshot.", "AMBIGUOUS") }
+    if !complete {
+        throw fail("The window is too large to find the element again. Take a new snapshot.", "STALE")
+    }
+    guard let el = found.first else { throw fail("The element is gone. Take a new snapshot.", "STALE") }
+    withState { if idx < snap.refs.count { snap.refs[idx] = el } }
+    return el
+}
+
+/// Deadline `seconds` after the request arrived (the watchdog answers at the command's own limit).
+private func arrivalDeadline(_ a: JSON, _ seconds: Double) -> Date {
+    let arrived = (a["_arrivedAt"] as? Double).map { Date(timeIntervalSince1970: $0) } ?? Date()
+    return arrived.addingTimeInterval(seconds)
 }
 
 // MARK: Role tables
@@ -110,11 +336,14 @@ private let leafRoles: Set<String> = [
 /// The menu bar belongs to the app element, not the window, but some windows (Finder's desktop)
 /// expose it. Never walk it: its items include Shut Down and Restart.
 private let skippedRoles: Set<String> = ["AXMenuBar", "AXMenuBarItem"]
+/// Containers that only wrap other nodes. Without a name and without a real action they take no depth budget.
+private let wrapperRoles: Set<String> = ["AXGroup", "AXGenericElement", "AXSplitGroup"]
+private let wrapperActions: Set<String> = ["AXShowMenu", "AXScrollToVisible", "AXFocus", "AXRaise"]
 
 // MARK: Window selection
 
-private func pickWindow(_ pid: pid_t, _ windowId: Int?) throws -> WinInfo {
-    let wins = try windowsFor(pid)
+private func pickWindow(_ pid: pid_t, _ windowId: Int?, deadline: Date? = nil) throws -> WinInfo {
+    let wins = try windowsFor(pid, deadline: deadline)
     if let wid = windowId, wid != 0 {
         guard let w = wins.first(where: { Int($0.id) == wid }) else {
             throw fail("Window \(wid) not found.", "NO_WINDOW")
@@ -130,63 +359,129 @@ private func pickWindow(_ pid: pid_t, _ windowId: Int?) throws -> WinInfo {
     throw fail("The app has no open window.", "NO_WINDOW")
 }
 
+// MARK: Chromium / Electron accessibility activation
+
+private let manualAttr = "AXManualAccessibility"
+private let enhancedAttr = "AXEnhancedUserInterface"
+/// Substrings of a framework name (lowercase) that mark an embedded Chromium. The short ones ("cef", "edge",
+/// "opera") must stand alone as a word, or "Knowledge.framework" would count.
+private let chromiumNameParts: [String] = ["electron", "chromium", "chrome", "brave", "vivaldi"]
+private let chromiumWordParts: [String] = ["cef", "edge", "opera"]
+
+/// True for apps that embed Chromium: Electron, CEF and Chromium-based browsers.
+private func looksLikeChromium(_ pid: pid_t) -> Bool {
+    guard let url = NSRunningApplication(processIdentifier: pid)?.bundleURL else { return false }
+    let dir = url.appendingPathComponent("Contents/Frameworks").path
+    guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return false }
+    return names.contains { raw in
+        let n = raw.lowercased()
+        if chromiumNameParts.contains(where: { n.contains($0) }) { return true }
+        return chromiumWordParts.contains { n.range(of: "(^|[^a-z])\($0)([^a-z]|$)", options: .regularExpression) != nil }
+    }
+}
+
+/// Turns the AX tree of an app on. Rules from agent-desktop:
+/// - EVERY app gets AXManualAccessibility = true written, unconditionally (harmless where unsupported; the
+///   getter and IsAttributeSettable are unreliable on Chromium). A success, kAXErrorNotImplemented (Chromium
+///   answers that to a write that applied) or a read-back of true counts as applied;
+/// - if that did not apply, a Chromium app gets AXEnhancedUserInterface (settable probe, write, read-back),
+///   which fills the tree after a 2 s debounce: wait 2 s, but only when `waitEnd` allows it;
+/// - the flag is never restored. `manualSetAt` is stamped at each write, before any sleep.
+/// AXEnhancedUserInterface also changes how AppKit apps behave (animations, window management), so it is
+/// written only to apps that embed Chromium.
+private func activateAccessibility(_ app: AXUIElement, pid: pid_t, chromium: Bool, waitEnd: Date) -> Bool {
+    withState { manualSetAt[pid] = Date() }
+    let r = AXUIElementSetAttributeValue(app, manualAttr as CFString, kCFBooleanTrue)
+    if r == .success || r == .notImplemented || axBool(app, manualAttr) == true { return true }
+    guard chromium, isSettable(app, enhancedAttr) else { return false }
+    if axBool(app, enhancedAttr) == true { return true }
+    withState { manualSetAt[pid] = Date() }
+    let er = AXUIElementSetAttributeValue(app, enhancedAttr as CFString, kCFBooleanTrue)
+    let rb = axBool(app, enhancedAttr)
+    guard rb == true || (rb == nil && er == .success) else { return false }
+    if waitEnd.timeIntervalSinceNow >= 2.0 {
+        Thread.sleep(forTimeInterval: 2.0)
+    } else {
+        logErr("skipped the 2 s AXEnhancedUserInterface wait: not enough time left")
+    }
+    return true
+}
+
+private let webBackoff: [Double] = [0.025, 0.05, 0.1, 0.2, 0.4]
+
 /// Turns the AX tree of a Chromium/Electron app back on when its web area is empty, and waits for it.
 /// Chromium turns accessibility off by itself later, so one set per helper life lost the tree after a
 /// few agent runs. Measured on Electron 43: after a set the web area stays empty about 2 s, then fills
 /// in one burst (1 node at 2.01 s, 334 at 2.10 s), and a new set restarts that delay. So the flag is
 /// set only when the web area is empty and the last set of this pid is over 3 s old, never in the
-/// wait loop. The wait stays inside the command deadline (8.2 s: up to 4 s of wait, then 4.2 s for
-/// the walk); a still-empty web area is walked anyway (best effort).
+/// wait loop. The wait uses exponential backoff (25, 50, 100, 200, then 400 ms per step) and stays inside
+/// the command deadline minus 4.2 s kept for the walk (8.2 s deadline: up to 4 s of wait); a still-empty
+/// web area is walked anyway (best effort).
 private func prepareWindow(_ pid: pid_t, _ windowId: Int?, deadline: Date) throws -> WinInfo {
     _ = try runningApp(pid)
     try requireAccessibility()
     let app = AXUIElementCreateApplication(pid)
-    AXUIElementSetMessagingTimeout(app, 1.0)
-    var win = try pickWindow(pid, windowId)
-    if hasWebContent(win.ax) { return win } // usual case: the tree is on
+    axTimeout(app, cap: 1.0, deadline: deadline)
+    var win = try pickWindow(pid, windowId, deadline: deadline)
+    // Everything before the walk is bounded by pollEnd, not the full deadline: 4.2 s stay reserved for the walk.
+    // A starved queue still gets 0.25 s for the web-content check, or a tree that is on would look off.
+    let now = Date()
+    let pollEnd = min(now.addingTimeInterval(4.0), deadline.addingTimeInterval(-4.2))
+    if hasWebContent(win.ax, deadline: min(deadline, max(pollEnd, now.addingTimeInterval(0.25)))) { return win } // usual case: the tree is on
     // Pin the window so a re-pick cannot jump to another one.
     let pinned: Int? = (windowId ?? 0) != 0 ? windowId : Int(win.id)
-    let now = Date()
     let rebuilding = withState { manualSetAt[pid] }.map { now.timeIntervalSince($0) < 3 } ?? false
     if !rebuilding {
-        // Chromium/Electron accept the attribute; other apps return an error.
-        let ok = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success
-        withState { manualAccepted[pid] = ok; manualSetAt[pid] = now }
+        axTimeout(app, cap: 1.0, deadline: deadline)
+        let ok = activateAccessibility(app, pid: pid, chromium: looksLikeChromium(pid), waitEnd: pollEnd)
+        withState { manualAccepted[pid] = ok }
     }
     // A window whose wait ran out recently is not waited for again: it may hold no web content at all.
     let key = "\(pid):\(win.id)"
     let recentFail = withState { webWaitFailedAt[key] }.map { now.timeIntervalSince($0) < 60 } ?? false
     let accepted = withState { manualAccepted[pid] }
     if accepted == true && !recentFail {
-        let pollEnd = min(now.addingTimeInterval(4.0), deadline.addingTimeInterval(-4.2))
-        // Wait for a size that is above 0 and the same in two samples 0.15 s apart.
+        // Wait for a size that is above 0 and the same in two samples. Close samples (25 ms) must also
+        // show a real tree (20 nodes), or a one-node first burst would pass for the whole page.
         var last = 0
         var ready = false
+        var step = 0
         while Date() < pollEnd {
-            Thread.sleep(forTimeInterval: 0.15)
-            win = try pickWindow(pid, pinned)
+            let gap = webBackoff[min(step, webBackoff.count - 1)]
+            step += 1
+            Thread.sleep(forTimeInterval: max(0, min(gap, pollEnd.timeIntervalSinceNow)))
+            win = try pickWindow(pid, pinned, deadline: deadline)
             let size = webContentSize(win.ax, until: pollEnd)
-            if size > 0 && size == last { ready = true; break }
+            if size > 0 && size == last && (size >= 20 || gap >= 0.1) { ready = true; break }
             last = size
         }
         withState { webWaitFailedAt[key] = ready ? nil : Date() }
     } else if accepted != true && axChildren(win.ax).isEmpty {
-        Thread.sleep(forTimeInterval: 0.4)
-        win = try pickWindow(pid, pinned)
+        // A native window that is still empty: short backoff, 0.4 s in total.
+        var waited = 0.0
+        for gap in webBackoff {
+            let step = min(gap, 0.4 - waited, deadline.timeIntervalSinceNow)
+            if step <= 0 { break }
+            Thread.sleep(forTimeInterval: step)
+            waited += step
+            win = try pickWindow(pid, pinned, deadline: deadline)
+            if !axChildren(win.ax).isEmpty { break }
+        }
     }
     return win
 }
 
 /// True when the window holds an AXWebArea with at least one child. Bounded breadth-first search.
-private func hasWebContent(_ win: AXUIElement) -> Bool {
+private func hasWebContent(_ win: AXUIElement, deadline: Date) -> Bool {
     var queue: [(AXUIElement, Int)] = [(win, 0)]
     var head = 0
-    while head < queue.count && head < 300 {
+    while head < queue.count && head < 300 && Date() < deadline {
         let (el, depth) = queue[head]
         head += 1
+        axTimeout(el, cap: readTimeoutCap, deadline: deadline)
         let role = axString(el, "AXRole") ?? ""
         if skippedRoles.contains(role) { continue }
-        let kids = axChildren(el)
+        let kids = axChildrenPaged(el, deadline: deadline).items
         if role == "AXWebArea" && !kids.isEmpty { return true }
         if depth < 12 { for k in kids { queue.append((k, depth + 1)) } }
     }
@@ -202,10 +497,11 @@ private func webContentSize(_ win: AXUIElement, until: Date) -> Int {
     while head < queue.count && head < 600 && Date() < until {
         let (el, depth, inWeb) = queue[head]
         head += 1
+        axTimeout(el, cap: readTimeoutCap, deadline: until)
         let role = axString(el, "AXRole") ?? ""
         if skippedRoles.contains(role) { continue }
         if inWeb { size += 1 }
-        if depth < 40 { for k in axChildren(el) { queue.append((k, depth + 1, inWeb || role == "AXWebArea")) } }
+        if depth < 40 { for k in axChildrenPaged(el, deadline: until).items { queue.append((k, depth + 1, inWeb || role == "AXWebArea")) } }
     }
     return size
 }
@@ -218,29 +514,35 @@ private func trimmed(_ s: String?) -> String? {
     return c.isEmpty ? nil : c
 }
 
-private func labelFor(_ el: AXUIElement, role: String) -> String? {
-    if let s = trimmed(axString(el, "AXTitle")) { return clip(s, 160) }
-    if let s = trimmed(axString(el, "AXDescription")) { return clip(s, 160) }
-    if let s = trimmed(axString(el, "AXLabel")) { return clip(s, 160) }
+/// `attrs` is the node's batched read; without it every attribute is read on its own.
+private func labelFor(_ el: AXUIElement, role: String, attrs: NodeAttrs? = nil, deadline: Date? = nil,
+                      kids: (() -> [AXUIElement])? = nil) -> String? {
+    func str(_ name: String) -> String? { attrs != nil ? attrs!.string(name) : axString(el, name) }
+    if let s = trimmed(str("AXTitle")) { return clip(s, 160) }
+    if let s = trimmed(str("AXDescription")) { return clip(s, 160) }
+    if let s = trimmed(str("AXLabel")) { return clip(s, 160) }
     if let t = axElement(axCopy(el, "AXTitleUIElement")) {
+        axTimeout(t, cap: readTimeoutCap, deadline: deadline)
         if let s = trimmed(axString(t, "AXTitle")) ?? trimmed(axValueText(t)) { return clip(s, 160) }
     }
-    if let s = trimmed(axString(el, "AXPlaceholderValue")) { return clip(s, 160) }
-    if let s = trimmed(axString(el, "AXHelp")) { return clip(s, 160) }
+    if let s = trimmed(str("AXPlaceholderValue")) { return clip(s, 160) }
+    if let s = trimmed(str("AXHelp")) { return clip(s, 160) }
     if !textRoles.contains(role) {
         // Last resort before the numbered fallback: the first static text inside the control.
-        for c in axChildren(el).prefix(8) where axString(c, "AXRole") == "AXStaticText" {
-            if let s = trimmed(axValueText(c)) { return clip(s, 160) }
+        for c in (kids?() ?? axChildrenPaged(el, deadline: deadline).items).prefix(8) {
+            axTimeout(c, cap: readTimeoutCap, deadline: deadline)
+            if axString(c, "AXRole") == "AXStaticText", let s = trimmed(axValueText(c)) { return clip(s, 160) }
         }
     }
     return nil
 }
 
-private func menuOptions(_ el: AXUIElement) -> [String] {
+private func menuOptions(_ el: AXUIElement, deadline: Date) -> [String] {
     var titles: [String] = []
     func collect(_ node: AXUIElement, _ depth: Int) {
-        if depth > 3 || titles.count >= 50 { return }
-        for c in axChildren(node) {
+        if depth > 3 || titles.count >= 50 || Date() > deadline { return }
+        for c in axChildrenPaged(node, deadline: deadline).items {
+            axTimeout(c, cap: readTimeoutCap, deadline: deadline)
             let r = axString(c, "AXRole") ?? ""
             if r == "AXMenuItem" {
                 if let t = trimmed(axString(c, "AXTitle")) { titles.append(clip(t, 80)) }
@@ -261,7 +563,9 @@ private final class SnapWalker {
     let deadline: Date
     var entries: [JSON] = []
     var refs: [AXUIElement] = []
+    var metas: [Identity] = []
     var truncated = false
+    var skippedTimeout = false // a node was skipped because its read timed out: the list is partial
     var visited = 0
 
     init(windowFrame: CGRect, maxElements: Int, deadline: Date) {
@@ -270,36 +574,63 @@ private final class SnapWalker {
         self.deadline = deadline
     }
 
-    func walk(_ el: AXUIElement, parentRole: String?, depth: Int) {
-        if truncated || depth > 60 { return }
+    /// A wrapper has no name, no value, no identifier and no real action. `depth` is the logical depth;
+    /// `physical` only guards against runaway trees.
+    private func isTransparent(_ el: AXUIElement, _ at: NodeAttrs, role: String) -> Bool {
+        guard wrapperRoles.contains(role) else { return false }
+        for k in ["AXTitle", "AXDescription", "AXIdentifier", "AXPlaceholderValue", "AXLabel"] where trimmed(at.string(k)) != nil {
+            return false
+        }
+        if let v = at.valueText, !v.isEmpty { return false }
+        return Set(axActions(el)).isSubset(of: wrapperActions)
+    }
+
+    func walk(_ el: AXUIElement, parentRole: String?, depth: Int, physical: Int) {
+        if truncated || depth > 60 || physical > 250 { return }
         visited += 1
         if visited > 20000 || Date() > deadline { truncated = true; return }
-        if axBool(el, "AXHidden") == true { return }
-        let role = axString(el, "AXRole") ?? ""
+        let at = axReadNode(el, deadline: deadline)
+        if at.gone { return }
+        if at.timedOut { skippedTimeout = true; return }
+        if at.bool("AXHidden") == true { return }
+        let role = at.role
         if skippedRoles.contains(role) { return }
-        let frame = axFrame(el)
+        let frame = at.frame
         if let f = frame, f.width > 0, f.height > 0, !f.intersects(windowFrame) { return }
         let hasArea = frame.map { $0.width > 0 && $0.height > 0 } ?? false
 
-        if hasArea, let entry = makeEntry(el, role: role, parentRole: parentRole) {
+        var kidsCache: [AXUIElement]?
+        func kids() -> [AXUIElement] {
+            if kidsCache == nil {
+                let r = axChildrenPaged(el, deadline: deadline)
+                if !r.complete { truncated = true } // children could not be read in full: the list is partial
+                kidsCache = r.items
+            }
+            return kidsCache!
+        }
+
+        if hasArea, let entry = makeEntry(el, at, role: role, parentRole: parentRole, kids: kids) {
             if entries.count >= maxElements { truncated = true; return }
             entries.append(entry)
             refs.append(el)
+            metas.append(Identity(at))
         }
         if leafRoles.contains(role) { return }
-        for c in axChildren(el) {
-            walk(c, parentRole: role, depth: depth + 1)
+        let nextDepth = isTransparent(el, at, role: role) ? depth : depth + 1
+        for c in kids() {
+            walk(c, parentRole: role, depth: nextDepth, physical: physical + 1)
             if truncated { return }
         }
     }
 
-    private func makeEntry(_ el: AXUIElement, role: String, parentRole: String?) -> JSON? {
+    private func makeEntry(_ el: AXUIElement, _ at: NodeAttrs, role: String, parentRole: String?,
+                           kids: @escaping () -> [AXUIElement]) -> JSON? {
         var actions: [String]? = nil
         func hasPress() -> Bool {
             if actions == nil { actions = axActions(el) }
             return actions!.contains("AXPress")
         }
-        let label = labelFor(el, role: role)
+        let label = labelFor(el, role: role, attrs: at, deadline: deadline, kids: kids)
         let scroll = role == "AXScrollArea"
         let interactive = interactiveRoles.contains(role)
             || ((role == "AXRow" || role == "AXCell") && hasPress())
@@ -311,7 +642,7 @@ private final class SnapWalker {
             ? "tab" : String(role.dropFirst(2)).lowercased()
         var o: JSON = ["index": index, "tag": tag]
         o["label"] = label ?? "\(tag) #\(index)"
-        let sub = axString(el, "AXSubrole")
+        let sub = at.string("AXSubrole")
         o["role"] = (sub?.isEmpty == false) ? "\(role)/\(sub!)" : role
 
         if scroll {
@@ -319,31 +650,33 @@ private final class SnapWalker {
             o["scrollable"] = true
             return o
         }
+        let value = at.valueText
         if textRoles.contains(role) {
             if role == "AXSecureTextField" {
+                // The value is read only to test it for emptiness. It is never stored or sent.
                 o["isPassword"] = true
-                if let v = axValueText(el), !v.isEmpty { o["hasValue"] = true }
+                if let v = value, !v.isEmpty { o["hasValue"] = true }
             } else {
                 o["isPassword"] = false
-                if let v = axValueText(el) { o["value"] = clip(v, 200) }
+                if let v = value { o["value"] = clip(v, 200) }
             }
             o["ops"] = ["TYPE_TEXT"]
         } else if selectRoles.contains(role) {
             o["ops"] = ["SELECT"]
-            if let v = axValueText(el) { o["value"] = clip(v, 200) }
-            let opts = menuOptions(el)
+            if let v = value { o["value"] = clip(v, 200) }
+            let opts = menuOptions(el, deadline: deadline)
             if !opts.isEmpty { o["options"] = opts }
         } else if numericRoles.contains(role) {
             o["ops"] = ["TYPE_TEXT"]
-            if let v = axValueText(el) { o["value"] = clip(v, 200) }
+            if let v = value { o["value"] = clip(v, 200) }
         } else {
             o["ops"] = ["CLICK"]
         }
         if role == "AXCheckBox" || role == "AXRadioButton" || role == "AXMenuItem" {
-            if let v = axCopy(el, "AXValue") as? NSNumber { o["checked"] = v.intValue != 0 }
+            if let v = at.raw["AXValue"] as? NSNumber { o["checked"] = v.intValue != 0 }
         }
-        if let e = axBool(el, "AXExpanded") { o["expanded"] = e }
-        if axBool(el, "AXEnabled") == false { o["disabled"] = true }
+        if let e = at.bool("AXExpanded") { o["expanded"] = e }
+        if at.bool("AXEnabled") == false { o["disabled"] = true }
         return o
     }
 }
@@ -355,6 +688,7 @@ private final class ReadWalker {
     var lines: [String] = []
     var chars = 0
     var truncated = false
+    var skippedTimeout = false
     var visited = 0
 
     init(windowFrame: CGRect, maxChars: Int, deadline: Date) {
@@ -380,33 +714,38 @@ private final class ReadWalker {
         if truncated || depth > 60 { return }
         visited += 1
         if visited > 20000 || Date() > deadline { truncated = true; return }
-        if axBool(el, "AXHidden") == true { return }
-        if let f = axFrame(el), f.width > 0, f.height > 0, !f.intersects(windowFrame) { return }
-        let role = axString(el, "AXRole") ?? ""
+        let at = axReadNode(el, deadline: deadline)
+        if at.gone { return }
+        if at.timedOut { skippedTimeout = true; return } // partial text: reported as truncated
+        if at.bool("AXHidden") == true { return }
+        if let f = at.frame, f.width > 0, f.height > 0, !f.intersects(windowFrame) { return }
+        let role = at.role
         if skippedRoles.contains(role) { return }
         switch role {
         case "AXStaticText":
-            add(axValueText(el) ?? axString(el, "AXTitle"))
+            add(at.valueText ?? at.string("AXTitle"))
             return
         case "AXHeading":
-            add(axValueText(el) ?? axString(el, "AXTitle") ?? axString(el, "AXDescription"))
+            add(at.valueText ?? at.string("AXTitle") ?? at.string("AXDescription"))
         case "AXTextField", "AXTextArea", "AXSearchField", "AXComboBox":
             // An empty field shows its placeholder on screen; a filled one (even with spaces only) shows its value.
-            let value = axValueText(el) ?? ""
-            add(value.isEmpty ? axString(el, "AXPlaceholderValue") : value)
+            let value = at.valueText ?? ""
+            add(value.isEmpty ? at.string("AXPlaceholderValue") : value)
             return
         case "AXCheckBox", "AXRadioButton", "AXButton", "AXLink", "AXMenuItem":
             // The label is the visible text of a control; its children repeat it.
-            add(axString(el, "AXTitle") ?? axString(el, "AXDescription") ?? labelFor(el, role: role))
+            add(at.string("AXTitle") ?? at.string("AXDescription") ?? labelFor(el, role: role, attrs: at, deadline: deadline))
             if role != "AXLink" { return }
         case "AXSecureTextField":
             // Never add the value. Only test it for emptiness (like the snapshot's hasValue): the placeholder shows only then.
-            if (axValueText(el) ?? "").isEmpty { add(axString(el, "AXPlaceholderValue")) }
+            if (at.valueText ?? "").isEmpty { add(at.string("AXPlaceholderValue")) }
             return
         default:
             break
         }
-        for c in axChildren(el) {
+        let r = axChildrenPaged(el, deadline: deadline)
+        if !r.complete { skippedTimeout = true } // partial text: reported as truncated
+        for c in r.items {
             walk(c, depth: depth + 1)
             if truncated { return }
         }
@@ -417,35 +756,40 @@ private final class ReadWalker {
 
 func cmdSnapshot(_ a: JSON) throws -> JSON {
     let pid = try a.pid()
-    let deadline = Date().addingTimeInterval(8.2)
+    let deadline = arrivalDeadline(a, 8.2)
     let win = try prepareWindow(pid, a.int("windowId"), deadline: deadline)
     let maxEl = max(1, min(a.int("maxElements") ?? 120, 1000))
     let walker = SnapWalker(windowFrame: win.frame, maxElements: maxEl, deadline: deadline)
-    walker.walk(win.ax, parentRole: nil, depth: 0)
+    walker.walk(win.ax, parentRole: nil, depth: 0, physical: 0)
     let sid = UUID().uuidString
+    let proc = processToken(pid)
     withState {
         var ring = snapshotRings[pid] ?? []
-        ring.append(Snapshot(id: sid, pid: pid, refs: walker.refs))
+        ring.append(Snapshot(
+            id: sid, pid: pid, proc: proc, windowId: Int(win.id), refs: walker.refs, metas: walker.metas
+        ))
         while ring.count > 8 { ring.removeFirst() }
         snapshotRings[pid] = ring
     }
     return [
-        "snapshotId": sid, "elements": walker.entries, "truncated": walker.truncated,
+        "snapshotId": sid, "elements": walker.entries, "truncated": walker.truncated || walker.skippedTimeout,
         "window": win.json,
     ]
 }
 
 func cmdRead(_ a: JSON) throws -> JSON {
     let pid = try a.pid()
-    let deadline = Date().addingTimeInterval(8.2)
+    let deadline = arrivalDeadline(a, 8.2)
     let win = try prepareWindow(pid, a.int("windowId"), deadline: deadline)
     let walker = ReadWalker(windowFrame: win.frame, maxChars: max(1, a.int("maxChars") ?? 12000), deadline: deadline)
     walker.walk(win.ax, depth: 0)
-    return ["title": win.title, "text": walker.lines.joined(separator: "\n"), "truncated": walker.truncated]
+    return ["title": win.title, "text": walker.lines.joined(separator: "\n"), "truncated": walker.truncated || walker.skippedTimeout]
 }
 
 func cmdElementFrame(_ a: JSON) throws -> JSON {
-    let el = try lookup(a)
+    try requireAccessibility()
+    let el = try lookup(a, deadline: arrivalDeadline(a, 1.6))
+    axTimeout(el, cap: readTimeoutCap, deadline: arrivalDeadline(a, 1.8))
     guard let f = axFrame(el) else { throw fail("The element is gone. Take a new snapshot.", "STALE") }
     return ["x": finite(f.origin.x), "y": finite(f.origin.y), "width": finite(f.size.width), "height": finite(f.size.height)]
 }
@@ -462,15 +806,12 @@ fileprivate func mapAXError(_ e: AXError, _ what: String) -> CmdError {
 
 /// The watchdog in main.swift answers 5 s after the request ARRIVED; mutating steps stop 1 s before it.
 /// Time spent waiting in the queue counts. Without a stamp (tests), the deadline starts now.
-private func mutationDeadline(_ a: JSON) -> Date {
-    let arrived = (a["_arrivedAt"] as? Double).map { Date(timeIntervalSince1970: $0) } ?? Date()
-    return arrived.addingTimeInterval(4.0)
-}
+private func mutationDeadline(_ a: JSON) -> Date { arrivalDeadline(a, 4.0) }
 
 func cmdPerform(_ a: JSON) throws -> JSON {
     let deadline = mutationDeadline(a)
-    let el = try lookup(a) // STALE first: it needs no permission
-    try requireAccessibility()
+    try requireAccessibility() // NO_ACCESSIBILITY first, consistently: lookup reads AX too
+    let el = try lookup(a, deadline: deadline.addingTimeInterval(-1.0))
     guard let action = a.str("action") else { throw fail("action is required", "BAD_ARGS") }
     AXUIElementSetMessagingTimeout(el, 1.0)
     func act(_ name: String, _ what: String) throws {
@@ -772,16 +1113,15 @@ func cmdAxScroll(_ a: JSON) throws -> JSON {
     }
     let amount = max(1, min(a.int("amount") ?? 1, 20))
     _ = try runningApp(pid)
+    try requireAccessibility()
     var target: AXUIElement?
     var element: AXUIElement?
     if a["snapshotId"] != nil || a["index"] != nil {
-        let el = try lookup(a)
-        try requireAccessibility()
+        let el = try lookup(a, deadline: deadline.addingTimeInterval(-1.0))
         element = el
         AXUIElementSetMessagingTimeout(el, 1.0)
         target = nearestScrollArea(el)
     } else {
-        try requireAccessibility()
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 1.0)
         let root: AXUIElement?

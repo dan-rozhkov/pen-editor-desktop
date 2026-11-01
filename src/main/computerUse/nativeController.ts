@@ -99,6 +99,7 @@ const ERR_NO_AX_SCROLL =
   "Nothing here can scroll through accessibility, so nothing moved. Give a target or index of a scrollable element, or call browse_snapshot to find one.";
 
 const STALE_MESSAGE = "The snapshot is out of date (the window changed). Call browse_snapshot again and use the new snapshotId and indices.";
+const AMBIGUOUS_MESSAGE = "Several elements match this index. Call browse_snapshot again and use the new snapshotId and indices.";
 
 interface WindowInfo extends WindowFrame {
   windowId: number;
@@ -144,6 +145,8 @@ function mapError(e: unknown): string {
         return ERR_NATIVE_NO_WINDOW;
       case "STALE":
         return STALE_MESSAGE;
+      case "AMBIGUOUS":
+        return AMBIGUOUS_MESSAGE;
       case "NO_ACTION":
         return "The element has no usable accessibility action.";
       case "AX_FAILED":

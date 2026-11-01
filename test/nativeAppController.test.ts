@@ -627,6 +627,17 @@ describe("error mapping", () => {
     expect(r.error).toContain("browse_snapshot");
   });
 
+  it("maps AMBIGUOUS to a message that asks for a new snapshot", async () => {
+    const { ctl } = setup({
+      perform: () => {
+        throw new HelperError("Several elements match. Take a new snapshot.", "AMBIGUOUS");
+      },
+    });
+    const r = (await ctl.perform({ snapshotId: "old", index: 0, operation: "CLICK" })) as { error: string };
+    expect(r.error).toMatch(/^Several elements match/);
+    expect(r.error).toContain("browse_snapshot");
+  });
+
   it.each([
     ["NO_ACCESSIBILITY", ERR_NO_ACCESSIBILITY],
     ["NO_WINDOW", ERR_NATIVE_NO_WINDOW],
