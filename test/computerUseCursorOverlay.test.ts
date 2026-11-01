@@ -167,6 +167,12 @@ describe("cursor identity slots", () => {
     expect(CURSOR_JS).toContain("args.color");
   });
 
+  it("the installed CURSOR_JS draws the label as a dark tooltip, not in the cursor colour (browser-agent >= 0.4.7)", () => {
+    // CURSOR_PALETTE has mid tones that would be unreadable under white text on a coloured pill.
+    expect(CURSOR_JS).toContain("background:#171717");
+    expect(CURSOR_JS).not.toContain("state.pill.style.background = color");
+  });
+
   it("hands out the lowest free slot and reuses a released one", () => {
     const a = createCursorSlotAllocator();
     expect([a.acquire(), a.acquire(), a.acquire()]).toEqual([0, 1, 2]);
@@ -185,6 +191,8 @@ describe("cursor identity slots", () => {
     expect(cursorIdentityFor(CURSOR_PALETTE.length).label).toBe(`Agent ${CURSOR_PALETTE.length + 1}`);
     expect(new Set(CURSOR_PALETTE).size).toBe(CURSOR_PALETTE.length);
     for (const c of CURSOR_PALETTE) expect(c).toMatch(/^#[0-9a-f]{6}$/);
+    expect(CURSOR_PALETTE).toHaveLength(6);
+    expect(CURSOR_PALETTE[0]).toBe("#0d99ff");
   });
 
   it("takes no slot at creation, none while disabled, one at the first visible move", async () => {
