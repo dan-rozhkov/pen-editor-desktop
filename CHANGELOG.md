@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.9.5](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.9.4...v0.9.5) (2026-11-01)
+
+
+### Features
+
+* **computer-use:** a label and a colour per agent cursor ([de35105](https://github.com/dan-rozhkov/pen-editor-desktop/commit/de351052e452acb83bded5b0547e405fbde10326))
+* **computer-use:** click and type at screenshot coordinates in app windows ([e2905d4](https://github.com/dan-rozhkov/pen-editor-desktop/commit/e2905d4cfe8191e8a7a83b5c4ec5ffa587860765))
+* **computer-use:** faster, safer native snapshots ([6027a0f](https://github.com/dan-rozhkov/pen-editor-desktop/commit/6027a0f6717783dba479e65f39b1ceacfe2988a5))
+* **computer-use:** harmonious agent cursor palette, tooltip labels ([4890a1e](https://github.com/dan-rozhkov/pen-editor-desktop/commit/4890a1ee18ee6c0bdd5028d10d5b5733dffdccfd))
+* **computer-use:** headless click on text fields, stable app lookup ([e484a2a](https://github.com/dan-rozhkov/pen-editor-desktop/commit/e484a2a7a3c5fa50db3d52c22a6614e8d4cbb523))
+* **computer-use:** headless native actions, parallel agents ([062fd61](https://github.com/dan-rozhkov/pen-editor-desktop/commit/062fd6151aadec0b4f5892b5aa73b5c11b2384b2))
+* **computer-use:** optional app-control dialog, clearer batch results ([f7c25f1](https://github.com/dan-rozhkov/pen-editor-desktop/commit/f7c25f1d4c89b268f4ad529f299b6c9336f45b53))
+* **empty:** bulk select, search, filter and bulk delete in the Recent list ([8900912](https://github.com/dan-rozhkov/pen-editor-desktop/commit/890091215415ab630f03970c7ca5fc4855cba7ce))
+* **tabbar:** one icon per entity: FilmStrip for traces, TreeStructure for workflows ([4aa9cc3](https://github.com/dan-rozhkov/pen-editor-desktop/commit/4aa9cc373d9dd2bf6870d5a538c3aa6edef7f94f))
+* **traces:** a document tab can open a trace tab ([0e7a059](https://github.com/dan-rozhkov/pen-editor-desktop/commit/0e7a059cc25e68e7b8013b487d198f3a9d8b94a2))
+* **workflows:** store workflows as files on disk and list them in Recent ([4029032](https://github.com/dan-rozhkov/pen-editor-desktop/commit/402903207587e239529927274d3da8d57f1ed890))
+
+
+### Bug Fixes
+
+* **computer-use:** helper review fixes after a live check of lookup and cold AX ([97a4e6e](https://github.com/dan-rozhkov/pen-editor-desktop/commit/97a4e6eea04ac40ea1bfc61387b6960434bde296))
+* **computer-use:** keep the AX tree of Electron apps on across runs ([12133fb](https://github.com/dan-rozhkov/pen-editor-desktop/commit/12133fb2ca1d83b761ccd42140ffe663bb53ce33))
+* **computer-use:** wait for the Chromium AX tree without restarting it ([2ef175a](https://github.com/dan-rozhkov/pen-editor-desktop/commit/2ef175a11b5e9bdb668facccb391f47911334a88))
+* **deps:** bump @sideform/browser-agent to v0.4.8 (light cursor shadow) ([1f27fe1](https://github.com/dan-rozhkov/pen-editor-desktop/commit/1f27fe1e36aff60ce1963cd073f6c392a0fee3fc))
+* **empty:** keep "No matching files" right under the Recent header ([827dfb7](https://github.com/dan-rozhkov/pen-editor-desktop/commit/827dfb7ae87fed18ae86596939e341c17df9b53f))
+* **empty:** open the Recent filter as a native menu, like every other popup ([b69628a](https://github.com/dan-rozhkov/pen-editor-desktop/commit/b69628a5e08278a31c0710bbd4b6b57a19b49129))
+
 ## [0.9.4](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.9.3...v0.9.4) (2026-10-27)
 
 
