@@ -963,6 +963,7 @@ private func pressChain(_ el: AXUIElement, deadline: Date) throws -> JSON {
     if canSelect { steps.append("AXSelected") }
     if steps.isEmpty {
         if axCopy(el, "AXRole") == nil { throw fail("The element is gone. Take a new snapshot.", "STALE") }
+        if let r = try focusStep(el, pid: elPid, role: role, deadline: deadline) { return r }
         throw fail("The element has no press action.", "NO_ACTION")
     }
     let before = lightState(el, pid: elPid)
@@ -1005,7 +1006,64 @@ private func pressChain(_ el: AXUIElement, deadline: Date) throws -> JSON {
         return ["done": true, "via": step, "effect": "unverified"]
     }
     if let d = delivered { return ["done": true, "via": d, "effect": "unverified"] }
+    if let r = try focusStep(el, pid: elPid, role: role, deadline: deadline, before: before, lastStep: steps.last) { return r }
     throw lastError ?? fail("The element has no press action.", "NO_ACTION")
+}
+
+private let focusableTextRoles: Set<String> = ["AXTextArea", "AXTextField", "AXSearchField", "AXComboBox", "AXSecureTextField"]
+
+/// Last press step for text roles that advertise no action: write AXFocused and trust only a read-back.
+/// Never activates the app and never moves the pointer. Focus on el or on one of its descendants counts.
+/// `before` is the pre-press state when earlier steps failed: if the state moved since, an earlier step
+/// may have acted late, so no write runs. Returns nil when the step does not apply or when the write
+/// proved it ran nothing and no focus showed up (the caller then reports NO_ACTION).
+private func focusStep(_ el: AXUIElement, pid: pid_t?, role: String, deadline: Date,
+                       before: LightState? = nil, lastStep: String? = nil) throws -> JSON? {
+    guard focusableTextRoles.contains(role), isSettable(el, "AXFocused"), axBool(el, "AXEnabled") != false else { return nil }
+    let loopPath = before != nil && lastStep != nil
+    // Loop path: the before-state check runs first. A state change means an earlier step may have acted late.
+    if let b = before, let last = lastStep, lightState(el, pid: pid) != b {
+        return ["done": true, "via": last, "effect": "unverified", "uncertain": true]
+    }
+    if Date() > deadline {
+        // Loop path: earlier steps proved they ran nothing, so the caller reports their error (nil here).
+        // TIMEOUT only on the no-steps entry path.
+        if loopPath { return nil }
+        throw fail("press timed out before any action ran.", "TIMEOUT")
+    }
+    let app: AXUIElement? = pid.map { AXUIElementCreateApplication($0) }
+    /// True when the app's AXFocusedUIElement is el or a descendant of el. With `orOwn`, el's own AXFocused
+    /// also counts. No call starts after `limit` (wall-clock), and each call timeout is bounded by it.
+    func hasFocus(orOwn: Bool, limit: Date) -> Bool {
+        if Date() >= limit { return false }
+        axTimeout(el, cap: 0.25, deadline: limit)
+        if orOwn && axBool(el, "AXFocused") == true { return true }
+        guard let a = app else { return false }
+        if Date() >= limit { return false }
+        axTimeout(a, cap: 0.25, deadline: limit)
+        guard let f = axElement(axCopy(a, "AXFocusedUIElement")) else { return false }
+        var cur = f
+        for _ in 0..<20 {
+            if CFEqual(cur, el) { return true }
+            if Date() >= limit { return false }
+            axTimeout(cur, cap: 0.25, deadline: limit)
+            guard let p = axElement(axCopy(cur, "AXParent")) else { return false }
+            cur = p
+        }
+        return false
+    }
+    if hasFocus(orOwn: false, limit: deadline) { return ["done": true, "via": "AXFocused", "effect": "verified", "already": true] }
+    axTimeout(el, cap: 0.5, deadline: deadline)
+    let r = AXUIElementSetAttributeValue(el, "AXFocused" as CFString, kCFBooleanTrue)
+    if r == .invalidUIElement || r == .apiDisabled { throw mapAXError(r, "press") }
+    let pollEnd = min(Date().addingTimeInterval(0.4), deadline)
+    while true {
+        if hasFocus(orOwn: true, limit: pollEnd) { return ["done": true, "via": "AXFocused", "effect": "verified"] }
+        if Date() >= pollEnd { break }
+        Thread.sleep(forTimeInterval: 0.04)
+    }
+    if r != .success && provesNotRun(r) { return nil }
+    return ["done": true, "via": "AXFocused", "effect": "unverified", "uncertain": true]
 }
 
 private func insertText(_ el: AXUIElement, _ a: JSON, deadline: Date) throws -> JSON {

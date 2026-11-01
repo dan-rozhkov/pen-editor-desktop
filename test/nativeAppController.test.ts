@@ -274,6 +274,33 @@ describe("perform", () => {
     expect(of("click")).toHaveLength(0);
   });
 
+  it("CLICK on a text field passes via AXFocused through and sends no physical click", async () => {
+    const { ctl, of } = setup({ perform: () => ({ done: true, via: "AXFocused", effect: "verified" }) });
+    const s = await first(ctl);
+    const r = await ctl.perform({ snapshotId: s.snapshotId, index: 0, operation: "CLICK" });
+    expect(r).toMatchObject({ done: true, via: "AXFocused", effect: "verified" });
+    expect(of("click")).toHaveLength(0);
+    expect(of("activate")).toHaveLength(0);
+    expect(of("move")).toHaveLength(0);
+  });
+
+  it("CLICK passes already: true from the helper through", async () => {
+    const { ctl } = setup({ perform: () => ({ done: true, via: "AXFocused", effect: "verified", already: true }) });
+    const s = await first(ctl);
+    const r = await ctl.perform({ snapshotId: s.snapshotId, index: 0, operation: "CLICK" });
+    expect(r).toMatchObject({ done: true, via: "AXFocused", effect: "verified", already: true });
+  });
+
+  it("CLICK passes an uncertain AXFocused result through and sends no physical input", async () => {
+    const { ctl, of } = setup({ perform: () => ({ done: true, via: "AXFocused", effect: "unverified", uncertain: true }) });
+    const s = await first(ctl);
+    const r = await ctl.perform({ snapshotId: s.snapshotId, index: 0, operation: "CLICK" });
+    expect(r).toMatchObject({ done: true, via: "AXFocused", effect: "unverified", uncertain: true });
+    expect(of("click")).toHaveLength(0);
+    expect(of("activate")).toHaveLength(0);
+    expect(of("move")).toHaveLength(0);
+  });
+
   it("CLICK propagates the effect and never uses physical input", async () => {
     const { ctl, of } = setup({ perform: () => ({ done: true, via: "AXPress", effect: "verified" }) });
     const s = await first(ctl);

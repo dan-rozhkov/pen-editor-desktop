@@ -46,8 +46,20 @@ Notes on details the spec leaves open:
   Deadline: `perform` and `axScroll` stop mutating 4 s after the request ARRIVED, so queue wait counts (the watchdog answers at 5 s). Past the deadline it
   returns what was already delivered (`unverified`), or `TIMEOUT` when nothing was delivered.
   If a step fails with an error that proves it did not run, the helper first re-reads the state (up to 400 ms): when the state changed, the chain stops with `unverified` and `uncertain: true`.
-  Reply `{"done":true,"via":"AXPress|AXOpen|AXConfirm|AXSelected","effect":"verified|unverified"}`.
-  "delivered" = the app accepted the call; "verified" = a re-read confirmed an effect. No advertised step: `NO_ACTION`.
+  Reply `{"done":true,"via":"AXPress|AXOpen|AXConfirm|AXSelected|AXFocused","effect":"verified|unverified"}`.
+  "delivered" = the app accepted the call; "verified" = a re-read confirmed an effect. No advertised step and no text-field focus step: `NO_ACTION`.
+  Final step for text fields. It runs when no step above delivered anything, the role is `AXTextArea`, `AXTextField`,
+  `AXSearchField`, `AXComboBox` or `AXSecureTextField`, `AXFocused` is settable and `AXEnabled` is not false.
+  If an earlier step failed and the state changed since the press began, it writes nothing and replies `unverified`
+  with `uncertain: true` and the last step as `via`. This check runs before the deadline check. Past the deadline it
+  throws `TIMEOUT` when no earlier step existed; after earlier steps that ran nothing it reports their last error
+  (usually `NO_ACTION`). If the app's `AXFocusedUIElement` is the element or a descendant of it (up to 20 `AXParent`
+  levels), it writes nothing and replies `{"via":"AXFocused","effect":"verified","already":true}`. The element's own
+  `AXFocused` alone does not count for `already`: background windows keep a stale `AXFocused`.
+  Otherwise it writes `AXFocused=true` and polls for a read-back until the earlier of 400 ms (wall-clock) and the deadline. Every read has its own timeout, bounded by the time left. Here the element's own `AXFocused` also counts. Focus seen: `effect: "verified"`, even if
+  the write returned an error. No focus and the write succeeded or failed with an error that does not prove it ran
+  nothing: `effect: "unverified"` and `uncertain: true`. No focus and an error that proves it ran nothing: `NO_ACTION`.
+  A field that advertises `AXPress` keeps using `AXPress`. This step never activates the app.
 - `perform` `insertText` (`text`, optional `replace`): best-effort `AXFocused=true`. With `replace` it must replace
   or fail, never append. Length = `AXNumberOfCharacters` (also works for `AXSecureTextField`), else the UTF-16
   length of the `AXValue` string. Length 0: it just inserts. Length above 0: it selects the whole value through a

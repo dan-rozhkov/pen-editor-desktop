@@ -95,7 +95,19 @@ func collapse(_ s: String) -> String {
 }
 
 func runningApp(_ pid: pid_t) throws -> NSRunningApplication {
-    guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else {
+    // NSRunningApplication(processIdentifier:) called off the main thread can return nil for a live app
+    // (seen live: a TextEdit snapshot failed NOT_FOUND about 0.3 s after `windows` succeeded, every time).
+    // So when it gives nil for a live process, look the app up again on the main thread, where the
+    // workspace's list of apps is kept.
+    func look() -> NSRunningApplication? {
+        NSRunningApplication(processIdentifier: pid)
+            ?? NSWorkspace.shared.runningApplications.first { $0.processIdentifier == pid }
+    }
+    var found = look()
+    if found == nil, kill(pid, 0) == 0 || errno == EPERM, !Thread.isMainThread {
+        found = DispatchQueue.main.sync { look() }
+    }
+    guard let app = found, !app.isTerminated else {
         throw fail("No running app with pid \(pid).", "NOT_FOUND")
     }
     return app

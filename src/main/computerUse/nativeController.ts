@@ -312,7 +312,7 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
   }
 
   /** Headless: AXPress and its relatives. Fails closed: no physical click when the element has no action. */
-  async function press(snapshotId: string, index: number): Promise<{ done: true; via: string; effect?: string; uncertain?: true }> {
+  async function press(snapshotId: string, index: number): Promise<{ done: true; via: string; effect?: string; uncertain?: true; already?: true }> {
     if (cursor) await aimAt(snapshotId, index, "click").catch(() => undefined);
     try {
       const r = await perform({ snapshotId, index, action: "press" });
@@ -321,6 +321,7 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         via: str(r.via) || "ax",
         ...(typeof r.effect === "string" ? { effect: r.effect } : {}),
         ...(r.uncertain === true ? { uncertain: true as const } : {}),
+        ...(r.already === true ? { already: true as const } : {}),
       };
     } catch (e) {
       if (e instanceof HelperError && e.code === "NO_ACTION") throw new Fail(ERR_NO_AX_PRESS);
