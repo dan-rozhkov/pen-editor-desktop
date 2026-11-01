@@ -8,6 +8,7 @@ import path from "node:path";
 import { app, dialog } from "electron";
 import type { ElectronApp } from "@sideform/browser-agent/adapters/electron";
 import type { AppController } from "./appTargets";
+import { getBrowserSettings } from "./browserSettingsInstance";
 import { createCursorOverlay } from "./computerUse/cursorOverlay";
 import { encodeImageForAgent, getHelper, nativeCursorEnabled } from "./computerUse/helper";
 import { createNativeHandle } from "./computerUse/nativeHandle";
@@ -244,6 +245,8 @@ export const appRegistry = createAppRegistry<LaunchedApp>({
 
 export const appConfirm = createAppConfirm<Electron.BaseWindow>({
   showMessageBox: (win, options) => dialog.showMessageBox(win, options),
+  // Settings > Browser "askAppAccess", read on every confirm from the one process-wide store.
+  shouldAsk: () => getBrowserSettings().get().askAppAccess,
 });
 
 /** CFBundleIdentifier through plutil (path as argv, never a shell). null on any error. */

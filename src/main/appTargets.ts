@@ -345,6 +345,11 @@ export interface AppConfirmDeps<W> {
     cancelId: number;
     noLink: boolean;
   }): Promise<{ response: number }>;
+  /**
+   * Read on every call: false = no dialog for a NORMAL-risk app (Settings > Browser "askAppAccess"). High risk
+   * and the restart confirm ignore it. Absent = ask (the safe default).
+   */
+  shouldAsk?: () => boolean;
 }
 
 /**
@@ -354,11 +359,13 @@ export interface AppConfirmDeps<W> {
  */
 export function createAppConfirm<W>(deps: AppConfirmDeps<W>) {
   const remembered = new Set<string>();
+  const askNormal = (): boolean => deps.shouldAsk?.() ?? true;
   const memo = (owner: number, realPath: string) => `${owner}\0${realPath}`;
   return {
     async confirm(win: W, app: { name: string; realPath: string; risk?: AppRisk }, owner: number): Promise<boolean> {
       const high = app.risk === "high";
       if (!high && remembered.has(memo(owner, app.realPath))) return true;
+      if (!high && !askNormal()) return true;
       const { response } = await deps.showMessageBox(win, {
         type: "question",
         message: `Let the AI agent launch and control "${app.name}"?`,
@@ -406,6 +413,7 @@ export function createAppConfirm<W>(deps: AppConfirmDeps<W>) {
       const high = app.risk === "high";
       const attachMemo = `${owner}\0attach\0${app.key}`;
       if (!high && remembered.has(attachMemo)) return "session";
+      if (!high && !askNormal()) return "session";
       const buttons: string[] = high ? [...ATTACH_HIGH_RISK_BUTTONS] : app.canRestart ? [...ATTACH_RESTART_BUTTONS] : [...APP_CONFIRM_BUTTONS];
       const deny = buttons.length - 1;
       const { response } = await deps.showMessageBox(win, {

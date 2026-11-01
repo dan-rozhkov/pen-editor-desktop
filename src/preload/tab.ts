@@ -279,7 +279,7 @@ const logins = {
 // top frame of a Settings tab on the settings page, everything else gets `{ error: "Not allowed." }`.
 const browserSettings = {
   get: (): Promise<unknown> => ipcRenderer.invoke("browser-settings:get"),
-  set: (patch: { adBlock?: boolean; mcpBrowser?: boolean }): Promise<unknown> => ipcRenderer.invoke("browser-settings:set", patch),
+  set: (patch: { adBlock?: boolean; mcpBrowser?: boolean; askAppAccess?: boolean }): Promise<unknown> => ipcRenderer.invoke("browser-settings:set", patch),
 };
 
 // Desktop sign-in (src/main/desktopAuth.ts): `signIn` asks main to open the system browser;

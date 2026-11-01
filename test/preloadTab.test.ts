@@ -317,10 +317,10 @@ describe("preload/tab.ts browserSettings bridge", () => {
     (globalThis as unknown as { location: unknown }).location = { pathname: "/settings" };
     await import("../src/preload/tab");
     expect(Object.keys(exposedApi.browserSettings).sort()).toEqual(["get", "set"]);
-    invokeMock.mockResolvedValueOnce({ adBlock: true, mcpBrowser: true });
-    await expect(exposedApi.browserSettings.get()).resolves.toEqual({ adBlock: true, mcpBrowser: true });
+    invokeMock.mockResolvedValueOnce({ adBlock: true, mcpBrowser: true, askAppAccess: false });
+    await expect(exposedApi.browserSettings.get()).resolves.toEqual({ adBlock: true, mcpBrowser: true, askAppAccess: false });
     expect(invokeMock).toHaveBeenLastCalledWith("browser-settings:get");
-    invokeMock.mockResolvedValueOnce({ adBlock: false, mcpBrowser: true });
+    invokeMock.mockResolvedValueOnce({ adBlock: false, mcpBrowser: true, askAppAccess: false });
     await exposedApi.browserSettings.set({ adBlock: false });
     expect(invokeMock).toHaveBeenLastCalledWith("browser-settings:set", { adBlock: false });
   });

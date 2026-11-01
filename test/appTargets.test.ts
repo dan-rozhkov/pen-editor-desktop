@@ -161,6 +161,39 @@ describe("bundleOf", () => {
   });
 });
 
+describe("createAppConfirm shouldAsk", () => {
+  const normal = { name: "Orca", realPath: "/Applications/Orca.app", risk: "normal" as const };
+  const high = { ...normal, risk: "high" as const };
+  const attach = { name: "Notes", key: "k", risk: "normal" as const, canRestart: true };
+  const make = (ask: { v: boolean }) => {
+    const showMessageBox = vi.fn(async (_w: unknown, _o: unknown) => ({ response: 0 }));
+    return { showMessageBox, c: createAppConfirm({ showMessageBox, shouldAsk: () => ask.v }) };
+  };
+  it("off: a normal app launches and attaches without a dialog", async () => {
+    const { c, showMessageBox } = make({ v: false });
+    expect(await c.confirm("w", normal, 1)).toBe(true);
+    expect(await c.confirmAttach("w", attach, 1)).toBe("session");
+    expect(showMessageBox).not.toHaveBeenCalled();
+  });
+  it("on: asks, and the value is read per call", async () => {
+    const ask = { v: false };
+    const { c, showMessageBox } = make(ask);
+    await c.confirm("w", normal, 1);
+    expect(showMessageBox).not.toHaveBeenCalled();
+    ask.v = true;
+    await c.confirm("w", normal, 1);
+    await c.confirmAttach("w", attach, 1);
+    expect(showMessageBox).toHaveBeenCalledTimes(2);
+  });
+  it("high risk always asks, restart always asks", async () => {
+    const { c, showMessageBox } = make({ v: false });
+    await c.confirm("w", high, 1);
+    await c.confirmAttach("w", { ...attach, risk: "high" }, 1);
+    await c.confirmRestart("w", normal);
+    expect(showMessageBox).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe("createAppConfirm", () => {
   const app = { name: "Orca", realPath: "/Applications/Orca.app" };
   const make = (...answers: number[]) => {

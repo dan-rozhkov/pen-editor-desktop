@@ -20,7 +20,7 @@ import { isCursorOverlayWindow } from "./computerUse/cursorOverlay";
 import { DEEP_LINK_SCHEME, createDesktopAuth, parseDeepLinkArg, resolveProtocolRegistration, shouldRegisterProtocol, systemDeps } from "./desktopAuth";
 import { runOriginMigrationOnStartup } from "./originMigrationRunner";
 import { createMigrationGuard } from "./migrationGuard";
-import { BROWSER_SETTINGS_FILE, createBrowserSettingsStore } from "./browserSettings";
+import { getBrowserSettings } from "./browserSettingsInstance";
 import { createBrowserSettingsIpc } from "./browserSettingsIpc";
 import {
   AD_BLOCK_CACHE_FILE,
@@ -166,8 +166,7 @@ app.on("second-instance", (_event, argv) => {
 // "activate" reopen, so the HTTP server/token/handshake ownership survive a
 // window close/reopen cycle instead of dying with the window.
 // `browserSettings` (Settings > Browser) gates the `browse_*` tools through `mcpBrowser`.
-const browserSettings = createBrowserSettingsStore(path.join(app.getPath("userData"), BROWSER_SETTINGS_FILE));
-const mcpService = createMcpService({ isBrowserAllowed: () => browserSettings.get().mcpBrowser });
+const mcpService = createMcpService({ isBrowserAllowed: () => getBrowserSettings().get().mcpBrowser });
 
 // Set by before-quit; checked after the migration await so a quit during startup creates nothing.
 let quitting = false;
@@ -217,7 +216,7 @@ const unregisterHistorySuggest = registerHistorySuggest({ ipcMain, store: histor
 // for the whole app; each window lends its Settings-tab check.
 // Windows lend probes: ad blocking passes every request while any has a fixture on the shared browser.
 const fixtureBypass = createFixtureBypassRegistry();
-const browserSettingsIpc = createBrowserSettingsIpc({ ipcMain, store: browserSettings });
+const browserSettingsIpc = createBrowserSettingsIpc({ ipcMain, store: getBrowserSettings() });
 
 app.whenReady().then(async () => {
   void historyStore.load().catch((err) => console.error("[history] load failed", err));
@@ -251,7 +250,7 @@ app.whenReady().then(async () => {
     webRequest: session.fromPartition(AD_BLOCK_PARTITION).webRequest as unknown as WebRequestPort,
     shouldBypass: () => fixtureBypass.shouldBypass(),
   });
-  adBlock.setEnabled(browserSettings.get().adBlock);
+  adBlock.setEnabled(getBrowserSettings().get().adBlock);
   // PEN_DESKTOP_NO_ADBLOCK=1 (e2e): no engine is ever loaded, so nothing touches the network.
   if (!isAdBlockDisabledByEnv(process.env)) {
     const adBlockCachePath = path.join(app.getPath("userData"), AD_BLOCK_CACHE_FILE);
@@ -279,21 +278,21 @@ app.whenReady().then(async () => {
         },
       });
     const engines = createEngineManager<BlockerPort>({
-      isEnabled: () => browserSettings.get().adBlock,
+      isEnabled: () => getBrowserSettings().get().adBlock,
       onEngine: (engine) => adBlock.setEngine(engine),
       load: (report) => loadEngine(report, false),
       refresh: (report) => loadEngine(report, true),
       isStale: () => isAdBlockCacheStale({ fs: adBlockFs, cachePath: adBlockCachePath }),
     });
     // Nothing is fetched while blocking is off; turning it on (again) starts or retries the load.
-    if (browserSettings.get().adBlock) engines.ensure();
-    browserSettings.onChange((s) => {
+    if (getBrowserSettings().get().adBlock) engines.ensure();
+    getBrowserSettings().onChange((s) => {
       adBlock.setEnabled(s.adBlock);
       if (s.adBlock) engines.ensure();
     });
     app.on("will-quit", () => engines.dispose());
   } else {
-    browserSettings.onChange((s) => adBlock.setEnabled(s.adBlock));
+    getBrowserSettings().onChange((s) => adBlock.setEnabled(s.adBlock));
   }
 
   // Registered BEFORE the migration is awaited. Until the first main window exists it does nothing:

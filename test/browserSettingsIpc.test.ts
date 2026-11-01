@@ -5,7 +5,7 @@ const SETTINGS = "https://app.test/settings?chat=off";
 function setup() {
   const handlers = new Map<string, (e: BrowserSettingsEvent, ...a: unknown[]) => unknown>();
   const ipcMain = { handle: (c: string, l: never) => void handlers.set(c, l), removeHandler: vi.fn((c: string) => void handlers.delete(c)) };
-  const state = { adBlock: true, mcpBrowser: true };
+  const state = { adBlock: true, mcpBrowser: true, askAppAccess: false };
   const store = { get: () => ({ ...state }), set: vi.fn((p: Partial<typeof state>) => Object.assign(state, p) && { ...state }) };
   const ipc = createBrowserSettingsIpc({ ipcMain, store });
   const main = { url: "" };
@@ -24,8 +24,12 @@ describe("browser-settings IPC", () => {
   });
   it("answers the settings page top frame", () => {
     const s = setup();
-    expect(s.handlers.get("browser-settings:get")!(s.ev(7, SETTINGS))).toEqual({ adBlock: true, mcpBrowser: true });
-    expect(s.handlers.get("browser-settings:set")!(s.ev(7, SETTINGS), { adBlock: false })).toEqual({ adBlock: false, mcpBrowser: true });
+    expect(s.handlers.get("browser-settings:get")!(s.ev(7, SETTINGS))).toEqual({ adBlock: true, mcpBrowser: true, askAppAccess: false });
+    expect(s.handlers.get("browser-settings:set")!(s.ev(7, SETTINGS), { adBlock: false })).toEqual({ adBlock: false, mcpBrowser: true, askAppAccess: false });
+  });
+  it("accepts askAppAccess in a patch", () => {
+    const s = setup();
+    expect(s.handlers.get("browser-settings:set")!(s.ev(7, SETTINGS), { askAppAccess: true })).toEqual({ adBlock: true, mcpBrowser: true, askAppAccess: true });
   });
   it("rejects a bad patch with an error and stores nothing", () => {
     const s = setup();

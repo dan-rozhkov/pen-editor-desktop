@@ -611,8 +611,72 @@ describe("act", () => {
         { action: "press", key: "Enter" },
       ],
     });
-    expect(r).toEqual({ error: expect.stringContaining("Action 2 of 3") });
+    expect(r).toEqual({ error: expect.stringContaining("Action 1 of 3 ran. Action 2 failed: ") });
+    expect((r as { error: string }).error).toContain("Do not repeat action 1. Take a new snapshot and continue from action 2.");
     expect(of("key")).toHaveLength(1);
+  });
+
+  it("a batch that fails at step 3 says actions 1-2 ran", async () => {
+    const { ctl } = setup();
+    const r = (await ctl.act({
+      actions: [{ action: "press", key: "Tab" }, { action: "press", key: "Tab" }, { action: "click", target: "Missing" }],
+    })) as { error: string };
+    expect(r.error.startsWith("Actions 1\u20132 of 3 ran. Action 3 failed: ")).toBe(true);
+    expect(r.error.endsWith("Do not repeat actions 1\u20132. Take a new snapshot and continue from action 3.")).toBe(true);
+  });
+
+  it("a batch that fails at step 1 says no action ran", async () => {
+    const { ctl } = setup();
+    const r = (await ctl.act({ actions: [{ action: "click", target: "Missing" }, { action: "press", key: "Tab" }] })) as { error: string };
+    expect(r.error).toMatch(/^Action 1 of 2 failed: .* No action ran\.$/);
+  });
+
+  it("changed is true when only the window text changed", async () => {
+    let reads = 0;
+    const { ctl, of } = setup({ read: () => ({ title: "Main", text: ++reads === 1 ? "0" : "144", truncated: false }) });
+    const r = (await ctl.act({ action: "click", target: "draft" })) as Record<string, unknown>;
+    expect(r.changed).toBe(true);
+    expect(of("read")).toHaveLength(2);
+    expect(of("read")[0].args.maxChars).toBe(4000);
+  });
+
+  it("changed stays false when the text and the elements are equal", async () => {
+    const { ctl } = setup();
+    const r = (await ctl.act({ action: "click", target: "draft" })) as Record<string, unknown>;
+    expect(r.changed).toBe(false);
+  });
+
+  it("a failing text read falls back to the element signature only", async () => {
+    const { ctl } = setup({
+      read: () => {
+        throw new Error("AX blew up");
+      },
+    });
+    const r = (await ctl.act({ action: "click", target: "draft" })) as Record<string, unknown>;
+    expect(r).toMatchObject({ matched: "Save as draft", changed: false });
+  });
+
+  it("a NO_WINDOW on the after-read does not change the window used afterwards", async () => {
+    const OTHER = { ...WIN, windowId: 22, focused: true, main: true };
+    let windowsShown = [WIN];
+    let reads = 0;
+    const { ctl, of } = setup({
+      windows: () => ({ windows: windowsShown }),
+      read: () => {
+        reads++;
+        if (reads === 2) {
+          windowsShown = [OTHER];
+          throw new HelperError("gone", "NO_WINDOW");
+        }
+        return { title: "Main", text: "x", truncated: false };
+      },
+    });
+    const r = (await ctl.act({ action: "click", target: "draft" })) as Record<string, unknown>;
+    expect(r.changed).toBe(false);
+    expect(of("read").map((c) => c.args.windowId)).toEqual([11, 11]);
+    expect(ctl.currentWindowId()).toBe(11);
+    await ctl.snapshot();
+    expect(of("snapshot").map((c) => c.args.windowId)).toEqual([11, 11, 11]);
   });
 
   it("refuses a batch over 10 actions", async () => {
@@ -633,7 +697,7 @@ describe("act", () => {
     const ctl = createNativeAppController({ helper: s.helper, pid: 42, name: "A", sleep: s.deps.sleep, now: s.deps.now });
     const r = (await ctl.act({ action: "wait", text: "all done" })) as Record<string, unknown>;
     expect(r.error).toBeUndefined();
-    expect(reads).toBe(3);
+    expect(reads).toBe(4); // one change-detection read before the batch, two polls, one after
   });
 
   it("wait with text times out with an error", async () => {

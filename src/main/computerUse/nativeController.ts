@@ -68,6 +68,8 @@ const MAX_ELEMENTS = 120;
 const TARGET_SEARCH_MAX_ELEMENTS = 1000;
 /** `read` limit for a text check. */
 const ASSERT_READ_MAX_CHARS = 100000;
+/** Window text read before and after an act() batch, only to tell whether anything visible changed. */
+const CHANGE_READ_MAX_CHARS = 4000;
 const ACTUAL_MAX_CHARS = 120;
 const MAX_BATCH = 10;
 const READ_MAX_CHARS = 12000;
@@ -641,7 +643,29 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
     }
   }
 
+  /** Says how many steps already ran, so the model does not send them again (it did: 12x12x12 on a calculator). */
+  const batchFailureMessage = (i: number, n: number, msg: string): string => {
+    if (n === 1) return msg;
+    if (i === 0) return `Action 1 of ${n} failed: ${msg} No action ran.`;
+    const ran = i === 1 ? "Action 1" : `Actions 1\u2013${i}`;
+    return `${ran} of ${n} ran. Action ${i + 1} failed: ${msg} Do not repeat ${i === 1 ? "action 1" : `actions 1\u2013${i}`}. Take a new snapshot and continue from action ${i + 1}.`;
+  };
+
   const signature = (els: NativeElement[]): string => JSON.stringify(els.map((e) => [e.label ?? "", e.value ?? "", e.checked ?? null]));
+
+  /**
+   * The window text as one string, or undefined on any error (the caller then compares elements only). A diagnostic
+   * read: it uses the CURRENT window id directly, with no NO_WINDOW fallback, so it can never reset the cached window
+   * or reselect one for the steps that follow.
+   */
+  const readTextForChange = async (id: number): Promise<string | undefined> => {
+    try {
+      const r = await call("read", { pid, windowId: id, maxChars: CHANGE_READ_MAX_CHARS });
+      return str(r.text);
+    } catch {
+      return undefined;
+    }
+  };
 
   async function act(args: unknown): Promise<unknown> {
     const a = rec(args);
@@ -662,6 +686,7 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
       }
     }
     const before = await takeSnapshot();
+    const textBefore = await readTextForChange(before.windowId);
     // The first target step may reuse `before`; later ones see a UI changed by earlier steps.
     let reusable: Snap | undefined = before;
     const fresh = async (): Promise<Snap> => {
@@ -675,17 +700,19 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         matched = (await runStep(steps[i], fresh)) ?? matched;
       } catch (e) {
         const msg = mapError(e);
-        throw new Fail(steps.length > 1 ? `Action ${i + 1} of ${steps.length} failed: ${msg}` : msg);
+        throw new Fail(batchFailureMessage(i, steps.length, msg));
       }
       if (i < steps.length - 1) reusable = undefined;
     }
     await sleep(SETTLE_MS);
     const after = await takeSnapshot();
+    const textAfter = await readTextForChange(after.windowId);
+    const textChanged = textBefore !== undefined && textAfter !== undefined && textBefore !== textAfter;
     return {
       url: urlOf(after.windowId),
       title: after.title,
       matched,
-      changed: signature(before.elements) !== signature(after.elements),
+      changed: textChanged || signature(before.elements) !== signature(after.elements),
       snapshot: snapshotResult(after),
     };
   }

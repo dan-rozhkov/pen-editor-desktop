@@ -10,13 +10,21 @@ export interface BrowserSettings {
    * OFF by default: any local MCP client could otherwise drive the user's logged-in browser.
    */
   mcpBrowser: boolean;
+  /**
+   * Ask before the agent launches or attaches to a NORMAL-risk desktop app. OFF by default (no dialog). High-risk apps
+   * always ask, blocked apps stay blocked, and the restart confirm is always a dialog.
+   */
+  askAppAccess: boolean;
 }
 
 export const BROWSER_SETTINGS_FILE = "browser-settings.json";
 
 export function defaultBrowserSettings(): BrowserSettings {
-  return { adBlock: true, mcpBrowser: false };
+  return { adBlock: true, mcpBrowser: false, askAppAccess: false };
 }
+
+/** The ONE key list (read, patch parsing, change compare). A new setting only needs to join the defaults above. */
+const SETTING_KEYS = Object.keys(defaultBrowserSettings()) as (keyof BrowserSettings)[];
 
 /** Missing/corrupt file or a wrong type falls back to the default, per field. Unknown fields are ignored. */
 export function readBrowserSettings(filePath: string): BrowserSettings {
@@ -25,8 +33,10 @@ export function readBrowserSettings(filePath: string): BrowserSettings {
     const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
     if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
       const rec = parsed as Record<string, unknown>;
-      if (typeof rec.adBlock === "boolean") settings.adBlock = rec.adBlock;
-      if (typeof rec.mcpBrowser === "boolean") settings.mcpBrowser = rec.mcpBrowser;
+      for (const key of SETTING_KEYS) {
+        const v = rec[key];
+        if (typeof v === "boolean") settings[key] = v;
+      }
     }
   } catch {
     // defaults
@@ -48,7 +58,7 @@ export function writeBrowserSettings(filePath: string, settings: BrowserSettings
 export type BrowserSettingsPatch = Partial<BrowserSettings>;
 
 /**
- * Validates a `browser-settings:set` payload: a plain object whose only keys are `adBlock` / `mcpBrowser`,
+ * Validates a `browser-settings:set` payload: a plain object whose only keys are the setting keys,
  * each a boolean when present. Anything else (null, array, other keys, non-boolean values) returns null.
  * An empty object is a valid no-op patch.
  */
@@ -59,10 +69,10 @@ export function parseBrowserSettingsPatch(raw: unknown): BrowserSettingsPatch | 
   const rec = raw as Record<string, unknown>;
   const out: BrowserSettingsPatch = {};
   for (const key of Object.keys(rec)) {
-    if (key !== "adBlock" && key !== "mcpBrowser") return null;
+    if (!(SETTING_KEYS as string[]).includes(key)) return null;
     const v = rec[key];
     if (typeof v !== "boolean") return null;
-    out[key] = v;
+    out[key as keyof BrowserSettings] = v;
   }
   return out;
 }
@@ -86,7 +96,7 @@ export function createBrowserSettingsStore(filePath: string): BrowserSettingsSto
     get: () => ({ ...current }),
     set(patch) {
       const next: BrowserSettings = { ...current, ...patch };
-      if (next.adBlock === current.adBlock && next.mcpBrowser === current.mcpBrowser) return { ...current };
+      if (SETTING_KEYS.every((k) => next[k] === current[k])) return { ...current };
       if (!writeBrowserSettings(filePath, next)) return null;
       current = next;
       for (const cb of [...listeners]) {
