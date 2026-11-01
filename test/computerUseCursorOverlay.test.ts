@@ -28,6 +28,8 @@ vi.mock("electron", () => ({ BrowserWindow: FakeWin }));
 import { CURSOR_JS } from "@sideform/browser-agent/controller";
 import { createCursorOverlay, hideAllCursorOverlays, isCursorOverlayWindow } from "../src/main/computerUse/cursorOverlay";
 
+import { CURSOR_PALETTE, createCursorSlotAllocator, cursorIdentityFor } from "../src/main/computerUse/cursorIdentity";
+
 const frame = { x: 10, y: 20, width: 300, height: 200 };
 
 beforeEach(() => {
@@ -155,5 +157,86 @@ describe("cursor overlay window", () => {
     await o.moveTo({ x: 1, y: 1 }, { action: "click", windowFrame: frame });
     expect(made).toHaveLength(0);
     o.destroy();
+  });
+});
+
+describe("cursor identity slots", () => {
+  it("the installed CURSOR_JS draws the label pill and reads the colour arg (browser-agent >= 0.4.6)", () => {
+    // The overlay only passes `label`/`color`; a pinned package without support would ignore them silently.
+    expect(CURSOR_JS).toContain("data-pen-cursor-label");
+    expect(CURSOR_JS).toContain("args.color");
+  });
+
+  it("hands out the lowest free slot and reuses a released one", () => {
+    const a = createCursorSlotAllocator();
+    expect([a.acquire(), a.acquire(), a.acquire()]).toEqual([0, 1, 2]);
+    a.release(1);
+    expect(a.acquire()).toBe(1);
+    expect(a.acquire()).toBe(3);
+    a.release(0);
+    a.release(0);
+    expect(a.acquire()).toBe(0);
+  });
+
+  it("labels slots from 1, wraps the palette, and starts with the default accent", () => {
+    expect(cursorIdentityFor(0)).toEqual({ label: "Agent 1", color: "#0d99ff" });
+    expect(cursorIdentityFor(1).label).toBe("Agent 2");
+    expect(cursorIdentityFor(CURSOR_PALETTE.length).color).toBe(CURSOR_PALETTE[0]);
+    expect(cursorIdentityFor(CURSOR_PALETTE.length).label).toBe(`Agent ${CURSOR_PALETTE.length + 1}`);
+    expect(new Set(CURSOR_PALETTE).size).toBe(CURSOR_PALETTE.length);
+    for (const c of CURSOR_PALETTE) expect(c).toMatch(/^#[0-9a-f]{6}$/);
+  });
+
+  it("takes no slot at creation, none while disabled, one at the first visible move", async () => {
+    const slots = createCursorSlotAllocator();
+    const off = createCursorOverlay({ enabled: () => false, slots });
+    const o = createCursorOverlay({ enabled: () => true, slots });
+    expect(slots.inUse()).toBe(0);
+    await off.moveTo({ x: 1, y: 1 }, { action: "hover", windowFrame: frame });
+    expect(slots.inUse()).toBe(0);
+    await o.moveTo({ x: 1, y: 1 }, { action: "hover", windowFrame: frame });
+    expect(slots.inUse()).toBe(1);
+    off.destroy();
+    o.destroy();
+    expect(slots.inUse()).toBe(0);
+  });
+
+  it("a lone overlay sends its colour but no label; with two live overlays both send labels", async () => {
+    const slots = createCursorSlotAllocator();
+    const a = createCursorOverlay({ enabled: () => true, slots });
+    await a.moveTo({ x: 50, y: 60 }, { action: "hover", windowFrame: frame });
+    const call = (i: number, n: number) => (made[i] as InstanceType<typeof FakeWin>).webContents.executeJavaScript.mock.calls[n][0] as string;
+    expect(call(0, 0)).toContain('"color":"#0d99ff"');
+    expect(call(0, 0)).not.toContain('"label"');
+    const b = createCursorOverlay({ enabled: () => true, slots });
+    await b.moveTo({ x: 50, y: 60 }, { action: "hover", windowFrame: frame });
+    await a.moveTo({ x: 51, y: 60 }, { action: "hover", windowFrame: frame });
+    expect(call(1, 0)).toContain(`"label":"Agent 2","color":"${CURSOR_PALETTE[1]}"`);
+    expect(call(0, 1)).toContain('"label":"Agent 1","color":"#0d99ff"');
+    a.destroy();
+    b.destroy();
+  });
+
+  it("destroy without any move releases nothing", () => {
+    const release = vi.fn();
+    const inner = createCursorSlotAllocator();
+    const o = createCursorOverlay({ enabled: () => true, slots: { ...inner, release: (n: number) => (release(n), inner.release(n)) } });
+    o.destroy();
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  it("destroy frees the slot once; a second destroy does not free a slot now owned by another overlay", async () => {
+    const release = vi.fn();
+    const inner = createCursorSlotAllocator();
+    const slots = { ...inner, release: (n: number) => (release(n), inner.release(n)) };
+    const a = createCursorOverlay({ enabled: () => true, slots });
+    await a.moveTo({ x: 1, y: 1 }, { action: "hover", windowFrame: frame });
+    a.destroy();
+    const b = createCursorOverlay({ enabled: () => true, slots });
+    await b.moveTo({ x: 1, y: 1 }, { action: "hover", windowFrame: frame }); // takes slot 0 again
+    a.destroy();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(inner.acquire()).toBe(1); // slot 0 is still b's
+    b.destroy();
   });
 });

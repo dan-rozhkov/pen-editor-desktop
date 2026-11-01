@@ -1,8 +1,13 @@
 // The agent cursor drawn over a natively controlled app (spec section 4): a transparent,
 // click-through window above the target window. Created on the first move, only while the
 // "Show Agent Cursor" setting is on. Screenshots never include it (window-only capture).
+// An overlay takes a slot from cursorIdentity.ts on its first move that shows the cursor (not at creation: a handle
+// that never shows one, or that is about to replace another, must not burn a number) and frees it in destroy().
+// The colour is always the slot's; the "Agent N" label pill shows only while 2+ cursors are live, so one agent looks
+// as it always did.
 import { BrowserWindow } from "electron";
 import { ARGS_MARKER, CURSOR_JS } from "@sideform/browser-agent/controller";
+import { cursorIdentityFor, cursorSlots, type CursorSlotAllocator } from "./cursorIdentity";
 import type { CursorSink, WindowFrame } from "./nativeController";
 
 // Inline page: no remote content, no preload, no cursor markup of its own. The cursor is drawn by browser-agent's
@@ -52,7 +57,9 @@ const reboundJs = (dx: number, dy: number, width: number, height: number): strin
   })();
 })`;
 
-export function createCursorOverlay(deps: { enabled: () => boolean }): CursorOverlay {
+export function createCursorOverlay(deps: { enabled: () => boolean; slots?: CursorSlotAllocator }): CursorOverlay {
+  const slots = deps.slots ?? cursorSlots;
+  let slot: number | null = null;
   let win: BrowserWindow | null = null;
   let ready: Promise<void> | null = null;
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -126,7 +133,14 @@ export function createCursorOverlay(deps: { enabled: () => boolean }): CursorOve
         if (hideTimer) clearTimeout(hideTimer);
         hideTimer = null;
         // No `from`: CURSOR_JS keeps its own position and starts at the same spot as in a browser tab.
-        const args = { action: opts.action, point: toLocal(point, f) };
+        if (slot === null) slot = slots.acquire();
+        const identity = cursorIdentityFor(slot);
+        const args = {
+          action: opts.action,
+          point: toLocal(point, f),
+          ...(slots.inUse() > 1 ? { label: identity.label } : {}),
+          color: identity.color,
+        };
         const pre = rebound && prev ? `${reboundJs(prev.x - next.x, prev.y - next.y, next.width, next.height)}.then(function () { return ` : "";
         const code = CURSOR_JS.replace(ARGS_MARKER, () => JSON.stringify(args));
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -146,6 +160,8 @@ export function createCursorOverlay(deps: { enabled: () => boolean }): CursorOve
       }
     },
     destroy() {
+      if (slot !== null) slots.release(slot);
+      slot = null;
       destroyed = true;
       liveOverlays.delete(self);
       if (hideTimer) clearTimeout(hideTimer);
