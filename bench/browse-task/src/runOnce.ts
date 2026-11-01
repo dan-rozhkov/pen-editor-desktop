@@ -11,7 +11,7 @@ import type { Scenario, Verdict } from "./scenarios.ts";
 import type { Stack, BackendStepLog } from "./stack.ts";
 import { startRecorder, type Recorder } from "./recorder.ts";
 import { readEndState, type EndState } from "./endState.ts";
-import { runJudge, type JudgeResult } from "./judge.ts";
+import { applyJudge, runJudge, type JudgeResult } from "./judge.ts";
 
 const TURN_CAP_MS = Number(process.env.BENCH_TURN_CAP_MS ?? 10 * 60_000);
 const TURN_END_DEBOUNCE_MS = 2_500;
@@ -92,6 +92,8 @@ export interface RunResult {
   /** End-state read (livegoal with BENCH_LIVE_END_URL); files live in <outDir>/<policy>-<scenario>-<n>/. */
   endState?: EndState;
   judge?: JudgeResult;
+  /** Set when the judge call failed: no verdict, the run is left out of success rates. Re-judge with `npm run judge`. */
+  judgeError?: string;
   harnessError?: string;
 }
 
@@ -496,10 +498,7 @@ export async function runOnce(opts: RunOptions): Promise<RunResult> {
         reply_matches_end_state: false, notes: "end state not captured", error: result.endState.error,
       };
     }
-    result.verdict.checks.judgeComplete = result.judge.verdict === "complete";
-    const vals = Object.values(result.verdict.checks);
-    result.verdict.success = vals.every(Boolean);
-    result.verdict.score = vals.filter(Boolean).length / vals.length;
+    applyJudge(result, result.judge);
   }
   await running.close();
   // Each run gets a fresh Electron profile (hundreds of MB). 13.10 ~200 runs

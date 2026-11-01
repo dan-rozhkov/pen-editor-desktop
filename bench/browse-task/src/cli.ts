@@ -163,3 +163,8 @@ for (const policy of policies) {
 
 console.log("\n" + summarize(outDir));
 console.log(`summary → ${path.join(outDir, "summary.md")}`);
+{
+  const noVerdict = fs.readdirSync(outDir).filter((f) => f.startsWith("run-") && f.endsWith(".json"))
+    .filter((f) => !!(JSON.parse(fs.readFileSync(path.join(outDir, f), "utf8")) as { judgeError?: string }).judgeError);
+  if (noVerdict.length) console.warn(`\nWARNING: ${noVerdict.length} run(s) have NO verdict (judge call failed; left out of success rates). Re-judge: npm run judge -- --dir ${outDir}`);
+}

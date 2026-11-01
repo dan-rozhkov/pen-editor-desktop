@@ -7,9 +7,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { runJudge, type JudgeInput, type JudgeResult } from "./judge.ts";
+import { applyJudge, judgeCallFailed, runJudge, type JudgeInput, type JudgeResult } from "./judge.ts";
 import { writeSummary } from "./report.ts";
 import type { RunResult } from "./runOnce.ts";
+import type { BuRunResult } from "./buCloud.ts";
 
 const { values } = parseArgs({ options: { dir: { type: "string" } } });
 if (!values.dir) {
@@ -42,14 +43,19 @@ for (const dir of dirs) {
   // Refresh the sibling run JSON, if this dir came from a bench run.
   const runFile = path.join(path.dirname(dir), `run-${path.basename(dir)}.json`);
   if (fs.existsSync(runFile)) {
-    const r = JSON.parse(fs.readFileSync(runFile, "utf8")) as RunResult;
-    r.judge = judge;
-    r.verdict.checks.judgeComplete = judge.verdict === "complete";
-    const vals = Object.values(r.verdict.checks);
-    r.verdict.success = vals.every(Boolean);
-    r.verdict.score = vals.filter(Boolean).length / vals.length;
+    const r = JSON.parse(fs.readFileSync(runFile, "utf8")) as RunResult | BuRunResult;
+    if ("verdict" in r && r.verdict) {
+      applyJudge(r, judge);
+      benchDir = path.dirname(dir);
+    } else {
+      // Browser Use Cloud arm (buCloud.ts): flat `success`, no checks and no summary.md of this kind.
+      const bu = r as BuRunResult;
+      bu.judge = judge;
+      bu.success = judge.verdict === "complete";
+      if (judgeCallFailed(judge)) bu.judgeError = judge.error || "judge call failed";
+      else delete bu.judgeError;
+    }
     fs.writeFileSync(runFile, JSON.stringify(r, null, 2));
-    benchDir = path.dirname(dir);
   }
 }
 if (benchDir) writeSummary(benchDir);

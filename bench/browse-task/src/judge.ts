@@ -36,6 +36,44 @@ export interface JudgeResult {
   notes: string;
   model?: string;
   error?: string;
+  /** The judge call itself failed (network, 402, bad JSON): there is NO verdict, not a "fail". */
+  callFailed?: boolean;
+}
+
+/**
+ * True when the judge produced no verdict because its call failed. Such a run is not a failure
+ * of the agent: reports leave it out of success rates and count it as a judge error, so a
+ * provider outage (e.g. OpenRouter 402 on 01.11.2026) cannot pass as a regression.
+ * `notes === "judge call failed"` covers run JSONs written before `callFailed` existed.
+ */
+export function judgeCallFailed(j: JudgeResult | undefined): boolean {
+  return !!j && (j.callFailed === true || (j.verdict === "unknown" && j.notes === "judge call failed"));
+}
+
+/** The verdict fields of a bench run that a judge result feeds. */
+export interface JudgedRun {
+  verdict: { success: boolean; score: number; checks: Record<string, boolean> };
+  judge?: JudgeResult;
+  judgeError?: string;
+}
+
+/**
+ * Applies a judge result to a run: a verdict sets the judgeComplete check, a failed call drops the
+ * check and sets `judgeError` instead (success stays false, reports exclude the run).
+ */
+export function applyJudge(r: JudgedRun, judge: JudgeResult): void {
+  r.judge = judge;
+  if (judgeCallFailed(judge)) {
+    r.judgeError = judge.error || "judge call failed";
+    delete r.verdict.checks.judgeComplete;
+    r.verdict.success = false;
+  } else {
+    delete r.judgeError;
+    r.verdict.checks.judgeComplete = judge.verdict === "complete";
+    r.verdict.success = Object.values(r.verdict.checks).every(Boolean);
+  }
+  const vals = Object.values(r.verdict.checks);
+  r.verdict.score = vals.length ? vals.filter(Boolean).length / vals.length : 0;
 }
 
 export interface JudgeInput {
@@ -138,7 +176,7 @@ export async function callJudge(input: JudgeInput): Promise<JudgeResult> {
 export async function runJudge(input: JudgeInput, scratchDir: string): Promise<JudgeResult> {
   const fail = (error: string): JudgeResult => ({
     verdict: "unknown", requirements: [], extras: [], duplicates: [], end_state_total: null, reply_total: null,
-    reply_matches_end_state: false, notes: "judge call failed", model: JUDGE_MODEL(), error,
+    reply_matches_end_state: false, notes: "judge call failed", model: JUDGE_MODEL(), error, callFailed: true,
   });
   try {
     if (process.env.OPENROUTER_API_KEY) return await callJudge(input);

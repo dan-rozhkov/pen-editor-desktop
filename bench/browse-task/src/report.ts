@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { RunResult } from "./runOnce.ts";
+import { judgeCallFailed } from "./judge.ts";
 import { SCENARIOS } from "./scenarios.ts";
 
 const TERMINAL = new Set(["DONE", "BLOCKED"]);
@@ -50,6 +51,8 @@ export function runStats(r: RunResult) {
   }
   return {
     success: r.verdict.success,
+    /** No verdict: the judge call failed. Left out of success rates, counted separately. */
+    judgeError: !!r.judgeError || judgeCallFailed(r.judge),
     /** Solved with no page-changing browse tool besides browse_task. */
     jevOnly: r.verdict.success && manualActs === 0,
     manualActs,
@@ -89,7 +92,7 @@ export function runStatsLine(r: RunResult): string {
   const s = runStats(r);
   const failed = Object.entries(r.verdict.checks).filter(([, v]) => !v).map(([k]) => k);
   return [
-    s.success ? "OK" : "FAIL",
+    s.judgeError ? "JUDGE-ERROR" : s.success ? "OK" : "FAIL",
     `score ${s.score.toFixed(2)}`,
     `${(s.wallMs / 1000).toFixed(1)}s`,
     `steps ${s.decisions}`,
@@ -100,6 +103,7 @@ export function runStatsLine(r: RunResult): string {
     r.judge ? `judge ${r.judge.verdict} ${r.judge.requirements.filter((x) => x.ok).length}/${r.judge.requirements.length} extras ${r.judge.extras.length} dups ${r.judge.duplicates.length}` : "",
     failed.length ? `failed: ${failed.join(",")}` : "",
     r.harnessError ? `HARNESS: ${r.harnessError}` : "",
+    s.judgeError ? `JUDGE: ${(r.judgeError ?? r.judge?.error ?? "").slice(0, 120)}` : "",
   ].filter(Boolean).join("  ");
 }
 
@@ -115,12 +119,16 @@ function aggregate(stats: Stats[]) {
     const key = n.replace(/\d+(\.\d+)?/g, "#").slice(0, 60);
     notes[key] = (notes[key] ?? 0) + 1;
   }
+  // A run with no verdict (judge call failed) is neither a success nor a failure: it is left out
+  // of the outcome rates, so a judge-provider outage cannot look like an agent regression.
+  const judged = stats.filter((s) => !s.judgeError);
   return {
     runs: stats.length,
-    successRate: mean(stats.map((s) => (s.success ? 1 : 0))),
-    jevOnlyRate: mean(stats.map((s) => (s.jevOnly ? 1 : 0))),
+    judgeErrors: stats.length - judged.length,
+    successRate: mean(judged.map((s) => (s.success ? 1 : 0))),
+    jevOnlyRate: mean(judged.map((s) => (s.jevOnly ? 1 : 0))),
     manualActsMean: mean(stats.map((s) => s.manualActs)),
-    meanScore: mean(stats.map((s) => s.score)),
+    meanScore: mean(judged.map((s) => s.score)),
     wallP50: p50(stats.map((s) => s.wallMs)),
     wallP90: p90(stats.map((s) => s.wallMs)),
     browseTaskP50: p50(stats.map((s) => s.browseTaskMs)),
@@ -187,7 +195,7 @@ export function summarize(results: RunResult[]) {
   md.push("| policy | scenario | runs | success | by browse_task alone | score | wall p50 / p90 | in browse_task p50 | in chat model p50 | chat reqs | browse_task calls | manual browse acts | task statuses |");
   md.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const r of rows) {
-    md.push(`| ${r.policy} | ${r.scenario} | ${r.runs} | ${pct(r.successRate)} | ${pct(r.jevOnlyRate)} | ${num(r.meanScore, 2)} | ${sec(r.wallP50)} / ${sec(r.wallP90)} | ${sec(r.browseTaskP50)} | ${sec(r.modelP50)} | ${num(r.chatRequestsMean)} | ${num(r.browseTaskCallsMean)} | ${num(r.manualActsMean)} | ${kv(r.statuses)} |`);
+    md.push(`| ${r.policy} | ${r.scenario} | ${r.runs} | ${pct(r.successRate)}${r.judgeErrors ? ` (${r.judgeErrors} no verdict)` : ""} | ${pct(r.jevOnlyRate)} | ${num(r.meanScore, 2)} | ${sec(r.wallP50)} / ${sec(r.wallP90)} | ${sec(r.browseTaskP50)} | ${sec(r.modelP50)} | ${num(r.chatRequestsMean)} | ${num(r.browseTaskCallsMean)} | ${num(r.manualActsMean)} | ${kv(r.statuses)} |`);
   }
 
   md.push("", "## Step loop (Jev)", "");
@@ -212,7 +220,7 @@ export function summarize(results: RunResult[]) {
   for (const r of results) {
     const s = runStats(r);
     const failed = Object.entries(r.verdict.checks).filter(([, v]) => !v).map(([k]) => k).join(", ");
-    md.push(`| ${r.policy} | ${r.scenario} | ${r.runIndex + 1} | ${s.success ? "✅" : "❌"} | ${num(s.score, 2)} | ${sec(s.wallMs)} | ${s.decisions} | ${s.cascadeTried}/${s.cascadeUsed} | ${s.textLlm} | ${failed || "—"} | ${judgeCells(r)} | ${r.harnessError ?? ""} |`);
+    md.push(`| ${r.policy} | ${r.scenario} | ${r.runIndex + 1} | ${s.judgeError ? "⚠️ no verdict" : s.success ? "✅" : "❌"} | ${num(s.score, 2)} | ${sec(s.wallMs)} | ${s.decisions} | ${s.cascadeTried}/${s.cascadeUsed} | ${s.textLlm} | ${failed || "—"} | ${judgeCells(r)} | ${r.harnessError ?? ""} |`);
   }
   return { markdown: md.join("\n") + "\n", rows };
 }

@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { RunResult } from "./runOnce.ts";
+import { judgeCallFailed } from "./judge.ts";
 import { loadOm2wSample } from "./om2wSuite.ts";
 import { scenarioId } from "./om2w.ts";
 
@@ -47,8 +48,13 @@ const cols: Col[] = dirs.map((dir) => {
 });
 
 // A run counts as success only on judge "complete"; a harness error or missing judge is a failure.
+// A run whose judge CALL failed has no verdict: it is left out of the rate (shown as "J").
 const ok = (r: RunResult) => r.judge?.verdict === "complete";
-const rate = (rs: RunResult[] | undefined) => (rs?.length ? rs.filter(ok).length / rs.length : null);
+const noVerdict = (r: RunResult) => !!r.judgeError || judgeCallFailed(r.judge);
+const rate = (rs: RunResult[] | undefined) => {
+  const judged = rs?.filter((r) => !noVerdict(r)) ?? [];
+  return judged.length ? judged.filter(ok).length / judged.length : null;
+};
 
 console.log("Online-Mind2Web subset report");
 console.log("NOTE: our judge is NOT the official WebJudge (different judge model and inputs), so numbers are indicative.");
@@ -68,7 +74,8 @@ for (const t of sample.tasks) {
   const cells = cols.map((c) => {
     const rs = c.runs.get(id);
     if (!rs?.length) return "-";
-    return `${rs.filter(ok).length}/${rs.length} (${rs.map((r) => (ok(r) ? "Y" : r.judge?.verdict ?? "err")[0]).join("")})`;
+    const judged = rs.filter((r) => !noVerdict(r));
+    return `${judged.filter(ok).length}/${judged.length} (${rs.map((r) => (noVerdict(r) ? "J" : ok(r) ? "Y" : (r.judge?.verdict ?? "err")[0])).join("")})`;
   });
   console.log([id, t.level, ...cells, t.browser_use ?? "-", t.operator ?? "-", t.website].join(" | "));
   const agg = byLevel.get(t.level) ?? byLevel.set(t.level, mk()).get(t.level)!;
@@ -80,9 +87,13 @@ for (const t of sample.tasks) {
   cols.forEach((c, i) => {
     const rs = c.runs.get(id);
     if (!rs?.length) return;
-    // per-task mean success over runs, so every covered task weighs the same
-    agg.ours[i].push(rate(rs)!);
-    overall.ours[i].push(rate(rs)!);
+    const r = rate(rs);
+    // per-task mean success over runs, so every covered task weighs the same; a task with no
+    // verdict at all (every judge call failed) is not covered
+    if (r !== null) {
+      agg.ours[i].push(r);
+      overall.ours[i].push(r);
+    }
     walls[i].push(...rs.map((r) => r.wallMs));
   });
 }
@@ -96,3 +107,5 @@ for (const lv of ["easy", "medium", "hard"]) if (byLevel.has(lv)) row(lv, byLeve
 for (const [lv, a] of byLevel) if (!["easy", "medium", "hard"].includes(lv)) row(lv, a);
 row("ALL", overall);
 console.log("\nWall time per run, p50: " + cols.map((c, i) => `${c.label} ${sec(median(walls[i]))}`).join(", "));
+const noVerdictRuns = cols.map((c) => [...c.runs.values()].flat().filter(noVerdict).length);
+if (noVerdictRuns.some(Boolean)) console.log("\nWARNING: runs with no verdict (judge call failed, left out above): " + cols.map((c, i) => `${c.label} ${noVerdictRuns[i]}`).join(", ") + ". Re-judge with npm run judge -- --dir <run dir>.");
