@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  MAX_RUNNING_APPS,
   ERR_APP_COMMAND_UNSUPPORTED,
   APP_CONFIRM_BUTTONS,
   isBlockedNativeApp,
@@ -313,12 +314,12 @@ describe("createAppRegistry", () => {
     if (b.ok) b.ticket.abort();
     expect(reg.state("1:")).toBe("none");
   });
-  it("caps running plus pending at 2", async () => {
+  it("caps running plus pending at MAX_RUNNING_APPS", async () => {
     const { reg, open } = registry();
-    await open("1:");
-    const pend = reg.begin("2:");
+    for (let i = 1; i < MAX_RUNNING_APPS; i++) await open(`${i}:`);
+    const pend = reg.begin(`${MAX_RUNNING_APPS}:`);
     expect(pend.ok).toBe(true);
-    expect(await open("3:")).toEqual({ ok: false, error: ERR_APP_CAP });
+    expect(await open(`${MAX_RUNNING_APPS + 1}:`)).toEqual({ ok: false, error: ERR_APP_CAP });
   });
   it("relaunch starts the new app first and closes the old one only after success", async () => {
     let finish: (h: Fake) => void = () => {};
@@ -445,28 +446,30 @@ describe("createAppRegistry: races and quit", () => {
   });
   it("a relaunch does not count the key's own app against the cap; other keys do", async () => {
     const { reg } = make();
-    for (const k of ["1:", "2:"]) {
+    const keys = Array.from({ length: MAX_RUNNING_APPS }, (_, i) => `${i + 1}:`);
+    for (const k of keys) {
       const b = reg.begin(k);
       if (b.ok) await b.ticket.launch("/A");
     }
     const again = reg.begin("1:");
     expect(again.ok).toBe(true);
     if (again.ok) again.ticket.abort();
-    expect(reg.begin("3:")).toEqual({ ok: false, error: ERR_APP_CAP });
+    expect(reg.begin("extra:")).toEqual({ ok: false, error: ERR_APP_CAP });
   });
   it("open, release, open loops cannot exceed the cap while spawns are still closing", async () => {
     const resolvers: ((h: Fake) => void)[] = [];
     const reg = createAppRegistry<Fake>({ launch: () => new Promise<Fake>((r) => resolvers.push(r)) });
     const tickets = [];
-    for (const k of ["1:", "2:"]) {
+    for (let i = 1; i <= MAX_RUNNING_APPS; i++) {
+      const k = `${i}:`;
       const b = reg.begin(k);
       if (b.ok) tickets.push(b.ticket.launch("/A"));
       await reg.release(k);
     }
-    expect(reg.begin("3:")).toEqual({ ok: false, error: ERR_APP_CAP });
+    expect(reg.begin("extra:")).toEqual({ ok: false, error: ERR_APP_CAP });
     for (const r of resolvers) r(fakeHandle());
     await Promise.all(tickets);
-    expect(reg.begin("3:").ok).toBe(true);
+    expect(reg.begin("extra:").ok).toBe(true);
   });
   it("an app that quit before binding is a tombstone and an error, not ok", async () => {
     const { reg } = make({ isAlive: () => false });

@@ -1444,7 +1444,7 @@ the app-global wiring (registry, confirm memory, real launcher); `window.ts`'s
 - **Key** `${senderId}:${sessionId ?? ""}`, reserved (`registry.begin`) BEFORE
   validate/confirm: a parallel open on the key gets BUSY, and so does a new open on
   a key whose cancelled open still shows its dialog (the flight entry stays until
-  it finishes). Cap 2 counts every spawned app not yet fully closed plus flights
+  it finishes). Cap 4 (`MAX_RUNNING_APPS`) counts every spawned app not yet fully closed plus flights
   not spawned yet, except the key's own app on a relaunch. A relaunch starts the
   new app first and closes the old one only on success; cancellation is
   re-checked after every await, so a release never yields `ok`, and `openApp`
@@ -1539,3 +1539,20 @@ the app-global wiring (registry, confirm memory, real launcher); `window.ts`'s
   a peer, and electron-builder drops dev deps, so the packaged app would fail at
   the first launch otherwise.
 - Tests: `test/appTargets.test.ts`; the command list in `test/ipcContract.test.ts`.
+
+### macOS computer use: headless by default (2026-11-01)
+
+The native controller (`src/main/computerUse/nativeController.ts`, helper `sideform-computer-use`) copies vercel-labs/agent-desktop. Actions on a ref (`index`, `target`, `element`) are headless. They do not activate the app and do not move the real pointer. They fail closed: they never switch to physical input on their own.
+
+- `press` and `CLICK`: helper `perform press` (AXPress, AXOpen, AXConfirm, AXSelected). No usable action gives an error that suggests `browse_act` click with `x` and `y`. The result carries `via` and `effect` (`verified` or `unverified`).
+- `TYPE_TEXT`: focus (best effort), `setValue`, read-back. If the value did not stick, `perform insertText` with `replace: true`, then the same read-back. An unverified write that cannot be read returns `verified: false`. No action gives an error that suggests `type` with `x` and `y`. The controller never sends Meta+a or global `type` for a ref target.
+- Scroll: helper `axScroll` (scroll bar value, page action, scroll bar buttons, or a wheel posted to the pid, in that order; a failed AX step whose position moved anyway stops the chain; the wheel step runs on the global `inputQueue`; the 4 s mutation deadline counts from the arrival of the request). One `browse_act` scroll `amount` is about one page (1..20). Without a ref it scrolls the largest area of the controller's current window. Nothing scrollable gives an error. The pointer never moves.
+- Uncertain delivery stops the press chain. If an AX error does not prove that nothing ran (for example `cannotComplete`), the helper does not try another step. It returns `effect: "unverified"` and `uncertain: true`.
+- Background key and type are posted to the pid and are NOT verified. A Cocoa app with no key window can drop them. The agent sees it only as `changed:false`.
+- `browse_act` `press` key: focus the target (best effort), then `key` with `background: true`. No target: `key` with `background: true`. `type` with no target: `type` with `background: true`. Both post to the pid. Blocked shortcuts stay blocked.
+- Physical only: `click` or `type` with `x` and `y` (from `browse_screenshot`), and `hover`. These activate the app and use the real pointer. `NOT_FRONTMOST` and `POINT_NOT_IN_APP` apply to them only. This is the explicit headed path.
+- The cursor overlay still animates for headless actions. It is presentation only.
+- One FIFO mutex per native controller (`exclusive` in `createNativeAppController`, built on `createKeyedChain` with one key). `act`, `perform`, `snapshot`, `read`, `screenshot`, `assert` and `tabs` on one handle never interleave. Different handles run in parallel.
+- The helper keeps one serial AX queue per pid. It drops the queue when the app ends. Physical input is one global queue.
+- `MAX_RUNNING_APPS` is 4 (`appTargets.ts`). The `ERR_APP_CAP` text derives from it.
+- Tests: `test/nativeAppController.test.ts` (fake helper, assertions on recorded helper calls), `test/appTargets.test.ts`, `test/openAppNative.test.ts`.

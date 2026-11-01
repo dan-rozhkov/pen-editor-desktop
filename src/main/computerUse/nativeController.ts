@@ -32,6 +32,7 @@ import {
 } from "./errors";
 import { HelperError, type ComputerUseHelper } from "./helperClient";
 import { isBlockedShortcut } from "./shortcuts";
+import { createKeyedChain } from "../storeUtils";
 
 export interface WindowFrame {
   x: number;
@@ -78,8 +79,24 @@ const WAIT_POLL_MS = 500;
 const SETTLE_MS = 300;
 /** Pause between a click at a point and the typing that follows it, so the field has taken focus. */
 const CLICK_FOCUS_MS = 150;
-/** Pixels scrolled per unit of `amount`. */
-const SCROLL_STEP_PX = 500;
+/** One browse_act scroll `amount` is one axScroll step. The helper accepts 1..20. */
+const SCROLL_MAX_AMOUNT = 20;
+type ScrollDirection = "up" | "down" | "left" | "right";
+const SCROLL_OPERATIONS: Record<string, ScrollDirection> = {
+  SCROLL_UP: "up",
+  SCROLL_DOWN: "down",
+  SCROLL_LEFT: "left",
+  SCROLL_RIGHT: "right",
+};
+
+const ERR_NO_AX_PRESS =
+  "The element has no accessibility action, so it cannot be clicked without the real pointer. Call browse_screenshot, then use browse_act click with x and y from that image. This brings the app to the front and moves the pointer.";
+const ERR_NO_AX_TYPE =
+  "The element does not accept text through accessibility, so nothing was typed. Call browse_screenshot, then use browse_act type with x and y from that image. This brings the app to the front and moves the pointer.";
+const ERR_TYPE_MISMATCH =
+  "The field now holds a different value than the text that was sent. The app may format or change the input. Call browse_snapshot and check the value before you type again.";
+const ERR_NO_AX_SCROLL =
+  "Nothing here can scroll through accessibility, so nothing moved. Give a target or index of a scrollable element, or call browse_snapshot to find one.";
 
 const STALE_MESSAGE = "The snapshot is out of date (the window changed). Call browse_snapshot again and use the new snapshotId and indices.";
 
@@ -127,6 +144,10 @@ function mapError(e: unknown): string {
         return ERR_NATIVE_NO_WINDOW;
       case "STALE":
         return STALE_MESSAGE;
+      case "NO_ACTION":
+        return "The element has no usable accessibility action.";
+      case "AX_FAILED":
+        return e.message || "The accessibility action failed.";
       case "NOT_FRONTMOST":
         return ERR_NATIVE_NOT_FRONTMOST;
       case "POINT_NOT_IN_APP":
@@ -146,6 +167,9 @@ const rec = (v: unknown): Record<string, unknown> => (typeof v === "object" && v
 
 const centre = (f: WindowFrame): { x: number; y: number } => ({ x: f.x + f.width / 2, y: f.y + f.height / 2 });
 
+/** The helper says the element cannot do it (NO_ACTION) or the AX call failed (AX_FAILED). */
+const isNoAction = (e: unknown): boolean => e instanceof HelperError && (e.code === "NO_ACTION" || e.code === "AX_FAILED");
+
 export function createNativeAppController(deps: NativeControllerDeps): NativeAppController {
   const { helper, pid, cursor } = deps;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -154,6 +178,13 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
 
   let windowId: number | undefined;
   let lastWindow: WindowFrame | undefined;
+
+  /** FIFO mutex per controller: two commands on one handle never interleave. Other handles run in parallel. */
+  const serialized = createKeyedChain();
+  const exclusive =
+    <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
+    (...args: A): Promise<R> =>
+      serialized("controller", () => fn(...args));
 
   const call = (cmd: string, args: Record<string, unknown> = {}) => helper.call(cmd, args);
   /** `perform` and `elementFrame` carry the pid: the helper answers STALE when the snapshot belongs to another app. */
@@ -277,19 +308,21 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
     return f;
   }
 
-  async function press(snapshotId: string, index: number): Promise<{ done: true; via: string }> {
-    const aimed = cursor ? await aimAt(snapshotId, index, "click").catch(() => undefined) : undefined;
+  /** Headless: AXPress and its relatives. Fails closed: no physical click when the element has no action. */
+  async function press(snapshotId: string, index: number): Promise<{ done: true; via: string; effect?: string; uncertain?: true }> {
+    if (cursor) await aimAt(snapshotId, index, "click").catch(() => undefined);
     try {
       const r = await perform({ snapshotId, index, action: "press" });
-      return { done: true, via: str(r.via) || "ax" };
+      return {
+        done: true,
+        via: str(r.via) || "ax",
+        ...(typeof r.effect === "string" ? { effect: r.effect } : {}),
+        ...(r.uncertain === true ? { uncertain: true as const } : {}),
+      };
     } catch (e) {
-      if (!(e instanceof HelperError) || e.code !== "NO_ACTION") throw e;
+      if (e instanceof HelperError && e.code === "NO_ACTION") throw new Fail(ERR_NO_AX_PRESS);
+      throw e;
     }
-    // The cursor already went there (and rippled): one aim per click, not two.
-    const f = aimed ?? (await aimAt(snapshotId, index, "click"));
-    const c = centre(f);
-    await call("click", { pid, x: c.x, y: c.y });
-    return { done: true, via: "event" };
   }
 
   /** Indices can shift between snapshots: the element is the same only when tag and label agree. Same index first, else a unique match. */
@@ -301,45 +334,86 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
   const candidatesOf = (orig: NativeElement, elements: NativeElement[]): NativeElement[] =>
     elements.filter((e) => (e.tag ?? "") === (orig.tag ?? "") && (e.label ?? "") === (orig.label ?? ""));
 
-  async function typeText(snapshotId: string, index: number, text: string): Promise<{ done: true; via: string; verified?: false }> {
+  async function typeText(snapshotId: string, index: number, text: string): Promise<{ done: true; via: string; verified?: false; effect?: string }> {
     if (cursor) await aimAt(snapshotId, index, "type").catch(() => undefined);
     const orig = knownElements.get(snapshotId)?.find((e) => e.index === index);
-    await perform({ snapshotId, index, action: "focus" });
-    let stuck = false;
+    // Best effort: a field that cannot take focus may still take a value.
     try {
-      await perform({ snapshotId, index, action: "setValue", text });
+      await perform({ snapshotId, index, action: "focus" });
+    } catch (e) {
+      if (!isNoAction(e)) throw e;
+    }
+    /** `true`: the text is in the field. `false`: not there. `"unreadable"`: it cannot be read back. */
+    const readBack = async (): Promise<boolean | "unreadable"> => {
       const fresh = (await takeSnapshot(bigSnapshotIds.has(snapshotId) ? TARGET_SEARCH_MAX_ELEMENTS : MAX_ELEMENTS)).elements;
-      // Indices can shift after setValue.
+      // Indices can shift after the write.
       const el = orig ? reidentify(orig, index, fresh) : undefined;
-      // The value cannot be read back: do not type again or send Select All to another control.
-      if (!el) return { done: true, via: "ax", verified: false };
+      if (!el) return "unreadable";
       if (el.isPassword) {
         // hasValue is only a proof when the field was empty before.
-        if (orig?.hasValue === true) return { done: true, via: "ax", verified: false };
-        stuck = el.hasValue === true;
-      } else {
-        stuck = el.value === text;
+        if (orig?.hasValue === true) return "unreadable";
+        return el.hasValue === true;
       }
+      return el.value === text;
+    };
+    let wrote = false // a write call reported success
+    try {
+      await perform({ snapshotId, index, action: "setValue", text });
+      wrote = true
+      const r = await readBack();
+      if (r === "unreadable") return { done: true, via: "ax", verified: false };
+      if (r) return { done: true, via: "ax" };
     } catch (e) {
-      if (!(e instanceof HelperError) || (e.code !== "NO_ACTION" && e.code !== "AX_FAILED")) throw e;
+      if (!isNoAction(e)) throw e;
     }
-    if (stuck) return { done: true, via: "ax" };
-    await call("key", { pid, key: "Meta+a", modifiers: [] });
-    await call("type", { pid, text });
-    return { done: true, via: "event" };
+    let ins: Record<string, unknown>;
+    try {
+      ins = await perform({ snapshotId, index, action: "insertText", text, replace: true });
+    } catch (e) {
+      if (isNoAction(e)) throw new Fail(wrote ? ERR_TYPE_MISMATCH : ERR_NO_AX_TYPE);
+      throw e;
+    }
+    const r = await readBack();
+    if (r === true) return { done: true, via: "ax", ...(typeof ins.effect === "string" ? { effect: ins.effect } : {}) };
+    // A proven mismatch fails closed whatever the helper said. Only an unreadable field is unverified.
+    if (r === "unreadable") return { done: true, via: "ax", verified: false };
+    // The text WAS written (setValue or insertText reported success) but the field holds something else.
+    throw new Fail(ERR_TYPE_MISMATCH);
   }
 
-  async function scrollBy(snapshotId: string | undefined, index: number | undefined, dy: number): Promise<{ done: true }> {
-    let at: { x: number; y: number };
+  /** Headless scroll through the helper's axScroll. Never moves the pointer. `amount` <= 0 or not finite does nothing. */
+  async function scrollBy(
+    snapshotId: string | undefined,
+    index: number | undefined,
+    direction: ScrollDirection,
+    amount: number,
+  ): Promise<{ done: true; via?: string; effect?: string; uncertain?: true }> {
+    if (!Number.isFinite(amount) || amount <= 0) return { done: true };
     if (snapshotId !== undefined && index !== undefined) {
-      at = centre(await aimAt(snapshotId, index, "scroll"));
+      await aimAt(snapshotId, index, "scroll").catch(() => undefined);
     } else {
       if (!lastWindow) await currentWindow();
-      at = centre(lastWindow as WindowFrame);
-      await pointCursor(at, "scroll");
+      await pointCursor(centre(lastWindow as WindowFrame), "scroll");
     }
-    await call("scroll", { pid, x: at.x, y: at.y, dx: 0, dy });
-    return { done: true };
+    const args: Record<string, unknown> = { pid, direction, amount: Math.min(SCROLL_MAX_AMOUNT, Math.max(1, Math.round(amount))) };
+    if (snapshotId !== undefined && index !== undefined) {
+      args.snapshotId = snapshotId;
+      args.index = index;
+    }
+    try {
+      const r = args.snapshotId !== undefined
+        ? await call("axScroll", args)
+        : await withWindow((wid) => call("axScroll", { ...args, windowId: wid }));
+      return {
+        done: true,
+        via: str(r.via) || "ax",
+        ...(typeof r.effect === "string" ? { effect: r.effect } : {}),
+        ...(r.uncertain === true ? { uncertain: true as const } : {}),
+      };
+    } catch (e) {
+      if (e instanceof HelperError && e.code === "NO_ACTION") throw new Fail(ERR_NO_AX_SCROLL);
+      throw e;
+    }
   }
 
   /** The five perform operations of the Jev loop. */
@@ -367,10 +441,8 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         break;
       }
       default:
-        if (operation !== "SCROLL_DOWN" && operation !== "SCROLL_UP" && !operation.startsWith("SCROLL_")) {
-          throw new Fail(`Unknown operation "${operation}".`);
-        }
-        out = await scrollBy(snapshotId, index, operation === "SCROLL_UP" ? -SCROLL_STEP_PX : SCROLL_STEP_PX);
+        if (!operation.startsWith("SCROLL_")) throw new Fail(`Unknown operation "${operation}".`);
+        out = await scrollBy(snapshotId, index, SCROLL_OPERATIONS[operation] ?? "down", 1);
     }
     const id = await winId();
     return { ...out, url: urlOf(id) };
@@ -516,7 +588,8 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
           if (step.target != null || step.index != null || step.element != null) {
             throw new Fail('browse_act "type" requires a "target" (or "index" with "snapshotId").');
           }
-          await call("type", { pid, text: step.text });
+          // Blind typing into the focus: posted to the pid, no activation.
+          await call("type", { pid, text: step.text, background: true });
           return undefined;
         }
         await typeText(l.snapshotId, l.index, step.text);
@@ -542,16 +615,21 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         const l = await locate(step, undefined, fresh);
         if (l) {
           if (cursor) await aimAt(l.snapshotId, l.index, "press").catch(() => undefined);
-          await perform({ snapshotId: l.snapshotId, index: l.index, action: "focus" });
+          try {
+            await perform({ snapshotId: l.snapshotId, index: l.index, action: "focus" });
+          } catch (e) {
+            if (!isNoAction(e)) throw e;
+          }
         }
-        await call("key", { pid, key: step.key, modifiers: [] });
+        await call("key", { pid, key: step.key, modifiers: [], background: true });
         return l?.matched;
       }
       case "scroll": {
         const l = await locate(step, undefined, fresh);
-        const amount = typeof step.amount === "number" && Number.isFinite(step.amount) ? step.amount : 1;
-        const sign = step.direction === "up" ? -1 : 1;
-        await scrollBy(l?.snapshotId, l?.index, sign * amount * SCROLL_STEP_PX);
+        const amount = typeof step.amount === "number" ? step.amount : 1;
+        const direction: ScrollDirection =
+          step.direction === "up" || step.direction === "left" || step.direction === "right" ? step.direction : "down";
+        await scrollBy(l?.snapshotId, l?.index, direction, amount);
         return l?.matched;
       }
       default:
@@ -771,10 +849,10 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
 
     open: async () => ({ error: ERR_NATIVE_OPEN_LOCKED }),
     findImages: unsupported("findImages"),
-    assert: safe(assertChecks),
+    assert: exclusive(safe(assertChecks)),
     requests: unsupported("requests"),
 
-    tabs: safe(async (args: unknown) => {
+    tabs: exclusive(safe(async (args: unknown) => {
       const action = str(rec(args).action) || "list";
       if (action === "close" || action === "new") return { error: ERR_NATIVE_TABS };
       if (action !== "list" && action !== "switch") return { error: `Unknown browse_tabs action "${action}".` };
@@ -799,13 +877,13 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         tabs: ws.map((w) => ({ tabId: w.windowId, url: urlOf(w.windowId), title: w.title, current: w.windowId === cur?.windowId })),
         current: cur?.windowId ?? null,
       };
-    }),
+    })),
 
-    snapshot: safe(async () => {
+    snapshot: exclusive(safe(async () => {
       return snapshotResult(await takeSnapshot());
-    }),
+    })),
 
-    perform: safe(async (args: unknown) => {
+    perform: exclusive(safe(async (args: unknown) => {
       const a = rec(args);
       if (typeof a.snapshotId !== "string" || a.snapshotId === "") throw new Fail('browse perform requires a non-empty string "snapshotId".');
       if (typeof a.operation !== "string") throw new Fail('browse perform requires an "operation".');
@@ -816,11 +894,11 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         index: typeof a.index === "number" ? a.index : undefined,
         text: typeof a.text === "string" ? a.text : undefined,
       });
-    }),
+    })),
 
-    act: safe(act),
+    act: exclusive(safe(act)),
 
-    read: safe(async (args: unknown) => {
+    read: exclusive(safe(async (args: unknown) => {
       const m = rec(args).maxChars;
       const maxChars = typeof m === "number" && Number.isFinite(m) && m > 0 ? m : READ_MAX_CHARS;
       let id = 0;
@@ -829,9 +907,9 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         return call("read", { pid, windowId: wid, maxChars });
       });
       return { url: urlOf(id), title: str(r.title), text: str(r.text), truncated: r.truncated === true };
-    }),
+    })),
 
-    screenshot: safe(async (args: unknown) => {
+    screenshot: exclusive(safe(async (args: unknown) => {
       const annotate = rec(args).annotate === true;
       const snap = annotate ? await takeSnapshot() : undefined;
       let id = snap?.windowId ?? 0;
@@ -878,6 +956,6 @@ export function createNativeAppController(deps: NativeControllerDeps): NativeApp
         result.elements = snap.elements;
       }
       return result;
-    }),
+    })),
   };
 }

@@ -215,7 +215,7 @@ Errors (exported constants, short, written for the model):
 5. The launch result is today's shape (`shapeLaunchResult`) plus `mode: "computer-use"` and a
    `note` (`NATIVE_MODE_NOTE`): "Attached to the running app without a restart; the user's own
    session. Elements come from the macOS accessibility tree. Actions may bring the app to the front
-   and briefly move the mouse pointer."
+   and briefly move the mouse pointer." (Replaced on 2026-11-01: see the addendum at the end.)
 
 Registry: `LaunchOptions.native?: { pid: number }`. The service's `launch` builds a
 `NativeAppHandle` `{ controller, pid: undefined, onDisconnected, close }` for it (no pid, so the
@@ -281,3 +281,19 @@ is safe; this order means the text exists before a client claims it).
 
 Exact Swift structure, the AX attribute fallback order inside the stated rules, overlay artwork,
 batching details, the exact text wording within the stated meaning.
+
+## Addendum 2026-11-01: headless actions (after vercel-labs/agent-desktop)
+
+This addendum replaces the "AX-press fallback to click" and "type read-back fallback to Meta+a and typing" behaviour of section 2. It also replaces the note text "Actions may bring the app to the front and briefly move the mouse pointer".
+
+- Actions on a ref (`index`, `target`, `element`) are headless. They do not activate the app. They do not move the real pointer.
+- They fail closed. When the element has no usable accessibility action, the controller returns an error. It never switches to physical input.
+- `press`: helper `perform press`. The helper tries AXPress, AXOpen, AXConfirm and AXSelected. The result carries `via` and `effect`.
+- `typeText`: `setValue` with read-back, then `perform insertText` with `replace: true` and the same read-back. The controller never sends Meta+a or global `type` for a ref target.
+- Scroll: helper `axScroll`. One `amount` is one step. The pointer never moves.
+- `browse_act` `press` key and blind `type` post to the pid with `background: true`. This delivery is NOT verified. A Cocoa app with no key window can drop it. The agent sees it only as `changed:false`.
+- When an AX error does not prove that nothing ran, the press chain stops. It returns `effect: "unverified"` and `uncertain: true`. It never runs another mutating step.
+- Physical input stays for `click` and `type` with `x` and `y`, and for `hover`. This is the explicit headed path.
+- The overlay cursor still animates for headless actions. It is presentation only.
+- Each native controller has one FIFO mutex. Different controllers run in parallel. The helper has one serial AX queue per pid and one global queue for physical input.
+- `MAX_RUNNING_APPS` rises from 2 to 4.

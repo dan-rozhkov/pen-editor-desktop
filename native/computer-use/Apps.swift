@@ -161,7 +161,12 @@ func cmdWatch(_ a: JSON) throws -> JSON {
         if owned { watched.remove(pid) }
         watchLock.unlock()
         if owned { Output.shared.send(["event": "appTerminated", "pid": Int(pid)]) }
-        axQueue.async { dropSnapshots(pid) }
+        // The app is gone. Work already queued for this pid finishes first: the cleanup runs behind it on the
+        // same queue. A later request for the dead pid may create a new short-lived queue; it fails fast with NOT_FOUND.
+        axQueue(for: pid).async {
+            dropSnapshots(pid)
+            removeAxQueue(pid)
+        }
     }
     src.resume()
     // The process may have exited before the source was registered: then no event ever comes.

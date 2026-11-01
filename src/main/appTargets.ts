@@ -10,7 +10,7 @@ import path from "node:path";
 import { ERR_NO_ACCESSIBILITY, NATIVE_MODE_NOTE } from "./computerUse/errors";
 import { resolveRunningApp, runningAppNames, type RunningApp } from "./computerUse/appResolver";
 
-export const MAX_RUNNING_APPS = 2;
+export const MAX_RUNNING_APPS = 4;
 /** Extra allowed roots (colon separated), honoured only in an unpackaged build (e2e). */
 export const APP_ROOTS_ENV = "PEN_DESKTOP_APP_ROOTS";
 

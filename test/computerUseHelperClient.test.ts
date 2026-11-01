@@ -86,7 +86,7 @@ describe("ComputerUseHelper", () => {
     expect(e.code).toBe("STALE");
   });
 
-  it("uses helper budget + 1 s: 10 s snapshot/read, 6 s screenshot/perform, 11 s type, 3 s others, and overrides", async () => {
+  it("uses helper budget + 1 s: 10 s snapshot/read, 6 s screenshot/perform/axScroll, 11 s type, 3 s others, and overrides", async () => {
     vi.useFakeTimers();
     const { helper } = setup({ read: 100 });
     const snap = helper.call("snapshot").catch((e) => e);
@@ -95,6 +95,7 @@ describe("ComputerUseHelper", () => {
     expect(helper.timeoutFor("snapshot")).toBe(10000);
     expect(helper.timeoutFor("perform")).toBe(6000);
     expect(helper.timeoutFor("screenshot")).toBe(6000);
+    expect(helper.timeoutFor("axScroll")).toBe(6000);
     expect(helper.timeoutFor("type")).toBe(11000);
     expect(helper.timeoutFor("watch")).toBe(3000);
     const custom = helper.call("ping", {}, { timeoutMs: 50 }).catch((e) => e);

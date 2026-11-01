@@ -50,6 +50,7 @@ function setup(handlers: Record<string, Handler> = {}, extra: Partial<Parameters
     key: () => ({ done: true }),
     type: () => ({ done: true }),
     scroll: () => ({ done: true }),
+    axScroll: () => ({ done: true, via: "scrollbar", effect: "verified" }),
     move: () => ({ done: true }),
     read: () => ({ title: "Main", text: "hello world", truncated: false }),
     screenshot: () => ({ png: "PNGDATA", width: 1600, height: 900, scale: 2 }),
@@ -257,9 +258,9 @@ describe("helper error codes", () => {
     const a = setup({ perform: () => { throw new HelperError("x", "NOT_FRONTMOST"); } });
     const s = await first(a.ctl);
     expect(await a.ctl.perform({ operation: "CLICK", snapshotId: s.snapshotId, index: 0 })).toEqual({ error: ERR_NATIVE_NOT_FRONTMOST });
-    const b = setup({ perform: () => { throw new HelperError("x", "NO_ACTION"); }, click: () => { throw new HelperError("x", "POINT_NOT_IN_APP"); } });
-    const s2 = await first(b.ctl);
-    expect(await b.ctl.perform({ operation: "CLICK", snapshotId: s2.snapshotId, index: 0 })).toEqual({ error: ERR_NATIVE_POINT_NOT_IN_APP });
+    const b = setup({ click: () => { throw new HelperError("x", "POINT_NOT_IN_APP"); } });
+    await b.ctl.screenshot({});
+    expect(await b.ctl.act({ action: "click", x: 10, y: 10 })).toEqual({ error: ERR_NATIVE_POINT_NOT_IN_APP });
   });
 });
 
@@ -273,17 +274,30 @@ describe("perform", () => {
     expect(of("click")).toHaveLength(0);
   });
 
-  it("CLICK falls back to a click at the element centre on NO_ACTION", async () => {
+  it("CLICK propagates the effect and never uses physical input", async () => {
+    const { ctl, of } = setup({ perform: () => ({ done: true, via: "AXPress", effect: "verified" }) });
+    const s = await first(ctl);
+    const r = await ctl.perform({ snapshotId: s.snapshotId, index: 0, operation: "CLICK" });
+    expect(r).toMatchObject({ done: true, via: "AXPress", effect: "verified" });
+    expect(of("click")).toHaveLength(0);
+    expect(of("activate")).toHaveLength(0);
+    expect(of("move")).toHaveLength(0);
+  });
+
+  it("CLICK on NO_ACTION fails closed: an error, no physical click", async () => {
     const { ctl, of } = setup({
       perform: () => {
         throw new HelperError("no press", "NO_ACTION");
       },
     });
     const s = await first(ctl);
-    const r = await ctl.perform({ snapshotId: s.snapshotId, index: 0, operation: "CLICK" });
-    expect(r).toMatchObject({ done: true, via: "event" });
-    expect(of("elementFrame")[0].args).toEqual({ pid: 42, snapshotId: "s1", index: 0 });
-    expect(of("click")[0].args).toEqual({ pid: 42, x: 250, y: 120 });
+    const r = (await ctl.perform({ snapshotId: s.snapshotId, index: 0, operation: "CLICK" })) as { error: string };
+    expect(r.error).toContain("no accessibility action");
+    expect(r.error).toContain("browse_act click");
+    expect(r.error).toContain("x and y");
+    expect(r.error).toContain("moves the pointer");
+    expect(of("click")).toHaveLength(0);
+    expect(of("activate")).toHaveLength(0);
   });
 
   it("TYPE_TEXT focuses, sets the value and keeps it when read back", async () => {
@@ -302,25 +316,73 @@ describe("perform", () => {
     expect(of("type")).toHaveLength(0);
   });
 
-  it("TYPE_TEXT falls back to Meta+a and typing when the value did not stick", async () => {
-    const { ctl, of } = setup();
+  it("TYPE_TEXT uses insertText with replace when setValue did not stick, with no key or global type", async () => {
+    let n = 0;
+    const { ctl, of } = setup({
+      snapshot: () => {
+        n++;
+        // The value shows up only after insertText (the third snapshot: before, setValue read-back, insertText read-back).
+        return { snapshotId: `s${n}`, elements: EL.map((e) => (e.index === 2 && n >= 3 ? { ...e, value: "Ada" } : e)), window: WIN };
+      },
+      perform: (a) => ({ done: true, via: a.action === "insertText" ? "AXSelectedText" : "ax", effect: "verified" }),
+    });
     const s = await first(ctl);
     const r = await ctl.perform({ snapshotId: s.snapshotId, index: 2, operation: "TYPE_TEXT", text: "Ada" });
-    expect(r).toMatchObject({ via: "event" });
-    expect(of("key")[0].args).toMatchObject({ pid: 42, key: "Meta+a" });
-    expect(of("type")[0].args).toEqual({ pid: 42, text: "Ada" });
+    expect(r).toMatchObject({ done: true, via: "ax" });
+    expect(of("perform").map((c) => c.args.action)).toEqual(["focus", "setValue", "insertText"]);
+    expect(of("perform")[2].args).toMatchObject({ pid: 42, text: "Ada", replace: true });
+    expect(of("key")).toHaveLength(0);
+    expect(of("type")).toHaveLength(0);
   });
 
-  it("TYPE_TEXT falls back when setValue is refused", async () => {
+  it("TYPE_TEXT fails closed on a proven mismatch even when the helper reports unverified", async () => {
+    const { ctl, of } = setup({ perform: (a) => ({ done: true, via: "ax", effect: a.action === "insertText" ? "unverified" : undefined }) });
+    const s = await first(ctl);
+    const r = (await ctl.perform({ snapshotId: s.snapshotId, index: 2, operation: "TYPE_TEXT", text: "Ada" })) as { error?: string };
+    expect(r.error).toContain("holds a different value");
+    expect(r.error).not.toContain("nothing was typed");
+    expect(of("key")).toHaveLength(0);
+    expect(of("type")).toHaveLength(0);
+  });
+
+  it("TYPE_TEXT after a setValue that was written but not read back keeps the mismatch error when insertText has no action", async () => {
+    const { ctl } = setup({
+      perform: (a) => {
+        if (a.action === "insertText") throw new HelperError("no", "NO_ACTION");
+        return { done: true, via: "ax" };
+      },
+    });
+    const s = await first(ctl);
+    const r = (await ctl.perform({ snapshotId: s.snapshotId, index: 2, operation: "TYPE_TEXT", text: "Ada" })) as { error?: string };
+    expect(r.error).toContain("holds a different value");
+  });
+
+  it("TYPE_TEXT fails closed when insertText has no action, and sends no key or global type", async () => {
     const { ctl, of } = setup({
       perform: (a) => {
-        if (a.action === "setValue") throw new HelperError("no", "NO_ACTION");
+        if (a.action === "setValue" || a.action === "insertText") throw new HelperError("no", "NO_ACTION");
         return { done: true };
       },
     });
     const s = await first(ctl);
-    await ctl.perform({ snapshotId: s.snapshotId, index: 2, operation: "TYPE_TEXT", text: "x" });
-    expect(of("type")).toHaveLength(1);
+    const r = (await ctl.perform({ snapshotId: s.snapshotId, index: 2, operation: "TYPE_TEXT", text: "x" })) as { error: string };
+    expect(r.error).toContain("browse_act type");
+    expect(r.error).toContain("x and y");
+    expect(of("key")).toHaveLength(0);
+    expect(of("type")).toHaveLength(0);
+  });
+
+  it("TYPE_TEXT ignores a focus that has no action", async () => {
+    let n = 0;
+    const { ctl } = setup({
+      snapshot: () => ({ snapshotId: `s${++n}`, elements: EL.map((e) => (e.index === 2 && n > 1 ? { ...e, value: "Ada" } : e)), window: WIN }),
+      perform: (a) => {
+        if (a.action === "focus") throw new HelperError("no", "NO_ACTION");
+        return { done: true, via: "ax" };
+      },
+    });
+    const s = await first(ctl);
+    expect(await ctl.perform({ snapshotId: s.snapshotId, index: 2, operation: "TYPE_TEXT", text: "Ada" })).toMatchObject({ done: true, via: "ax" });
   });
 
   describe("TYPE_TEXT read-back with shifting indices", () => {
@@ -384,13 +446,18 @@ describe("perform", () => {
       expect(of("type")).toHaveLength(0);
     });
 
-    it("secure field that stayed empty falls back to typing", async () => {
+    it("secure field that stayed empty tries insertText, fails closed and never types globally", async () => {
       let n = 0;
-      const { ctl, of } = setup({ snapshot: () => ({ snapshotId: `s${++n}`, elements: [...EL, SECURE], window: WIN }) });
+      const { ctl, of } = setup({
+        snapshot: () => ({ snapshotId: `s${++n}`, elements: [...EL, SECURE], window: WIN }),
+        perform: (a) => ({ done: true, via: "ax", effect: a.action === "insertText" ? "unverified" : undefined }),
+      });
       const s = await first(ctl);
-      const r = await ctl.perform({ snapshotId: s.snapshotId, index: 4, operation: "TYPE_TEXT", text: "pw" });
-      expect(r).toMatchObject({ via: "event" });
-      expect(of("type")).toHaveLength(1);
+      const r = (await ctl.perform({ snapshotId: s.snapshotId, index: 4, operation: "TYPE_TEXT", text: "pw" })) as { error?: string };
+      expect(r.error).toContain("holds a different value");
+      expect(of("perform").map((c) => c.args.action)).toEqual(["focus", "setValue", "insertText"]);
+      expect(of("type")).toHaveLength(0);
+      expect(of("key")).toHaveLength(0);
     });
   });
 
@@ -401,15 +468,58 @@ describe("perform", () => {
     expect(of("perform")[0].args).toEqual({ pid: 42, snapshotId: "s1", index: 3, action: "pick", text: "Large" });
   });
 
-  it("SCROLL scrolls at the element centre, or the window centre without an index", async () => {
+  it("SCROLL uses axScroll with the element, or without an index, and never the physical scroll", async () => {
+    const { ctl, of } = setup({ axScroll: () => ({ done: true, via: "scrollbar", effect: "verified" }) });
+    const s = await first(ctl);
+    const r = await ctl.perform({ snapshotId: s.snapshotId, index: 3, operation: "SCROLL_DOWN" });
+    expect(r).toMatchObject({ done: true, via: "scrollbar", effect: "verified" });
+    expect(of("axScroll")[0].args).toEqual({ pid: 42, snapshotId: "s1", index: 3, direction: "down", amount: 1 });
+    await ctl.perform({ snapshotId: s.snapshotId, operation: "SCROLL_UP" });
+    expect(of("axScroll")[1].args).toEqual({ pid: 42, direction: "up", amount: 1, windowId: 11 });
+    expect(of("scroll")).toHaveLength(0);
+  });
+
+  it("SCROLL_UP, SCROLL_LEFT and SCROLL_RIGHT pass their own direction", async () => {
     const { ctl, of } = setup();
     const s = await first(ctl);
-    await ctl.perform({ snapshotId: s.snapshotId, index: 3, operation: "SCROLL_DOWN" });
-    expect(of("scroll")[0].args).toMatchObject({ pid: 42, x: 250, y: 120 });
-    expect(of("scroll")[0].args.dy as number).toBeGreaterThan(0);
-    await ctl.perform({ snapshotId: s.snapshotId, operation: "SCROLL_UP" });
-    expect(of("scroll")[1].args).toMatchObject({ x: 500, y: 350 });
-    expect(of("scroll")[1].args.dy as number).toBeLessThan(0);
+    for (const operation of ["SCROLL_UP", "SCROLL_LEFT", "SCROLL_RIGHT"]) {
+      await ctl.perform({ snapshotId: s.snapshotId, index: 3, operation });
+    }
+    expect(of("axScroll").map((c) => c.args.direction)).toEqual(["up", "left", "right"]);
+  });
+
+  it("act scroll maps direction, and an amount of 0 scrolls nothing", async () => {
+    const { ctl, of } = setup();
+    await ctl.act({ action: "scroll", direction: "up", amount: 0 });
+    expect(of("axScroll")).toHaveLength(0);
+    await ctl.act({ action: "scroll", direction: "up", amount: -3 });
+    expect(of("axScroll")).toHaveLength(0);
+    await ctl.act({ action: "scroll", direction: "left", amount: 3 });
+    await ctl.act({ action: "scroll", direction: "right", amount: 50 });
+    await ctl.act({ action: "scroll", direction: "up" });
+    expect(of("axScroll").map((c) => [c.args.direction, c.args.amount])).toEqual([["left", 3], ["right", 20], ["up", 1]]);
+  });
+
+  it("passes uncertain from the helper through press and scroll results", async () => {
+    const { ctl } = setup({
+      perform: () => ({ done: true, via: "AXPress", effect: "unverified", uncertain: true }),
+      axScroll: () => ({ done: true, via: "page", effect: "unverified", uncertain: true }),
+    });
+    const s = await first(ctl);
+    expect(await ctl.perform({ snapshotId: s.snapshotId, index: 3, operation: "CLICK" })).toMatchObject({ done: true, uncertain: true });
+    expect(await ctl.perform({ snapshotId: s.snapshotId, index: 3, operation: "SCROLL_DOWN" })).toMatchObject({ done: true, uncertain: true });
+  });
+
+  it("SCROLL with nothing scrollable fails with a clear message", async () => {
+    const { ctl, of } = setup({
+      axScroll: () => {
+        throw new HelperError("none", "NO_ACTION");
+      },
+    });
+    const s = await first(ctl);
+    const r = (await ctl.perform({ snapshotId: s.snapshotId, index: 3, operation: "SCROLL_DOWN" })) as { error: string };
+    expect(r.error).toContain("Nothing here can scroll");
+    expect(of("scroll")).toHaveLength(0);
   });
 
   it("rejects a missing snapshotId and an unknown operation", async () => {
@@ -457,11 +567,12 @@ describe("act", () => {
   it("presses a key, hovers and scrolls", async () => {
     const { ctl, of } = setup();
     await ctl.act({ action: "press", key: "Enter" });
-    expect(of("key")[0].args).toMatchObject({ pid: 42, key: "Enter" });
+    expect(of("key")[0].args).toEqual({ pid: 42, key: "Enter", modifiers: [], background: true });
     await ctl.act({ action: "hover", target: "Name" });
     expect(of("move")[0].args).toEqual({ pid: 42, x: 250, y: 120 });
     await ctl.act({ action: "scroll", amount: 2 });
-    expect(of("scroll")[0].args.dy as number).toBeGreaterThan(0);
+    expect(of("axScroll")[0].args).toEqual({ pid: 42, direction: "down", amount: 2, windowId: 11 });
+    expect(of("scroll")).toHaveLength(0);
   });
 
   it("runs a batch and stops at the first error", async () => {
@@ -627,20 +738,13 @@ describe("agent cursor", () => {
     expect(await ctl.perform({ snapshotId: s.snapshotId, index: 0, operation: "CLICK" })).toMatchObject({ done: true });
   });
 
-  it("a CLICK that falls back to an event click aims the cursor once", async () => {
+  it("a headless CLICK aims the cursor once and sends no physical click", async () => {
     const cursor: CursorSink = { moveTo: vi.fn() };
-    const { ctl, of } = setup(
-      {
-        perform: () => {
-          throw new HelperError("no press", "NO_ACTION");
-        },
-      },
-      { cursor },
-    );
+    const { ctl, of } = setup({}, { cursor });
     const s = await first(ctl);
-    expect(await ctl.perform({ snapshotId: s.snapshotId, index: 0, operation: "CLICK" })).toMatchObject({ done: true, via: "event" });
+    expect(await ctl.perform({ snapshotId: s.snapshotId, index: 0, operation: "CLICK" })).toMatchObject({ done: true });
     expect(cursor.moveTo).toHaveBeenCalledTimes(1);
-    expect(of("click")[0].args).toEqual({ pid: 42, x: 250, y: 120 });
+    expect(of("click")).toHaveLength(0);
   });
 
   it("a throwing cursor does not fail the action", async () => {
@@ -1001,7 +1105,7 @@ describe("target search order and read-back", () => {
   });
 
   it("typeText read-back after a big-snapshot target uses the big cap", async () => {
-    const field = { index: 600, tag: "textfield", label: "Search", ops: ["TYPE_TEXT"], value: "" };
+    const field = { index: 600, tag: "textfield", label: "Search", ops: ["TYPE_TEXT"], value: "hi" };
     const { ctl, of } = setup({
       snapshot: (a) => ({ snapshotId: a.maxElements === 1000 ? "big" : "small", elements: a.maxElements === 1000 ? [...EL, field] : EL, truncated: a.maxElements !== 1000, window: WIN }),
     });
@@ -1154,5 +1258,84 @@ describe("click and type at a point", () => {
     await t.ctl.tabs({ action: "switch", tabId: 11 });
     expect(await t.ctl.act({ action: "click", x: 10, y: 10 })).toEqual({ error: ERR_NATIVE_NO_SCREENSHOT });
     expect(t.of("click")).toHaveLength(0);
+  });
+});
+
+describe("headless by default", () => {
+  it("browse_act press with a target focuses it, then sends key with background:true", async () => {
+    const { ctl, of } = setup();
+    await ctl.act({ action: "press", key: "Enter", target: "Name" });
+    expect(of("perform").map((c) => c.args.action)).toEqual(["focus"]);
+    expect(of("key")[0].args).toEqual({ pid: 42, key: "Enter", modifiers: [], background: true });
+  });
+
+  it("browse_act type without a target sends type with background:true", async () => {
+    const { ctl, of } = setup();
+    await ctl.act({ action: "type", text: "hi" });
+    expect(of("type")[0].args).toEqual({ pid: 42, text: "hi", background: true });
+  });
+
+  it("browse_act click with x and y stays physical", async () => {
+    const { ctl, of } = setup();
+    await ctl.screenshot({});
+    await ctl.act({ action: "click", x: 10, y: 20 });
+    expect(of("click")).toHaveLength(1);
+    expect(of("click")[0].args).toMatchObject({ pid: 42, button: "left" });
+    expect(of("perform").filter((c) => c.args.action === "press")).toHaveLength(0);
+  });
+
+  it("browse_act click by target is headless: no click call at all", async () => {
+    const { ctl, of } = setup();
+    await ctl.act({ action: "click", target: "Save" });
+    expect(of("perform").map((c) => c.args.action)).toEqual(["press"]);
+    expect(of("click")).toHaveLength(0);
+  });
+
+  it("two concurrent act calls on one controller run one after another", async () => {
+    const events: string[] = [];
+    let gate: () => void = () => undefined;
+    const held = new Promise<void>((r) => (gate = r));
+    let first = true;
+    const { ctl } = setup({
+      snapshot: () => ({ snapshotId: "s", elements: EL, window: WIN }),
+      key: async () => {
+        events.push("key");
+        if (first) {
+          first = false;
+          await held;
+        }
+        events.push("key-done");
+        return { done: true };
+      },
+    });
+    const a = ctl.act({ action: "press", key: "Enter" });
+    const b = ctl.act({ action: "press", key: "Tab" });
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    // The second act has not reached the helper while the first waits.
+    expect(events).toEqual(["key"]);
+    gate();
+    await Promise.all([a, b]);
+    expect(events).toEqual(["key", "key-done", "key", "key-done"]);
+  });
+
+  it("a failed command does not block the next one", async () => {
+    const { ctl } = setup({ read: () => { throw new Error("boom"); } });
+    expect(await ctl.read({})).toEqual({ error: "boom" });
+    expect(await ctl.snapshot()).toMatchObject({ snapshotId: "s1" });
+  });
+
+  it("two different controllers can overlap", async () => {
+    let gate: () => void = () => undefined;
+    const held = new Promise<void>((r) => (gate = r));
+    const a = setup({ key: async () => { await held; return { done: true }; } });
+    const b = setup();
+    const pa = a.ctl.act({ action: "press", key: "Enter" });
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    // A is stuck in key; B runs to the end meanwhile.
+    expect(a.of("key")).toHaveLength(1);
+    await b.ctl.act({ action: "press", key: "Enter" });
+    expect(b.of("key")).toHaveLength(1);
+    gate();
+    await pa;
   });
 });

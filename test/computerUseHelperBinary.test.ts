@@ -88,4 +88,25 @@ describe.skipIf(process.platform !== "darwin" || !existsSync(binPath))("sideform
     expect(await call("nope")).toMatchObject({ ok: false, code: "BAD_ARGS" });
     expect(await call("windows", {})).toMatchObject({ ok: false });
   });
+
+  it("validates the headless protocol arguments without any permission", async () => {
+    expect(await call("axScroll", { direction: "down" })).toMatchObject({ ok: false, code: "BAD_ARGS" });
+    expect(await call("axScroll", { pid: 1, direction: "sideways" })).toMatchObject({ ok: false, code: "BAD_ARGS" });
+    expect(await call("axScroll", { pid: 999999, direction: "down", amount: 3 })).toMatchObject({ ok: false, code: "NOT_FOUND" });
+    expect(await call("perform", { snapshotId: "none", index: 0, action: "insertText" })).toMatchObject({ ok: false, code: "STALE" });
+    expect(await call("key", { pid: 1, key: "NoSuchKey", background: true })).toMatchObject({ ok: false, code: "BAD_ARGS" });
+    expect(await call("key", { pid: 999999, key: "enter", background: true })).toMatchObject({ ok: false, code: "NOT_FOUND" });
+    expect(await call("type", { pid: 1, background: true })).toMatchObject({ ok: false, code: "BAD_ARGS" });
+    expect(await call("type", { pid: 999999, text: "x", background: true })).toMatchObject({ ok: false, code: "NOT_FOUND" });
+  });
+
+  it("answers per-pid commands in parallel for different pids", async () => {
+    const rs = await Promise.all([
+      call("windows", { pid: 999998 }),
+      call("windows", { pid: 999999 }),
+      call("ping"),
+    ]);
+    expect(rs[2]).toMatchObject({ ok: true });
+    for (const r of rs.slice(0, 2)) expect(r.ok).toBe(false);
+  });
 });

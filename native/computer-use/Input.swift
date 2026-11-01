@@ -118,6 +118,31 @@ func cmdScroll(_ a: JSON) throws -> JSON {
     return ["done": true]
 }
 
+/// A wheel event posted to one pid only: the pointer does not move and no app is activated.
+/// dx/dy use the DOM convention (positive dy = content moves down), like `scroll`.
+func postWheelToPid(_ pid: pid_t, at p: CGPoint, dx: Int, dy: Int) {
+    var remY = max(-20000, min(20000, dy))
+    var remX = max(-20000, min(20000, dx))
+    while remX != 0 || remY != 0 {
+        let sy = max(-120, min(120, remY))
+        let sx = max(-120, min(120, remX))
+        remY -= sy
+        remX -= sx
+        if let e = CGEvent(scrollWheelEvent2Source: src, units: .pixel, wheelCount: 2, wheel1: Int32(-sy), wheel2: Int32(-sx), wheel3: 0) {
+            e.location = p
+            e.postToPid(pid)
+        }
+        Thread.sleep(forTimeInterval: 0.008)
+    }
+}
+
+/// Where key events go: the global HID tap (foreground) or one pid (background).
+private var targetPid: pid_t? = nil // set only on inputQueue for the duration of one command
+
+private func deliver(_ e: CGEvent) {
+    if let p = targetPid { e.postToPid(p) } else { e.post(tap: .cghidEventTap) }
+}
+
 private func postKey(_ code: CGKeyCode, flags: CGEventFlags, unicode: [UniChar]? = nil) {
     for isDown in [true, false] {
         guard let e = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: isDown) else { continue }
@@ -125,7 +150,7 @@ private func postKey(_ code: CGKeyCode, flags: CGEventFlags, unicode: [UniChar]?
         if let u = unicode, !u.isEmpty {
             e.keyboardSetUnicodeString(stringLength: u.count, unicodeString: u)
         }
-        e.post(tap: .cghidEventTap)
+        deliver(e)
         Thread.sleep(forTimeInterval: 0.004)
     }
 }
@@ -144,7 +169,10 @@ private func typeRun(_ text: String) {
 func cmdType(_ a: JSON) throws -> JSON {
     let pid = try a.pid()
     guard let text = a.str("text") else { throw fail("text is required", "BAD_ARGS") }
-    try inputReady(pid, activate: true)
+    let background = a.bool("background") == true
+    try inputReady(pid, activate: !background)
+    targetPid = background ? pid : nil
+    defer { targetPid = nil }
     let parts = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
     for (i, part) in parts.enumerated() {
         if i > 0 { postKey(36, flags: []) }
@@ -194,13 +222,13 @@ func cmdKey(_ a: JSON) throws -> JSON {
     if key.count == 1, key != key.lowercased(), key.lowercased().first!.isLetter {
         flags.insert(.maskShift)
     }
-    try inputReady(pid, activate: true)
-    if let code = keyCodes[key.lowercased()] {
-        postKey(code, flags: flags)
-    } else if key.count == 1, flags.isEmpty {
-        typeRun(key)
-    } else {
-        throw fail("Unknown key \(key).", "BAD_ARGS")
-    }
+    let code = keyCodes[key.lowercased()]
+    let literal = code == nil && key.count == 1 && flags.isEmpty
+    if code == nil && !literal { throw fail("Unknown key \(key).", "BAD_ARGS") }
+    let background = a.bool("background") == true
+    try inputReady(pid, activate: !background)
+    targetPid = background ? pid : nil
+    defer { targetPid = nil }
+    if let code = code { postKey(code, flags: flags) } else { typeRun(key) }
     return ["done": true]
 }
