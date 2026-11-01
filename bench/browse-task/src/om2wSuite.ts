@@ -23,12 +23,18 @@ function keyPointLines(kp: string): string {
     .join(" ");
 }
 
-function build(t: Om2wTask): Scenario {
+/** Goal and judge checklist of one task; shared with the Browser Use Cloud arm (buCloud.ts). */
+export function om2wGoal(t: Om2wTask): { site: string; goal: string; endCheck: string } {
   const site = /^https?:\/\//i.test(t.website) ? t.website : `https://${t.website}`;
   const goal =
     `Open ${site}. ${t.confirmed_task} Do not sign in, do not buy or book anything, and do not submit personal data. ` +
     `When done, reply with the answer or what the page now shows.`;
   const endCheck = `The final state must satisfy all of these key points: ${keyPointLines(t.key_points)}`;
+  return { site, goal, endCheck };
+}
+
+function build(t: Om2wTask): Scenario {
+  const { site, goal, endCheck } = om2wGoal(t);
   return {
     id: scenarioId(t.task_id),
     about: `om2w ${t.level}: ${t.confirmed_task.slice(0, 80)}`,

@@ -94,8 +94,14 @@ if (!("task_id" in first) || !("confirmed_task" in first) || !pick(first, "websi
   console.error(`unexpected field names; keys of the first record: ${Object.keys(first).join(", ")}`);
 }
 
-const byId = (file: string) =>
-  new Map(readJson<{ task_id: string; final_eval: string | number; key_points: string }[]>(path.join(OM2W_DIR, file)).map((r) => [r.task_id, r]));
+type PublishedRow = { task_id: string; final_eval: string | number; key_points: string };
+/** The OSU result files are JSONL (one object per line); a JSON array is accepted too. */
+function readRows(file: string): PublishedRow[] {
+  const text = fs.readFileSync(file, "utf8").trim();
+  if (text.startsWith("[")) return JSON.parse(text) as PublishedRow[];
+  return text.split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l) as PublishedRow);
+}
+const byId = (file: string) => new Map(readRows(path.join(OM2W_DIR, file)).map((r) => [r.task_id, r]));
 const bu = byId("browser_use.json");
 const op = byId("operator.json");
 

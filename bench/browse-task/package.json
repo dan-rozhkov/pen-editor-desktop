@@ -15,7 +15,8 @@
     "wv:report": "tsx src/webvoyagerReport.ts",
     "wtb:prepare": "tsx src/wtbPrepare.ts",
     "wtb:report": "tsx src/wtbReport.ts",
-    "cost": "tsx src/cost.ts"
+    "cost": "tsx src/cost.ts",
+    "bu": "tsx src/buCloud.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
