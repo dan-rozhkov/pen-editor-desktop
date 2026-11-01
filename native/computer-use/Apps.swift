@@ -53,14 +53,14 @@ struct WinInfo {
     }
 }
 
-private struct CGWin {
+struct CGWin {
     let id: UInt32
     let title: String
     let frame: CGRect
     let onScreen: Bool
 }
 
-private func cgWindows(_ pid: pid_t) -> [CGWin] {
+func cgWindows(_ pid: pid_t) -> [CGWin] {
     guard let list = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else { return [] }
     var out: [CGWin] = []
     for w in list {

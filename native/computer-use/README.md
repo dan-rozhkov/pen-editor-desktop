@@ -24,6 +24,8 @@ Notes on details the spec leaves open:
   owner still gives `POINT_NOT_IN_APP`.
 - No late execution: a command whose watchdog already answered `TIMEOUT` is skipped when its queue slot
   comes up, so an action reported as failed never happens later. (A command already running is not aborted.)
+- App lookup by pid falls back to the main thread when `NSRunningApplication` answers nil off it; that hop waits at most
+  0.5 s, then the app counts as not found (`NOT_FOUND`), so a blocked main run loop cannot wedge an AX queue.
 - `watch` on a pid that has already exited answers `NOT_FOUND` and keeps no state for it.
 - `windows` matches each AX window to the layer-0 CG window of the same pid with the smallest bounds
   distance (each CG id used once). `windowId` is 0 only when no CG window is left or the AX window has no area.
@@ -105,7 +107,8 @@ Notes on details the spec leaves open:
   about 300 ms at most, and is then skipped. `AXChildren` stays a separate read: the plain copy first; only when
   it fails with a timeout-like error (`cannotComplete`) and the node reports more than 100 children, ranged pages of
   100. Other failures (no value, unsupported) are an empty list with no extra call. A child read that did not
-  finish (failed page, deadline) is reported as incomplete: the snapshot answers `truncated: true`, the read
+  finish (failed page, deadline) is reported as incomplete: the snapshot answers `truncated: true` (the walk goes on
+  with the siblings and later subtrees), the read
   answers `truncated: true`, and the re-find search below gives up. The value of an `AXSecureTextField` is read only to
   test it for emptiness (`hasValue`). It is never stored or sent.
 - Transparent wrappers. A node with role `AXGroup`, `AXGenericElement` or `AXSplitGroup` that has no title,
@@ -117,7 +120,9 @@ Notes on details the spec leaves open:
   `STALE`. For each emitted element the snapshot also keeps the retained `AXUIElement`, its base role and its
   `AXIdentifier`. The retained native object is authoritative: a removed element never silently resolves to another
   one. `lookup` first checks that the snapshot's window still exists (an element of a closed window can still answer reads);
-  if not, `STALE` ("The window is gone"). Then it reads the retained element. When the read works, the role matches and
+  if not, `STALE` ("The window is gone"). The window picker skips a window whose frame read timed out, so when
+  it finds none but the snapshot's CG window id is still listed, the window is not gone: only the retained element
+  is read (matching or timed out: used; otherwise `STALE`, "The element is gone"), and the re-find search is skipped. Then it reads the retained element. When the read works, the role matches and
   the identifier matches (if the snapshot saw one), or when the read only times out (alive but slow), the retained
   element is used. When it is gone or its role no longer matches, the element is re-found ONLY if the snapshot saw a non-empty `AXIdentifier`: a search of the window
   (depth 50, at most 5000 nodes, skipping elements outside the window frame like the snapshot walk) for the same base role
@@ -129,8 +134,9 @@ Notes on details the spec leaves open:
   bounds or child-path matching. The ring of 8 snapshots per pid stays.
 - Chromium and Electron activation. When the window has no web content, the helper writes
   `AXManualAccessibility = true` to the app element of EVERY app, unconditionally (harmless where unsupported).
-  A success, `kAXErrorNotImplemented` (Chromium answers that to a write that applied) or a read-back of true counts as
-  applied. When it did not apply, an app whose bundle holds a Chromium-based framework (a name in
+  A success or a read-back of true counts as applied; so does `kAXErrorNotImplemented` (Chromium answers that to a
+  write that applied), but only for an app that looks like Chromium (a Qt or Java app would otherwise make the
+  helper wait for a web area that never comes). When it did not apply, an app whose bundle holds a Chromium-based framework (a name in
   `Contents/Frameworks` that contains electron, chromium, chrome, brave or vivaldi, or the word cef, edge or opera,
   case-insensitive) gets `AXEnhancedUserInterface` (settable probe, write, read-back), then the helper waits 2 s
   (Chromium debounce), only when the poll end allows it; otherwise it skips the wait and logs a line.

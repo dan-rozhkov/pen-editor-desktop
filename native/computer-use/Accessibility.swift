@@ -267,7 +267,16 @@ private func lookup(_ a: JSON, deadline: Date) throws -> AXUIElement {
     do {
         win = try pickWindow(snap.pid, snap.windowId != 0 ? snap.windowId : nil, deadline: deadline)
     } catch let e as CmdError where e.code == "NO_WINDOW" {
-        throw fail("The window is gone. Take a new snapshot.", "STALE")
+        // pickWindow skips a window whose frame read timed out, so a busy-but-open window also lands here.
+        // The snapshot's CG window id still being listed means the window is not gone (alive but slow).
+        guard snap.windowId != 0, cgWindows(snap.pid).contains(where: { Int($0.id) == snap.windowId }) else {
+            throw fail("The window is gone. Take a new snapshot.", "STALE")
+        }
+        // No WinInfo: the re-find search below cannot run, so only the retained element can answer.
+        let now = axReadNode(ref, deadline: deadline)
+        if now.timedOut { return ref }
+        if !now.gone, !now.role.isEmpty, Identity(now).matches(meta) { return ref }
+        throw fail("The element is gone. Take a new snapshot.", "STALE")
     }
 
     // The retained element.
@@ -370,7 +379,7 @@ private let chromiumWordParts: [String] = ["cef", "edge", "opera"]
 
 /// True for apps that embed Chromium: Electron, CEF and Chromium-based browsers.
 private func looksLikeChromium(_ pid: pid_t) -> Bool {
-    guard let url = NSRunningApplication(processIdentifier: pid)?.bundleURL else { return false }
+    guard let url = (try? runningApp(pid))?.bundleURL else { return false }
     let dir = url.appendingPathComponent("Contents/Frameworks").path
     guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return false }
     return names.contains { raw in
@@ -382,8 +391,9 @@ private func looksLikeChromium(_ pid: pid_t) -> Bool {
 
 /// Turns the AX tree of an app on. Rules from agent-desktop:
 /// - EVERY app gets AXManualAccessibility = true written, unconditionally (harmless where unsupported; the
-///   getter and IsAttributeSettable are unreliable on Chromium). A success, kAXErrorNotImplemented (Chromium
-///   answers that to a write that applied) or a read-back of true counts as applied;
+///   getter and IsAttributeSettable are unreliable on Chromium). A success, a read-back of true, or
+///   kAXErrorNotImplemented (Chromium answers that to a write that applied; counted ONLY for a Chromium app,
+///   or a Qt/Java app would make `prepareWindow` poll for a web area that never comes) counts as applied;
 /// - if that did not apply, a Chromium app gets AXEnhancedUserInterface (settable probe, write, read-back),
 ///   which fills the tree after a 2 s debounce: wait 2 s, but only when `waitEnd` allows it;
 /// - the flag is never restored. `manualSetAt` is stamped at each write, before any sleep.
@@ -392,7 +402,7 @@ private func looksLikeChromium(_ pid: pid_t) -> Bool {
 private func activateAccessibility(_ app: AXUIElement, pid: pid_t, chromium: Bool, waitEnd: Date) -> Bool {
     withState { manualSetAt[pid] = Date() }
     let r = AXUIElementSetAttributeValue(app, manualAttr as CFString, kCFBooleanTrue)
-    if r == .success || r == .notImplemented || axBool(app, manualAttr) == true { return true }
+    if r == .success || (chromium && r == .notImplemented) || axBool(app, manualAttr) == true { return true }
     guard chromium, isSettable(app, enhancedAttr) else { return false }
     if axBool(app, enhancedAttr) == true { return true }
     withState { manualSetAt[pid] = Date() }
@@ -603,7 +613,7 @@ private final class SnapWalker {
         func kids() -> [AXUIElement] {
             if kidsCache == nil {
                 let r = axChildrenPaged(el, deadline: deadline)
-                if !r.complete { truncated = true } // children could not be read in full: the list is partial
+                if !r.complete { skippedTimeout = true } // children could not be read in full: the list is partial, the walk goes on
                 kidsCache = r.items
             }
             return kidsCache!

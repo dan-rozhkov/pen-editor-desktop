@@ -82,9 +82,15 @@ describe.skipIf(process.platform !== "darwin" || !existsSync(binPath))("sideform
     }
   });
 
+  // cmdPerform/cmdElementFrame check Accessibility first, so an unknown snapshot is STALE only when granted.
+  async function unknownRefCode(): Promise<string> {
+    const p = await call("permissions");
+    return p.accessibility === true ? "STALE" : "NO_ACCESSIBILITY";
+  }
+
   it("answers errors with a code instead of staying silent", async () => {
     expect(await call("windows", { pid: 999999 })).toMatchObject({ ok: false, code: expect.stringMatching(/NOT_FOUND|NO_ACCESSIBILITY/) });
-    expect(await call("elementFrame", { snapshotId: "none", index: 0 })).toMatchObject({ ok: false, code: "STALE" });
+    expect(await call("elementFrame", { snapshotId: "none", index: 0 })).toMatchObject({ ok: false, code: await unknownRefCode() });
     expect(await call("nope")).toMatchObject({ ok: false, code: "BAD_ARGS" });
     expect(await call("windows", {})).toMatchObject({ ok: false });
   });
@@ -93,7 +99,7 @@ describe.skipIf(process.platform !== "darwin" || !existsSync(binPath))("sideform
     expect(await call("axScroll", { direction: "down" })).toMatchObject({ ok: false, code: "BAD_ARGS" });
     expect(await call("axScroll", { pid: 1, direction: "sideways" })).toMatchObject({ ok: false, code: "BAD_ARGS" });
     expect(await call("axScroll", { pid: 999999, direction: "down", amount: 3 })).toMatchObject({ ok: false, code: "NOT_FOUND" });
-    expect(await call("perform", { snapshotId: "none", index: 0, action: "insertText" })).toMatchObject({ ok: false, code: "STALE" });
+    expect(await call("perform", { snapshotId: "none", index: 0, action: "insertText" })).toMatchObject({ ok: false, code: await unknownRefCode() });
     expect(await call("key", { pid: 1, key: "NoSuchKey", background: true })).toMatchObject({ ok: false, code: "BAD_ARGS" });
     expect(await call("key", { pid: 999999, key: "enter", background: true })).toMatchObject({ ok: false, code: "NOT_FOUND" });
     expect(await call("type", { pid: 1, background: true })).toMatchObject({ ok: false, code: "BAD_ARGS" });
@@ -103,7 +109,7 @@ describe.skipIf(process.platform !== "darwin" || !existsSync(binPath))("sideform
   it("keeps NOT_FOUND for snapshot and read of a pid that does not exist, and STALE for unknown references", async () => {
     expect(await call("snapshot", { pid: 999999 })).toMatchObject({ ok: false, code: "NOT_FOUND" });
     expect(await call("read", { pid: 999999 })).toMatchObject({ ok: false, code: "NOT_FOUND" });
-    expect(await call("perform", { pid: 999999, snapshotId: "none", index: 0, action: "press" })).toMatchObject({ ok: false, code: "STALE" });
+    expect(await call("perform", { pid: 999999, snapshotId: "none", index: 0, action: "press" })).toMatchObject({ ok: false, code: await unknownRefCode() });
   });
 
   it("answers per-pid commands in parallel for different pids", async () => {

@@ -98,14 +98,29 @@ func runningApp(_ pid: pid_t) throws -> NSRunningApplication {
     // NSRunningApplication(processIdentifier:) called off the main thread can return nil for a live app
     // (seen live: a TextEdit snapshot failed NOT_FOUND about 0.3 s after `windows` succeeded, every time).
     // So when it gives nil for a live process, look the app up again on the main thread, where the
-    // workspace's list of apps is kept.
+    // workspace's list of apps is kept. That hop is bounded (0.5 s): a blocked main run loop must not wedge
+    // an AX queue past its watchdog. A late answer is dropped and the app counts as not found.
     func look() -> NSRunningApplication? {
         NSRunningApplication(processIdentifier: pid)
             ?? NSWorkspace.shared.runningApplications.first { $0.processIdentifier == pid }
     }
     var found = look()
     if found == nil, kill(pid, 0) == 0 || errno == EPERM, !Thread.isMainThread {
-        found = DispatchQueue.main.sync { look() }
+        final class Box: @unchecked Sendable { let lock = NSLock(); var app: NSRunningApplication?; var open = true }
+        let box = Box()
+        let sem = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            let r = look()
+            box.lock.lock()
+            if box.open { box.app = r }
+            box.lock.unlock()
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + 0.5)
+        box.lock.lock()
+        box.open = false
+        found = box.app
+        box.lock.unlock()
     }
     guard let app = found, !app.isTerminated else {
         throw fail("No running app with pid \(pid).", "NOT_FOUND")
