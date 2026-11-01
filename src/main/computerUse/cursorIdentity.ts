@@ -3,13 +3,14 @@
 
 /**
  * Slot 0 is the accent a single agent has always had. The rest keep its OKLCH lightness (L = 0.670) and step the hue
- * by 60 degrees, with chroma clipped to what sRGB can show, so all six read equally bright. Slots are ordered so each
+ * by 60 degrees, with chroma clipped to what sRGB can show, so all six read equally bright. Amber is the one exception
+ * (L = 0.780): yellow-orange at L 0.670 reads as brown, so it is lifted to look as bright as the rest. Slots are ordered so each
  * next agent is as far in hue as possible from the earlier ones (the complement first). The label pill is a dark
  * tooltip, so the colour is only on the arrow (white outline) and its glow: no text-contrast limit applies.
  */
 export const CURSOR_PALETTE: readonly string[] = [
   "#0d99ff", // blue   oklch(0.670 0.183 249.2), the default accent
-  "#ce8200", // amber  oklch(0.670 0.146 69.2), +180
+  "#fca000", // amber  oklch(0.780 0.170 69.2), +180
   "#b670e8", // violet oklch(0.670 0.183 309.2), +60
   "#71a900", // green  oklch(0.670 0.178 129.2), +240
   "#ee5a7d", // rose   oklch(0.670 0.183 9.2), +120
