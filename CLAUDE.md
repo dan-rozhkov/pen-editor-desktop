@@ -1450,7 +1450,7 @@ the app-global wiring (registry, confirm memory, real launcher); `window.ts`'s
   name, or `true` for a quit app) and a `note` (`withLeftAppNote`). Sessions keep
   the old refusal: a subagent that drifts to a URL must not close the app mid-run.
   `ERR_APP_GONE` also names this way back.
-- **Key** `${senderId}:${sessionId ?? ""}`, reserved (`registry.begin`) BEFORE
+- **Key** `appKey(sender, session, chat)`: `${senderId}:${sessionId}`, or without session `${senderId}:chat:${chatId}`, or `${senderId}:` (old frontend, no chat id), reserved (`registry.begin`) BEFORE
   validate/confirm: a parallel open on the key gets BUSY, and so does a new open on
   a key whose cancelled open still shows its dialog (the flight entry stays until
   it finishes). Cap 4 (`MAX_RUNNING_APPS`) counts every spawned app not yet fully closed plus flights

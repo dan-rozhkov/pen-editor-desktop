@@ -15,9 +15,34 @@ import {
   TOMBSTONE_LIMIT,
   commandMayCreateSession,
   parseSessionId,
+  parseAppChat,
+  ERR_INVALID_CHAT_ID,
   planSessionCommand,
 } from "../src/main/browserSessions";
 import { ERR_NO_JOURNAL } from "../src/main/journalOwners";
+
+describe("parseAppChat", () => {
+  it("a payload without a chat key has no chat", () => {
+    expect(parseAppChat({ command: "open" })).toEqual({ ok: true, id: undefined });
+  });
+
+  it.each(["a", "chat_1-X", "A".repeat(64)])("accepts %s", (id) => {
+    expect(parseAppChat({ chat: id })).toEqual({ ok: true, id });
+  });
+
+  it.each([
+    ["empty", ""],
+    ["too long", "a".repeat(65)],
+    ["colon", "a:b"],
+    ["space", "a b"],
+    ["number", 5],
+    ["null", null],
+    ["undefined value", undefined],
+    ["object", {}],
+  ])("rejects %s (never falls back)", (_name, value) => {
+    expect(parseAppChat({ chat: value })).toEqual({ ok: false, error: ERR_INVALID_CHAT_ID });
+  });
+});
 
 describe("parseSessionId", () => {
   it("a payload without a session key is the shared browser", () => {

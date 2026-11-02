@@ -29,6 +29,7 @@ export const DRAIN_TIMEOUT_MS = 30_000;
 export const TOMBSTONE_LIMIT = 10_000;
 
 export const ERR_INVALID_SESSION_ID = "invalid session id";
+export const ERR_INVALID_CHAT_ID = "Invalid chat id.";
 export const ERR_TOO_MANY_SESSIONS = "too many parallel browser sessions";
 export const ERR_SESSION_NOT_OWNED = "browser session belongs to another editor tab";
 export const ERR_SESSION_CLOSED = "browser session closed";
@@ -53,6 +54,22 @@ export function parseSessionId(payload: Record<string, unknown>): ParsedSession 
   if (!Object.hasOwn(payload, "session")) return { ok: true, id: undefined };
   const value = payload.session;
   if (typeof value !== "string" || !SESSION_ID_PATTERN.test(value)) return { ok: false, error: ERR_INVALID_SESSION_ID };
+  return { ok: true, id: value };
+}
+
+export type ParsedChat = { ok: true; id: string | undefined } | { ok: false; error: string };
+
+/**
+ * The optional `chat` field of a `browser:command` payload. It gives each chat
+ * of the shared browser scope its own desktop-app binding. A payload without
+ * the key has no chat (an old frontend). A payload WITH the key must carry a
+ * valid id string: `chat: undefined` or `null` is an error, never a fallback.
+ * The caller ignores `chat` when `session` is present.
+ */
+export function parseAppChat(payload: Record<string, unknown>): ParsedChat {
+  if (!Object.hasOwn(payload, "chat")) return { ok: true, id: undefined };
+  const value = payload.chat;
+  if (typeof value !== "string" || !SESSION_ID_PATTERN.test(value)) return { ok: false, error: ERR_INVALID_CHAT_ID };
   return { ok: true, id: value };
 }
 

@@ -464,7 +464,14 @@ export interface AppHandle {
   close(): Promise<void>;
 }
 
-export const appKey = (senderId: number, sessionId: string | undefined): string => `${senderId}:${sessionId ?? ""}`;
+/**
+ * The registry key of one app binding. A session has its own key. Without a
+ * session, each chat has its own key (`chat` ids cannot contain `:`, so keys
+ * never collide). With neither, all callers of the sender share one key (an old
+ * frontend that sends no chat id).
+ */
+export const appKey = (senderId: number, sessionId: string | undefined, chatId?: string): string =>
+  sessionId !== undefined ? `${senderId}:${sessionId}` : chatId !== undefined ? `${senderId}:chat:${chatId}` : `${senderId}:`;
 
 export interface LaunchOptions {
   /** Run with the app's own (the user's) profile instead of a fresh temp one. */
@@ -741,7 +748,7 @@ export function createAppRegistry<H extends AppHandle>(deps: {
 
 export type AppRegistry<H extends AppHandle> = ReturnType<typeof createAppRegistry<H>>;
 
-/** Predicate for "everything this sender owns" (any session). */
+/** Predicate for "everything this sender owns" (any session or chat). */
 export const ownedBySender = (senderId: number) => (key: string): boolean => key.startsWith(`${senderId}:`);
 /** Predicate for one session of one sender. */
 export const ownedBySession = (senderId: number, sessionId: string) => (key: string): boolean => key === appKey(senderId, sessionId);

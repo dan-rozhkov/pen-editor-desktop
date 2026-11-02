@@ -286,8 +286,9 @@ describe("browser:command commands", () => {
     const panelPreload = readFileSync(join(SRC, "preload/agentPanel.ts"), "utf8");
     const sentByPanel = new Set([...panelPreload.matchAll(/command: "(\w+)"/g)].map((m) => m[1]));
     expect([...sentByPanel].sort()).toEqual([...sentByPreload].sort());
-    expect(panelPreload).toContain("session: scope.session");
-    expect(panelPreload).toContain("isolated: (sessionId: string) => makeBrowser");
+    expect(panelPreload).toContain("...scope");
+    expect(panelPreload).toContain("isolated: (sessionId: string) => makeBrowser({ session: sessionId })");
+    expect(panelPreload).toContain("forChat: (chatId: string) => makeBrowser({ chat: chatId })");
   });
 
   it("assert (QA checks) is wired end to end: list, page-driving, dispatch, preload, shared and isolated", () => {
@@ -299,7 +300,9 @@ describe("browser:command commands", () => {
 
   it("closeSession is handled in window.ts and the payload carries `session`", () => {
     expect(windowSource).toContain('payload.command === "closeSession"');
-    expect(preload).toContain("session: scope.session");
+    expect(preload).toContain("...scope");
+    expect(preload).toContain("isolated: (sessionId: string) => makeBrowser({ session: sessionId })");
+    expect(preload).toContain("forChat: (chatId: string) => makeBrowser({ chat: chatId })");
   });
 
   it("both preloads expose launchApp (open with { app }) and releaseApp as the desktop-app capability", () => {

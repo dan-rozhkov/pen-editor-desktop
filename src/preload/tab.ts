@@ -113,9 +113,11 @@ function registerMcpBridge(handler: McpBridgeHandler): () => void {
 // 2026-10-17-isolated-parallel-browse-design.md). Main validates the id.
 // `isolated(undefined)` must NOT fall back to the shared browser: the scope is a
 // wrapper, so a missing/invalid id still travels as `session` and main rejects it.
-const makeBrowser = (scope?: { session: unknown }) => {
+// `{ chat }` keeps the shared browser but gives that chat its own desktop-app
+// binding; `forChat(undefined)` still sends `chat` and main rejects it.
+const makeBrowser = (scope?: { session: unknown } | { chat: unknown }) => {
   const call = (payload: { command: string; args?: unknown }): Promise<unknown> =>
-    ipcRenderer.invoke("browser:command", scope === undefined ? payload : { ...payload, session: scope.session });
+    ipcRenderer.invoke("browser:command", scope === undefined ? payload : { ...payload, ...scope });
   return {
     open: (args: { url: string }): Promise<unknown> =>
       call({ command: "open", args }),
@@ -199,6 +201,8 @@ const browser = {
   // `browser`; every call carries the session id. Created lazily by its first
   // page command in main. Close it with `closeSession` (idempotent).
   isolated: (sessionId: string) => makeBrowser({ session: sessionId }),
+  // The shared browser, with one desktop-app binding per chat.
+  forChat: (chatId: string) => makeBrowser({ chat: chatId }),
   closeSession: (sessionId: string): Promise<unknown> =>
     ipcRenderer.invoke("browser:command", { command: "closeSession", session: sessionId }),
 };

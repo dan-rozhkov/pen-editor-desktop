@@ -120,6 +120,7 @@ import {
   ScopeCounter,
   planSessionCommand,
   parseSessionId,
+  parseAppChat,
 } from "./browserSessions";
 
 /**
@@ -2298,9 +2299,8 @@ export function createMainWindow(
     plan: Exclude<ReturnType<typeof planAppCommand>, "passthrough" | "leave">,
     payload: Record<string, unknown> & { command: string },
     sender: number,
-    sessionId: string | undefined,
+    key: string,
   ): Promise<unknown> => {
-    const key = appKey(sender, sessionId);
     if (plan === "release") {
       const { pending } = await appRegistry.release(key);
       return pending ? { ok: true, pending: true } : { ok: true };
@@ -2341,7 +2341,10 @@ export function createMainWindow(
     const parsedSession = parseSessionId(payload);
     if (!parsedSession.ok) return { error: parsedSession.error };
     const sessionId = parsedSession.id;
-    const key = appKey(sender, sessionId);
+    // `chat` only splits the app binding of the shared scope; a session key wins.
+    const parsedChat = sessionId === undefined ? parseAppChat(payload) : { ok: true as const, id: undefined };
+    if (!parsedChat.ok) return { error: parsedChat.error };
+    const key = appKey(sender, sessionId, parsedChat.id);
     const appPlan = planAppCommand(payload.command, payload.args, appRegistry.state(key), {
       native: appRegistry.get(key)?.native === true,
       shared: sessionId === undefined,
@@ -2350,7 +2353,7 @@ export function createMainWindow(
     let leftApp: string | undefined;
     if (appPlan === "leave") {
       leftApp = await leaveApp(appRegistry, key, { onError: (err) => console.error("desktop app: release before browser open failed", err) });
-    } else if (appPlan !== "passthrough") return await runAppCommand(appPlan, payload as Record<string, unknown> & { command: string }, sender, sessionId);
+    } else if (appPlan !== "passthrough") return await runAppCommand(appPlan, payload as Record<string, unknown> & { command: string }, sender, key);
     if (payload.command === "closeSession") {
       if (sessionId === undefined) return { error: ERR_INVALID_SESSION_ID };
       const owner = sessions.ownerOf(sessionId);

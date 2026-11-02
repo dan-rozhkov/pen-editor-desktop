@@ -584,6 +584,33 @@ describe("key predicates", () => {
     expect(ownedBySession(3, "run")("3:run")).toBe(true);
     expect(ownedBySession(3, "run")("3:")).toBe(false);
   });
+
+  it("a chat gets its own key without a session; a session key wins", () => {
+    expect(appKey(3, undefined, "c1")).toBe("3:chat:c1");
+    expect(appKey(3, undefined, "c2")).not.toBe(appKey(3, undefined, "c1"));
+    expect(appKey(3, "run", "c1")).toBe("3:run");
+    expect(appKey(3, undefined, undefined)).toBe("3:");
+  });
+
+  it("ownedBySender covers chat keys and not another sender's", () => {
+    expect(ownedBySender(3)("3:chat:c1")).toBe(true);
+    expect(ownedBySender(3)("33:chat:c1")).toBe(false);
+    expect(ownedBySession(3, "run")("3:chat:run")).toBe(false);
+  });
+
+  it("two chats of one sender bind apps independently", async () => {
+    const reg = createAppRegistry<Fake>({ launch: async () => fakeHandle() });
+    const a = appKey(3, undefined, "A");
+    const b = appKey(3, undefined, "B");
+    const began = reg.begin(a);
+    if (!began.ok) throw new Error("begin failed");
+    await began.ticket.launch("/A");
+    expect(reg.state(a)).toBe("running");
+    expect(reg.state(b)).toBe("none");
+    expect(reg.get(b)).toBeUndefined();
+    await reg.releaseWhere(ownedBySender(3));
+    expect(reg.state(a)).not.toBe("running");
+  });
 });
 
 describe("planAppCommand: shared open({ url }) leaves the app", () => {
