@@ -1440,7 +1440,16 @@ the app-global wiring (registry, confirm memory, real launcher); `window.ts`'s
   or a session/owner release. If the app quits, the key keeps a tombstone
   (`gone`): routed commands answer "The desktop app is no longer running..."
   instead of falling through to the built-in browser. Commands while an open is
-  pending answer a "still starting" error.
+  pending answer a "still starting" error. Exception, shared scope only (no
+  `session`): `open({ url })` without `app` on a running or `gone` key means "back
+  to the built-in browser". Only a URL the browser accepts counts (http(s),
+  `decideBrowserNavigation`): a bad URL keeps the app. Plan `leave` runs
+  `leaveApp`: it reads the app name, releases the binding (same as `releaseApp`;
+  the binding goes at once), waits for the close at most `LEAVE_APP_WAIT_MS` (5 s),
+  then the command runs in the shared browser; the result gets `leftApp` (the
+  name, or `true` for a quit app) and a `note` (`withLeftAppNote`). Sessions keep
+  the old refusal: a subagent that drifts to a URL must not close the app mid-run.
+  `ERR_APP_GONE` also names this way back.
 - **Key** `${senderId}:${sessionId ?? ""}`, reserved (`registry.begin`) BEFORE
   validate/confirm: a parallel open on the key gets BUSY, and so does a new open on
   a key whose cancelled open still shows its dialog (the flight entry stays until

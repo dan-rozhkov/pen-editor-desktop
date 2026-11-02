@@ -43,6 +43,10 @@ import {
   ownedBySender,
   ownedBySession,
   planAppCommand,
+  appDisplayName,
+  leaveApp,
+  LEAVE_APP_WAIT_MS,
+  withLeftAppNote,
   validateAppPath,
   ERR_APP_BLOCKED,
   APP_HIGH_RISK_WARNING,
@@ -579,6 +583,99 @@ describe("key predicates", () => {
     expect(ownedBySender(3)("33:")).toBe(false);
     expect(ownedBySession(3, "run")("3:run")).toBe(true);
     expect(ownedBySession(3, "run")("3:")).toBe(false);
+  });
+});
+
+describe("planAppCommand: shared open({ url }) leaves the app", () => {
+  const shared = { shared: true };
+  it("returns leave for a running or quit app", () => {
+    for (const s of ["running", "gone"] as const) expect(planAppCommand("open", { url: "https://x.y" }, s, shared)).toBe("leave");
+  });
+  it("also leaves a native handle", () => {
+    expect(planAppCommand("open", { url: "https://x.y" }, "running", { shared: true, native: true })).toBe("leave");
+  });
+  it("keeps the old plans elsewhere", () => {
+    expect(planAppCommand("open", { url: "https://x.y" }, "running")).toBe("route");
+    expect(planAppCommand("open", { url: "https://x.y" }, "running", { shared: false })).toBe("route");
+    expect(planAppCommand("open", { url: "https://x.y" }, "gone", { shared: false })).toBe("gone");
+    expect(planAppCommand("open", { url: "https://x.y" }, "pending", shared)).toBe("pending");
+    expect(planAppCommand("open", { url: "https://x.y" }, "none", shared)).toBe("passthrough");
+    expect(planAppCommand("open", { app: "/Applications/Orca.app", url: "https://x.y" }, "running", shared)).toBe("launch");
+    expect(planAppCommand("open", { app: "" , url: "https://x.y" }, "running", shared)).toBe("refuse");
+  });
+  it("needs a non-empty string url", () => {
+    for (const a of [{}, { url: "" }, { url: "  " }, { url: 5 }, null, undefined, "x"]) {
+      expect(planAppCommand("open", a, "running", shared)).toBe("route");
+      expect(planAppCommand("open", a, "gone", shared)).toBe("gone");
+    }
+  });
+  it("leaves only for a URL the built-in browser accepts (a bad URL keeps the app)", () => {
+    for (const url of ["javascript:alert(1)", "ftp://x.y", "file:///etc/hosts", "data:text/html,x"]) {
+      expect(planAppCommand("open", { url }, "running", shared)).toBe("route");
+      expect(planAppCommand("open", { url }, "gone", shared)).toBe("gone");
+    }
+    expect(planAppCommand("open", { url: "  http://localhost:3000/  " }, "running", shared)).toBe("leave");
+  });
+  it("other commands stay sticky to the app", () => {
+    for (const c of ["snapshot", "act", "screenshot", "tabs", "read"]) {
+      expect(planAppCommand(c, { url: "https://x.y" }, "running", shared)).toBe("route");
+      expect(planAppCommand(c, { url: "https://x.y" }, "gone", shared)).toBe("gone");
+    }
+    expect(planAppCommand("releaseApp", {}, "running", shared)).toBe("release");
+  });
+  it("appDisplayName is the .app basename; a tombstone has none", () => {
+    expect(appDisplayName({ appPath: "/Applications/Orca.app" })).toBe("Orca");
+    expect(appDisplayName(undefined)).toBeUndefined();
+  });
+  it("leaveApp reads the name before the release and waits for the close", async () => {
+    const order: string[] = [];
+    const registry = {
+      get: (k: string) => (order.push(`get ${k}`), { appPath: "/Applications/Orca.app" }),
+      release: async (k: string) => void order.push(`release ${k}`),
+    };
+    expect(await leaveApp(registry, "1:", { sleep: () => new Promise(() => {}) })).toBe("Orca");
+    expect(order).toEqual(["get 1:", "release 1:"]);
+  });
+  it("leaveApp stops waiting for a slow close after waitMs", async () => {
+    const waits: number[] = [];
+    const registry = { get: () => undefined, release: () => new Promise<void>(() => {}) };
+    expect(await leaveApp(registry, "1:", { sleep: async (ms) => void waits.push(ms) })).toBeUndefined();
+    expect(waits).toEqual([LEAVE_APP_WAIT_MS]);
+  });
+  it("leaveApp never throws on a failing release", async () => {
+    const errors: unknown[] = [];
+    const rejecting = { get: () => ({ appPath: "/Applications/Orca.app" }), release: () => Promise.reject(new Error("boom")) };
+    expect(await leaveApp(rejecting, "1:", { onError: (e) => errors.push(e) })).toBe("Orca");
+    const throwing = { get: () => undefined, release: (): Promise<unknown> => { throw new Error("sync"); } };
+    expect(await leaveApp(throwing, "1:", { onError: (e) => errors.push(e) })).toBeUndefined();
+    expect(errors).toHaveLength(2);
+  });
+  it("withLeftAppNote adds leftApp and a note to an object result", () => {
+    const r = withLeftAppNote({ ok: true }, "Orca") as Record<string, unknown>;
+    expect(r.ok).toBe(true);
+    expect(r.leftApp).toBe("Orca");
+    expect(r.note).toBe("Sideform let go of the desktop app Orca. This call and later browse_* calls use the built-in browser. To work in the app again, call browse_open with app.");
+  });
+  it("appends to an existing note with one space", () => {
+    const r = withLeftAppNote({ note: "Loaded." }, "Orca") as { note: string };
+    expect(r.note.startsWith("Loaded. Sideform let go of the desktop app Orca.")).toBe(true);
+  });
+  it("still adds both to an error result", () => {
+    const r = withLeftAppNote({ error: "boom" }, "Orca") as Record<string, unknown>;
+    expect(r.error).toBe("boom");
+    expect(r.leftApp).toBe("Orca");
+    expect(typeof r.note).toBe("string");
+  });
+  it("names no app for a quit app (no path) and sets leftApp true", () => {
+    const r = withLeftAppNote({ ok: true }, undefined) as Record<string, unknown>;
+    expect(r.leftApp).toBe(true);
+    expect(r.note).toBe("Sideform let go of the desktop app. This call and later browse_* calls use the built-in browser. To work in the app again, call browse_open with app.");
+  });
+  it("leaves a non-object result untouched", () => {
+    expect(withLeftAppNote("text", "Orca")).toBe("text");
+    expect(withLeftAppNote(null, "Orca")).toBeNull();
+    const arr = [1];
+    expect(withLeftAppNote(arr, "Orca")).toBe(arr);
   });
 });
 

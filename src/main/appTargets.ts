@@ -7,6 +7,7 @@
 // The model's text is ONLY the path. It never becomes an argument, an env var or
 // a profile dir: the adapter makes a fresh temp profile and locks navigation.
 import path from "node:path";
+import { decideBrowserNavigation } from "@sideform/browser-agent/controller";
 import { ERR_NO_ACCESSIBILITY, NATIVE_MODE_NOTE } from "./computerUse/errors";
 import { resolveRunningApp, runningAppNames, type RunningApp } from "./computerUse/appResolver";
 
@@ -747,7 +748,7 @@ export const ownedBySession = (senderId: number, sessionId: string) => (key: str
 
 // ------------------------------------------------------------------ routing
 
-export type AppCommandPlan = "launch" | "route" | "refuse" | "release" | "passthrough" | "pending" | "gone";
+export type AppCommandPlan = "launch" | "route" | "refuse" | "release" | "leave" | "passthrough" | "pending" | "gone";
 
 const ROUTED = new Set(["open", "act", "snapshot", "read", "screenshot", "tabs", "findImages", "perform", "assert", "requests", "capture"]);
 // `capture` is routed for Electron apps (a real DOM, for the trace recorder) and refused for native handles
@@ -757,27 +758,92 @@ const REFUSED = new Set(["applyFixture", "fillLogin", "startJournal", "captureCh
 export const ERR_APP_COMMAND_UNSUPPORTED =
   "This command is only available in the built-in browser, not in a desktop app.";
 export const ERR_APP_ARG = "open needs a non-empty string `app` path.";
-export const ERR_APP_GONE = "The desktop app is no longer running. Call browse_open with app again, or end the run.";
+export const ERR_APP_GONE =
+  "The desktop app is no longer running. Call browse_open with app again, or end the run. In the main chat, browse_open with url goes back to the built-in browser.";
 export const ERR_APP_PENDING = "The desktop app is still starting (waiting for the user's confirmation or the launch). Wait, then retry.";
 
 /**
  * Which path a `browser:command` takes given the key's app state. A key that
- * ever launched an app stays bound (`gone` included) until `releaseApp` or a
- * session/owner release, so a quit app never silently falls back to the
- * built-in browser.
+ * ever launched an app stays bound (`gone` included) until `releaseApp`, a
+ * session/owner release or (shared scope only) an `open` with an http(s) `url`,
+ * so a quit app never silently falls back to the built-in browser: going back
+ * is always an explicit `open({ url })`, and the result says so (`leftApp`).
+ * In a session, `open({ url })` keeps the refusal: a run must not lose its app.
  */
-export function planAppCommand(command: string, args: unknown, state: AppState, opts: { native?: boolean } = {}): AppCommandPlan {
+export function planAppCommand(
+  command: string,
+  args: unknown,
+  state: AppState,
+  opts: { native?: boolean; shared?: boolean } = {},
+): AppCommandPlan {
   if (command === "releaseApp") return "release";
   if (command === "open" && typeof args === "object" && args !== null && Object.hasOwn(args, "app")) {
     const app = (args as { app?: unknown }).app;
     return typeof app === "string" && app.trim() !== "" ? "launch" : "refuse";
   }
   if (state === "none") return "passthrough";
+  // Shared scope only: `open({ url })` on a bound app means "back to the built-in browser" (a session keeps the refusal).
+  if (command === "open" && opts.shared === true && (state === "running" || state === "gone") && hasUrlArg(args)) return "leave";
   // A native (computer use) handle has no DOM: `capture` keeps the old refusal there.
   if (command === "capture" && opts.native === true && state === "running") return "refuse";
   if (ROUTED.has(command)) return state === "pending" ? "pending" : state === "gone" ? "gone" : "route";
   if (REFUSED.has(command)) return "refuse";
   return "passthrough";
+}
+
+/** An `open` the built-in browser would accept (http(s)): a bad URL must not cost the app. */
+function hasUrlArg(args: unknown): boolean {
+  if (typeof args !== "object" || args === null) return false;
+  const url = (args as { url?: unknown }).url;
+  return typeof url === "string" && url.trim() !== "" && decideBrowserNavigation(url.trim()) === "allow";
+}
+
+/** The app's display name for notes: the `.app` basename; a quit app's tombstone has no path. */
+export function appDisplayName(handle: { appPath?: string } | undefined): string | undefined {
+  const p = handle?.appPath;
+  return p ? path.basename(p, ".app") : undefined;
+}
+
+/** How long a `leave` waits for the app to close before the browser command runs (like closeSession). */
+export const LEAVE_APP_WAIT_MS = 5_000;
+
+/**
+ * The `leave` plan before the browser command: read the app name, release the key (the binding goes at
+ * once; the close runs on), and wait for the close at most `waitMs`. Never throws. Returns the name.
+ */
+export async function leaveApp(
+  registry: { get(key: string): { appPath?: string } | undefined; release(key: string): Promise<unknown> },
+  key: string,
+  opts: { waitMs?: number; sleep?: (ms: number) => Promise<void>; onError?: (err: unknown) => void } = {},
+): Promise<string | undefined> {
+  const name = appDisplayName(registry.get(key));
+  let closing: Promise<unknown>;
+  try {
+    closing = registry.release(key).catch((err: unknown) => opts.onError?.(err));
+  } catch (err) {
+    opts.onError?.(err);
+    return name;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => { timer = setTimeout(r, ms); }));
+  try {
+    await Promise.race([closing, sleep(opts.waitMs ?? LEAVE_APP_WAIT_MS)]);
+  } finally {
+    clearTimeout(timer);
+  }
+  return name;
+}
+
+/**
+ * Tells the model the app was let go. Only a plain object result is changed; a copy is returned.
+ * `leftApp` is the app name, or `true` for a quit app (its tombstone keeps no path).
+ */
+export function withLeftAppNote(result: unknown, name: string | undefined): unknown {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) return result;
+  const app = name ? `the desktop app ${name}` : "the desktop app";
+  const note = `Sideform let go of ${app}. This call and later browse_* calls use the built-in browser. To work in the app again, call browse_open with app.`;
+  const prev = (result as { note?: unknown }).note;
+  return { ...result, leftApp: name ?? true, note: typeof prev === "string" && prev !== "" ? `${prev} ${note}` : note };
 }
 
 export function refusalFor(command: string, args: unknown): string {

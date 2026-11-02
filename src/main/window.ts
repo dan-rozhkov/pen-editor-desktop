@@ -103,7 +103,7 @@ import { isLoginBindingCall, promptChoiceFromButton, savePromptCopy, type LoginC
 import { normalizeOrigin, type CredentialStore } from "./browser/credentialStore";
 import type { FaviconCache } from "./browser/faviconCache";
 import type { PasswordsService } from "./passwordsService";
-import { appKey, errorForPlan, openApp, ownedBySender, ownedBySession, planAppCommand, routeAppCommand } from "./appTargets";
+import { appKey, errorForPlan, leaveApp, openApp, ownedBySender, ownedBySession, planAppCommand, routeAppCommand, withLeftAppNote } from "./appTargets";
 import { appConfirm, appRegistry, cancelWaiters, findUserRunningPids, quitUserApp, reopenApp, reopenWhenGone, validateRequestedApp } from "./appTargetsService";
 import { AGENT_AWAKE_HOLD_MS, MINIMIZED_AGENT_NOTICE_BODY, MINIMIZED_AGENT_NOTICE_TITLE, createTabAgentActivity, isAgentPageCommand } from "./agentActivity";
 import { decideCloseTarget } from "./closeTarget";
@@ -2295,7 +2295,7 @@ export function createMainWindow(
   // Commands for an external desktop app (src/main/appTargets.ts). They skip the
   // built-in browser's tab activity, dialog sweeps and run boundary entirely.
   const runAppCommand = async (
-    plan: Exclude<ReturnType<typeof planAppCommand>, "passthrough">,
+    plan: Exclude<ReturnType<typeof planAppCommand>, "passthrough" | "leave">,
     payload: Record<string, unknown> & { command: string },
     sender: number,
     sessionId: string | undefined,
@@ -2341,10 +2341,16 @@ export function createMainWindow(
     const parsedSession = parseSessionId(payload);
     if (!parsedSession.ok) return { error: parsedSession.error };
     const sessionId = parsedSession.id;
-    const appPlan = planAppCommand(payload.command, payload.args, appRegistry.state(appKey(sender, sessionId)), {
-      native: appRegistry.get(appKey(sender, sessionId))?.native === true,
+    const key = appKey(sender, sessionId);
+    const appPlan = planAppCommand(payload.command, payload.args, appRegistry.state(key), {
+      native: appRegistry.get(key)?.native === true,
+      shared: sessionId === undefined,
     });
-    if (appPlan !== "passthrough") return await runAppCommand(appPlan, payload as Record<string, unknown> & { command: string }, sender, sessionId);
+    // Shared `open({ url })` on a bound app: let the app go, then run the command in the built-in browser.
+    let leftApp: string | undefined;
+    if (appPlan === "leave") {
+      leftApp = await leaveApp(appRegistry, key, { onError: (err) => console.error("desktop app: release before browser open failed", err) });
+    } else if (appPlan !== "passthrough") return await runAppCommand(appPlan, payload as Record<string, unknown> & { command: string }, sender, sessionId);
     if (payload.command === "closeSession") {
       if (sessionId === undefined) return { error: ERR_INVALID_SESSION_ID };
       const owner = sessions.ownerOf(sessionId);
@@ -2373,7 +2379,8 @@ export function createMainWindow(
       journal = entered.session.ctx.journal;
     }
     try {
-      return await runBrowserCommand(payload as Record<string, unknown> & { command: string }, sender, sessionId, controller, journal);
+      const result = await runBrowserCommand(payload as Record<string, unknown> & { command: string }, sender, sessionId, controller, journal);
+      return appPlan === "leave" ? withLeftAppNote(result, leftApp) : result;
     } finally {
       exitSession?.();
     }
