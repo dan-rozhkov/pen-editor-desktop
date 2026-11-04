@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.9.7](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.9.6...v0.9.7) (2026-11-04)
+
+
+### Features
+
+* **release:** sign and notarize the macOS builds ([168426c](https://github.com/dan-rozhkov/pen-editor-desktop/commit/168426c6259d7d87cefca4cacae0a03536080bca))
+
 ## [0.9.6](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.9.5...v0.9.6) (2026-11-04)
 
 
