@@ -18,7 +18,7 @@ npm test          # Vitest unit tests (test/)
 npm run test:e2e  # build + Playwright _electron smoke (stub HTTP server, no network)
 npm run test:e2e:live  # opt-in: same shell against the DEPLOYED frontend/backend (network)
 npm run lint      # tsc --noEmit (src) + tsc -p tsconfig.e2e.json (e2e/ + configs)
-npm run dist      # electron-builder → release/ (mac dmg+zip, arm64 and x64, signed and notarized)
+npm run dist      # electron-builder → release/ (mac dmg+zip, unsigned)
 ```
 
 Releases: release-please (`.github/workflows/release.yml`). Every push to `main`
@@ -26,13 +26,6 @@ updates a release PR from Conventional Commits (`feat:` → minor while on 0.x,
 `fix:` → patch, `feat!:` → minor). Merging it bumps `package.json`, writes
 `CHANGELOG.md`, tags `vX.Y.Z` and makes the GitHub release. Do not run
 `npm version` by hand. The app build (`npm run dist`) stays manual.
-
-**Signing.** `npm run dist` needs three things on the Mac that builds:
-- The `Developer ID Application: Daniil Rozhkov (K7RK9GV7XC)` certificate with its private key in the login keychain. Only the Account Holder can create it. Allow `codesign` to use the key with "Always Allow".
-- The notarytool profile `sideform-notary` in the keychain (`xcrun notarytool store-credentials`). No Apple secret is in this repo.
-- Xcode 26 or higher for `actool`.
-
-The build uses the hardened runtime with `build/entitlements.mac.plist`. A new entitlement needs a real run of a signed build. Do not add `disable-library-validation` without a reason: the app loads no third-party libraries.
 
 ## Architecture
 

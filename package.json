@@ -17,7 +17,7 @@
     "test:e2e:live": "npm run build && playwright test --config playwright.live.config.ts",
     "test:e2e:bench": "npm run build && playwright test --config playwright.bench.config.ts",
     "test:e2e:shots": "npm run build && AGENT_SHOTS=1 playwright test --config playwright.bench.config.ts e2e/bench-agent-layout-screens.spec.ts",
-    "dist": "npm run build:native && npm run build && APPLE_KEYCHAIN_PROFILE=sideform-notary electron-builder --mac"
+    "dist": "npm run build:native && npm run build && electron-builder --mac"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
@@ -47,36 +47,19 @@
     ],
     "mac": {
       "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        }
+        "dmg",
+        "zip"
       ],
       "icon": "assets/app-icons/white.icon",
       "category": "public.app-category.graphics-design",
-      "identity": "Daniil Rozhkov (K7RK9GV7XC)",
-      "hardenedRuntime": true,
+      "identity": "-",
+      "hardenedRuntime": false,
       "extraResources": [
         {
           "from": "native/bin/sideform-computer-use",
           "to": "computer-use/sideform-computer-use"
         }
-      ],
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist",
-      "extendInfo": {
-        "NSAppleEventsUsageDescription": "Sideform Desktop quits the apps that the agent opened."
-      }
+      ]
     }
   },
   "dependencies": {
