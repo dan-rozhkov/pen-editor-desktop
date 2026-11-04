@@ -326,6 +326,23 @@ describe("preload/tab.ts browserSettings bridge", () => {
   });
 });
 
+describe("preload/tab.ts appIcon bridge", () => {
+  it("exposes get and set over app-icon:get / app-icon:set", async () => {
+    vi.resetModules();
+    invokeMock.mockClear();
+    exposedApi = undefined;
+    (globalThis as unknown as { location: unknown }).location = { pathname: "/settings" };
+    await import("../src/preload/tab");
+    expect(Object.keys(exposedApi.appIcon).sort()).toEqual(["get", "set"]);
+    invokeMock.mockResolvedValueOnce({ selected: "white", options: [] });
+    await expect(exposedApi.appIcon.get()).resolves.toEqual({ selected: "white", options: [] });
+    expect(invokeMock).toHaveBeenLastCalledWith("app-icon:get");
+    invokeMock.mockResolvedValueOnce({ selected: "black", options: [] });
+    await exposedApi.appIcon.set("black");
+    expect(invokeMock).toHaveBeenLastCalledWith("app-icon:set", "black");
+  });
+});
+
 describe("preload/tab.ts traces.open", () => {
   async function load(pathname: string) {
     vi.resetModules();

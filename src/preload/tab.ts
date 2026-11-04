@@ -286,6 +286,12 @@ const browserSettings = {
   set: (patch: { adBlock?: boolean; mcpBrowser?: boolean; askAppAccess?: boolean }): Promise<unknown> => ipcRenderer.invoke("browser-settings:set", patch),
 };
 
+// App icon picker for Settings > Appearance. Always present (main is the trust boundary): same sender rule as browserSettings.
+const appIcon = {
+  get: (): Promise<unknown> => ipcRenderer.invoke("app-icon:get"),
+  set: (id: string): Promise<unknown> => ipcRenderer.invoke("app-icon:set", id),
+};
+
 // Desktop sign-in (src/main/desktopAuth.ts): `signIn` asks main to open the system browser;
 // the token comes back as `auth:token` once the user finishes there. Main checks the sender.
 let listeners = 0;
@@ -327,6 +333,7 @@ const api = {
   auth,
   logins,
   browserSettings,
+  appIcon,
   // Opens (or activates) the Settings tab; `section` is validated in main.
   settings: {
     open: (section?: string): Promise<{ ok: boolean }> => ipcRenderer.invoke("settings:open", section),

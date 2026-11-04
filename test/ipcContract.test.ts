@@ -85,6 +85,9 @@ const CHANNELS: { name: string; direction: "main->renderer" | "renderer->main" }
   // Settings page > Browser (invoke/handle, Settings-tab senders only, registered once). See CLAUDE.md "Ad and tracker blocking".
   { name: "browser-settings:get", direction: "renderer->main" },
   { name: "browser-settings:set", direction: "renderer->main" },
+  // Settings page > Appearance app icon (invoke/handle, Settings-tab senders only, registered once). See CLAUDE.md "App icon".
+  { name: "app-icon:get", direction: "renderer->main" },
+  { name: "app-icon:set", direction: "renderer->main" },
   { name: "logins:list", direction: "renderer->main" },
   { name: "logins:add", direction: "renderer->main" },
   { name: "docs:list", direction: "renderer->main" },

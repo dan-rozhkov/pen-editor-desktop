@@ -57,6 +57,7 @@ import type { SuggestItem } from "./browser/historySuggest";
 import { historyKey, type HistoryStore } from "./browser/historyStore";
 import type { HistoryService } from "./historyService";
 import type { BrowserSettingsIpc } from "./browserSettingsIpc";
+import type { AppIconIpc } from "./appIconIpc";
 import { awaitSettled, type FixtureBypassRegistry } from "./browser/adBlock";
 
 const FIXTURE_RELEASE_DRAIN_MS = 30_000;
@@ -390,6 +391,7 @@ export function createMainWindow(
   history: HistoryServices,
   desktopAuth: DesktopAuth,
   browserSettingsIpc: BrowserSettingsIpc,
+  appIconIpc: AppIconIpc,
   fixtureBypass: FixtureBypassRegistry,
 ): BaseWindow {
   // Idempotent — see registerAppLevelIpc's own doc comment. Safe to call on
@@ -2878,6 +2880,7 @@ export function createMainWindow(
 
   // `browser-settings:*` (Settings page) is registered once per process (index.ts); this window lends its Settings-tab check.
   const withdrawBrowserSettings = browserSettingsIpc.addWindow({ isSettingsViewer: (id, frameUrl) => tabs.isSettingsViewer(id, frameUrl) });
+  const withdrawAppIcon = appIconIpc.addWindow({ isSettingsViewer: (id, frameUrl) => tabs.isSettingsViewer(id, frameUrl) });
 
   // Browse-run traces: stored under userData; sender rules in traceIpc.ts, opening in traceOpen.ts.
   const traceIpc: TraceIpcDeps = {
@@ -3239,6 +3242,7 @@ export function createMainWindow(
     ipcMain.removeListener("editor:theme", onEditorTheme);
     withdrawDocTabLogins();
     withdrawBrowserSettings();
+    withdrawAppIcon();
     ipcMain.removeListener("editor:document-title", onEditorDocumentTitle);
     ipcMain.removeHandler("browser:command");
     ipcMain.removeHandler("browser:reveal-agent-tab");

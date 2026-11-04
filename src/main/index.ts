@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { app, BaseWindow, ipcMain, net, safeStorage, session, shell } from "electron";
+import { app, BaseWindow, ipcMain, nativeImage, net, safeStorage, session, shell } from "electron";
 import { KEEP_RENDERING_WHEN_OCCLUDED_SWITCH } from "./agentActivity";
 import { DISPLAY_APP_NAME, STORAGE_IDENTITY_FILE, isAdBlockDisabledByEnv, resolveEditorUrl, resolveStorageIdentity, storageIdentityFileText } from "./config";
 import { createMainWindow, flushAllForQuit, hasQuitFlushWork, isLiveTabbar, type HistoryServices } from "./window";
@@ -22,6 +22,8 @@ import { runOriginMigrationOnStartup } from "./originMigrationRunner";
 import { createMigrationGuard } from "./migrationGuard";
 import { getBrowserSettings } from "./browserSettingsInstance";
 import { createBrowserSettingsIpc } from "./browserSettingsIpc";
+import { APP_ICON_SETTINGS_FILE, createAppIconService } from "./appIcon";
+import { createAppIconIpc } from "./appIconIpc";
 import {
   AD_BLOCK_CACHE_FILE,
   AD_BLOCK_PARTITION,
@@ -108,7 +110,7 @@ const queuedDeepLinks: string[] = [];
 function openMainWindowIfNone(): void {
   if (startup.active) return; // the hidden migration window is not a main window
   // An agent cursor overlay is not a main window.
-  if (shouldReopenMainWindow(BaseWindow.getAllWindows(), isCursorOverlayWindow)) createMainWindow(editorUrl, mcpService, loginServices, historyServices, desktopAuth, browserSettingsIpc, fixtureBypass);
+  if (shouldReopenMainWindow(BaseWindow.getAllWindows(), isCursorOverlayWindow)) createMainWindow(editorUrl, mcpService, loginServices, historyServices, desktopAuth, browserSettingsIpc, appIconIpc, fixtureBypass);
 }
 function dispatchDeepLink(url: string): void {
   // Validate FIRST: only a well-formed sideform://auth link whose state matches the pending attempt may
@@ -218,12 +220,42 @@ const unregisterHistorySuggest = registerHistorySuggest({ ipcMain, store: histor
 const fixtureBypass = createFixtureBypassRegistry();
 const browserSettingsIpc = createBrowserSettingsIpc({ ipcMain, store: getBrowserSettings() });
 
+// App icon (Settings > Appearance). Building the service touches no Electron API; the Dock icon is set in
+// `applyAtStartup()` once the app is ready. `__dirname` is dist/main, so this works from dist/ and inside the asar
+// (the same way dist/assets/offline.html is found).
+const previewCache = new Map<string, string>();
+/** `createFromPath` does not throw on a missing or bad file: it returns an empty image. */
+function loadIconImage(p: string): Electron.NativeImage {
+  const image = nativeImage.createFromPath(p);
+  if (image.isEmpty()) throw new Error(`Could not load ${p}`);
+  return image;
+}
+const appIconService = createAppIconService({
+  platform: process.platform,
+  isPackaged: app.isPackaged,
+  settingsPath: path.join(app.getPath("userData"), APP_ICON_SETTINGS_FILE),
+  assetsDir: path.join(__dirname, "../assets/app-icons"),
+  // Electron restores the bundle icon on null; its types do not list it.
+  setDockIcon: (p) => app.dock?.setIcon(p === null ? (null as unknown as Electron.NativeImage) : loadIconImage(p)),
+  preview: (p) => {
+    const cached = previewCache.get(p);
+    if (cached !== undefined) return cached;
+    // 192 px: the card shows 96 CSS px on a 2x display.
+    const url = loadIconImage(p).resize({ width: 192, quality: "best" }).toDataURL();
+    previewCache.set(p, url);
+    return url;
+  },
+});
+const appIconIpc = createAppIconIpc({ ipcMain, service: appIconService });
+
 app.whenReady().then(async () => {
   void historyStore.load().catch((err) => console.error("[history] load failed", err));
   // The visible product name (app menu labels, About box). Safe now: the
   // userData path and the Keychain item name are already fixed above.
   app.setName(DISPLAY_APP_NAME);
   app.setAboutPanelOptions({ applicationName: DISPLAY_APP_NAME });
+  // Before the first window: the Dock icon (dev run, or a saved non-default choice).
+  appIconService.applyAtStartup();
   // The editor must always open — MCP is a background convenience, not a
   // prerequisite. createMainWindow() runs first (only the bounded, never-throwing origin migration precedes it) and unconditionally, before
   // mcpService.start() is even called, so neither a rejected start() (e.g.
@@ -309,7 +341,7 @@ app.whenReady().then(async () => {
   // The user quit while the migration ran: do not create a window or start MCP behind their back.
   if (quitting) return;
 
-  createMainWindow(editorUrl, mcpService, loginServices, historyServices, desktopAuth, browserSettingsIpc, fixtureBypass);
+  createMainWindow(editorUrl, mcpService, loginServices, historyServices, desktopAuth, browserSettingsIpc, appIconIpc, fixtureBypass);
   markWindowCreated();
   startup.end();
 
@@ -353,6 +385,7 @@ app.on("will-quit", () => {
   historyStore.flushSync();
   historyServices.service.dispose();
   browserSettingsIpc.dispose();
+  appIconIpc.dispose();
   unregisterHistorySuggest();
   // Synchronous: will-quit does not reliably await a returned promise, so
   // handshake-file removal must complete before this handler returns (see
