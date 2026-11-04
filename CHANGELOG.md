@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.9.6](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.9.5...v0.9.6) (2026-11-04)
+
+
+### Features
+
+* **icon:** add the Sideform app icon and an icon choice in Settings ([caf1260](https://github.com/dan-rozhkov/pen-editor-desktop/commit/caf1260416e97d106bb58790ee56b7788744e57f))
+
+
+### Bug Fixes
+
+* **apps:** browse_open with a url goes back to the built-in browser ([75aaf53](https://github.com/dan-rozhkov/pen-editor-desktop/commit/75aaf5376d4a6384852d4a75d784e846baf9f3f6))
+* **browser:** one desktop-app binding per chat in the shared scope ([df73838](https://github.com/dan-rozhkov/pen-editor-desktop/commit/df738382bddaf8dbff7f7237de3fc8335b4ea57f))
+
 ## [0.9.5](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.9.4...v0.9.5) (2026-11-01)
 
 
