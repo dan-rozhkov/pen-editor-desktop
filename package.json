@@ -20,6 +20,7 @@
     "dist": "npm run build:native && npm run build && electron-builder --mac"
   },
   "devDependencies": {
+    "@electron/asar": "^3.4.1",
     "@playwright/test": "^1.61.1",
     "@types/node": "^26.1.1",
     "electron": "^43.1.1",
@@ -29,6 +30,7 @@
   },
   "build": {
     "appId": "com.peneditor.desktop",
+    "afterPack": "./scripts/verify-packaged-deps.cjs",
     "productName": "Sideform Desktop",
     "directories": {
       "output": "release"

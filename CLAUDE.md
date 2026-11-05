@@ -18,8 +18,10 @@ npm test          # Vitest unit tests (test/)
 npm run test:e2e  # build + Playwright _electron smoke (stub HTTP server, no network)
 npm run test:e2e:live  # opt-in: same shell against the DEPLOYED frontend/backend (network)
 npm run lint      # tsc --noEmit (src) + tsc -p tsconfig.e2e.json (e2e/ + configs)
-npm run dist      # electron-builder → release/ (mac dmg+zip, unsigned)
+npm run dist      # electron-builder → release/ (mac dmg+zip, unsigned). Needs a REAL node_modules dir, see below
 ```
+
+`npm run dist` must run with a real `node_modules` directory, not a symlink. A symlinked `node_modules` with a stale hidden lockfile makes the electron-builder collector keep only the direct dependencies. The build still exits 0, and the app crashes at launch with `ERR_MODULE_NOT_FOUND`. Builds 0.9.6 and 0.9.7 shipped this way. The `afterPack` hook `scripts/verify-packaged-deps.cjs` now fails a build with a symlinked `node_modules` or with a missing production package. To fix a worktree, run `rm node_modules`, then `npm ci`. Do not run `npm ci` through the symlink: it follows the link and erases the target.
 
 Releases: release-please (`.github/workflows/release.yml`). Every push to `main`
 updates a release PR from Conventional Commits (`feat:` → minor while on 0.x,
