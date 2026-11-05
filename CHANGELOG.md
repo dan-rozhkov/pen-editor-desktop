@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.9.8](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.9.7...v0.9.8) (2026-11-05)
+
+
+### Bug Fixes
+
+* **build:** fail npm run dist when the app lacks production packages ([671daa2](https://github.com/dan-rozhkov/pen-editor-desktop/commit/671daa2137dbae032690f911b1f89ece533f6c64))
+
+
+### Reverts
+
+* sign and notarize the macOS builds ([a95cd55](https://github.com/dan-rozhkov/pen-editor-desktop/commit/a95cd55240a769de17b992001d3bba5803e24274))
+
 ## [0.9.7](https://github.com/dan-rozhkov/pen-editor-desktop/compare/v0.9.6...v0.9.7) (2026-11-04)
 
 
